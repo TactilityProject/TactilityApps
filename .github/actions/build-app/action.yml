@@ -16,7 +16,7 @@ runs:
       with:
         esp_idf_version: v5.5
         path: ./Apps/${{ inputs.app_name }}
-        command: 'python tactility.py build'
+        command: 'export IDF_TARGET= && python tactility.py build'
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
