@@ -199,7 +199,7 @@ private:
     ftp_result_t read_file(char* filebuf, uint32_t desiredsize, uint32_t* actualsize);
     ftp_result_t write_file(char* filebuf, uint32_t size);
     ftp_result_t open_dir_for_listing(const char* path);
-    int get_eplf_item(char** dest, uint32_t* destsize, struct dirent* de);
+    int get_eplf_item(char* dest, uint32_t destsize, struct dirent* de);
     ftp_result_t list_dir(char* list, uint32_t maxlistsize, uint32_t* listsize);
 
     // Socket operations

@@ -258,10 +258,8 @@ bool Server::add_virtual_dir_if_mounted(const char* mount_point, const char* nam
 
     char* list_ptr = list + *next;
     uint32_t remaining = maxlistsize - *next;
-    // Note: get_eplf_item may reallocate, but since we're using a fixed buffer
-    // for virtual dirs and names are short, this should not trigger reallocation
-    if (remaining < 128) return false; // Ensure adequate space
-    *next += get_eplf_item(&list_ptr, &remaining, &de);
+    if (remaining < 128) return false; // Ensure adequate space for entry
+    *next += get_eplf_item(list_ptr, remaining, &de);
     return true;
 }
 
@@ -400,7 +398,7 @@ Server::ftp_result_t Server::open_dir_for_listing(const char* path) {
     }
 }
 
-int Server::get_eplf_item(char** dest, uint32_t* destsize, struct dirent* de) {
+int Server::get_eplf_item(char* dest, uint32_t destsize, struct dirent* de) {
     const char* type = (de->d_type & DT_DIR) ? "d" : "-";
 
     char fullname[FTP_MAX_PATH_SIZE];
@@ -431,36 +429,18 @@ int Server::get_eplf_item(char** dest, uint32_t* destsize, struct dirent* de) {
         snprintf(str_time, sizeof(str_time), "Jan  1  1970");
     }
 
-    int addsize = *destsize + 64;
+    int addsize;
+    if (ftp_nlist)
+        addsize = snprintf(dest, destsize, "%s\r\n", de->d_name);
+    else
+        addsize = snprintf(dest, destsize, "%srw-rw-rw-   1 root  root %9" PRIu32 " %s %s\r\n", type, (uint32_t)buf.st_size, str_time, de->d_name);
 
-    while (addsize >= *destsize) {
-        if (ftp_nlist)
-            addsize = snprintf(*dest, *destsize, "%s\r\n", de->d_name);
-        else
-            addsize =
-                snprintf(*dest, *destsize, "%srw-rw-rw-   1 root  root %9" PRIu32 " %s %s\r\n", type, (uint32_t)buf.st_size, str_time, de->d_name);
-
-        if (addsize >= *destsize) {
-            // Check if we've hit the maximum buffer size cap
-            int new_size = ftp_buff_size + (addsize - *destsize) + 65;
-            if (new_size > FTPSERVER_MAX_BUFFER_SIZE) {
-                ESP_LOGE(TAG, "Buffer would exceed max size (%d > %d), skipping entry", new_size, FTPSERVER_MAX_BUFFER_SIZE);
-                return 0;  // Skip this entry rather than grow unbounded
-            }
-
-            ESP_LOGW(TAG, "Buffer too small, reallocating [%d > %" PRIi32 "]", ftp_buff_size, ftp_buff_size + (addsize - *destsize) + 64);
-            char* new_dest = (char*)realloc(*dest, new_size);
-            if (new_dest) {
-                ftp_buff_size += (addsize - *destsize) + 64;
-                *destsize += (addsize - *destsize) + 64;
-                *dest = new_dest;
-                addsize = *destsize + 64;
-            } else {
-                ESP_LOGE(TAG, "Buffer reallocation ERROR - out of memory");
-                return 0;  // Return 0 on allocation failure
-            }
-        }
+    // If entry doesn't fit in remaining buffer, skip it
+    if (addsize < 0 || (uint32_t)addsize >= destsize) {
+        ESP_LOGW(TAG, "Entry '%s' too long for buffer (%d >= %" PRIu32 "), skipping", de->d_name, addsize, destsize);
+        return 0;
     }
+
     return addsize;
 }
 
@@ -485,7 +465,7 @@ Server::ftp_result_t Server::list_dir(char* list, uint32_t maxlistsize, uint32_t
             if (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == 0) continue;
             char* list_ptr = list + next;
             uint32_t remaining = maxlistsize - next;
-            next += get_eplf_item(&list_ptr, &remaining, de);
+            next += get_eplf_item(list_ptr, remaining, de);
             listcount++;
         }
     }
@@ -602,14 +582,14 @@ void Server::send_reply(uint32_t status, const char* message) {
     }
 
     int32_t timeout = 200;
-    ftp_result_t result;
+    ssize_t send_result;
     size_t size = strlen((char*)ftp_cmd_buffer);
 
     vTaskDelay(1);
 
     while (timeout > 0) {
-        result = (ftp_result_t)send(ftp_data.c_sd, ftp_cmd_buffer, size, 0);
-        if (result == size) {
+        send_result = send(ftp_data.c_sd, ftp_cmd_buffer, size, 0);
+        if (send_result == (ssize_t)size) {
             if (status == 221) {
                 if (ftp_data.d_sd >= 0) {
                     closesocket(ftp_data.d_sd);
@@ -652,14 +632,13 @@ void Server::send_reply(uint32_t status, const char* message) {
 
 void Server::send_list(uint32_t datasize) {
     int32_t timeout = 200;
-    ftp_result_t result;
+    ssize_t send_result;
 
     vTaskDelay(1);
 
     while (timeout > 0) {
-        result =
-            (ftp_result_t)send(ftp_data.d_sd, ftp_data.dBuffer, datasize, 0);
-        if (result == datasize) {
+        send_result = send(ftp_data.d_sd, ftp_data.dBuffer, datasize, 0);
+        if (send_result == (ssize_t)datasize) {
             vTaskDelay(1);
             ESP_LOGI(TAG, "Send OK");
             break;
@@ -680,15 +659,14 @@ void Server::send_list(uint32_t datasize) {
 }
 
 void Server::send_file_data(uint32_t datasize) {
-    ftp_result_t result;
+    ssize_t send_result;
     uint32_t timeout = 200;
 
     vTaskDelay(1);
 
     while (timeout > 0) {
-        result =
-            (ftp_result_t)send(ftp_data.d_sd, ftp_data.dBuffer, datasize, 0);
-        if (result == datasize) {
+        send_result = send(ftp_data.d_sd, ftp_data.dBuffer, datasize, 0);
+        if (send_result == (ssize_t)datasize) {
             vTaskDelay(1);
             ESP_LOGI(TAG, "Send OK");
             break;
@@ -1040,6 +1018,8 @@ void Server::process_cmd() {
                         secure_compare(ftp_scratch_buffer, ftp_user, user_len)) {
                         ftp_data.loggin.uservalid = true;
                     }
+                    // Clear credentials from memory after validation
+                    memset(ftp_scratch_buffer, 0, FTP_MAX_PARAM_SIZE);
                 }
                 send_reply(331, nullptr);
                 break;
@@ -1058,8 +1038,13 @@ void Server::process_cmd() {
 
                     size_t pass_len = strlen(ftp_pass);
                     size_t input_len = strlen(ftp_scratch_buffer);
-                    if (ftp_data.loggin.uservalid && pass_len == input_len &&
-                        secure_compare(ftp_scratch_buffer, ftp_pass, pass_len)) {
+                    bool valid = ftp_data.loggin.uservalid && pass_len == input_len &&
+                        secure_compare(ftp_scratch_buffer, ftp_pass, pass_len);
+
+                    // Clear password from memory immediately after validation
+                    memset(ftp_scratch_buffer, 0, FTP_MAX_PARAM_SIZE);
+
+                    if (valid) {
                         ftp_data.loggin.passvalid = true;
                         ftp_data.logginRetries = 0;  // Reset on success
                         send_reply(230, nullptr);
@@ -1787,9 +1772,14 @@ void Server::stop() {
         // Force kill task (not ideal but prevents lockup)
         if (ftp_task_handle) {
             vTaskDelete(ftp_task_handle);
+            // Allow FreeRTOS to fully remove the task before accessing shared state
+            // This reduces (but doesn't eliminate) the risk of racing with task cleanup
+            vTaskDelay(pdMS_TO_TICKS(100));
             ftp_task_handle = nullptr;
         }
         // Task cleanup didn't run, do it here
+        // Note: These may access partially corrupted state if task was mid-operation
+        // but it's better than leaking resources
         reset();
         deinit();
     }
