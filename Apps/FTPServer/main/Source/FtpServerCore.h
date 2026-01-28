@@ -1,7 +1,6 @@
 #ifndef FTP_SERVER_CORE_H
 #define FTP_SERVER_CORE_H
 
-#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <ctime>
@@ -39,8 +38,6 @@ inline constexpr size_t FTP_MAX_PATH_SIZE = 256;  // Safe maximum path size for 
 inline constexpr const char* VFS_NATIVE_INTERNAL_MP = "/data";
 inline constexpr const char* VFS_NATIVE_EXTERNAL_MP = "/sdcard";
 inline constexpr const char* FTP_SERVER_NAME = "Tactility FTP Server";
-
-// Use std::min/std::max from <algorithm> instead of custom MIN/MAX macros
 
 class Server {
 public:
@@ -162,7 +159,7 @@ private:
 
     EventGroupHandle_t xEventTask;
     TaskHandle_t ftp_task_handle;
-    SemaphoreHandle_t ftp_mutex;
+    mutable SemaphoreHandle_t ftp_mutex;  // mutable for const-correct mutex usage in const methods
 
     int ftp_buff_size;
     int ftp_timeout;

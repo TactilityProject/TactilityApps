@@ -1,5 +1,6 @@
 #include "FtpServerCore.h"
 
+#include <algorithm>
 #include <atomic>
 #include <ctype.h>
 #include <errno.h>
@@ -93,10 +94,10 @@ Server::~Server() {
     }
 }
 
-static uint32_t last_screen_log_ms = 0;
-static uint32_t screen_log_count = 0;
+static std::atomic<uint32_t> last_screen_log_ms{0};
+static std::atomic<uint32_t> screen_log_count{0};
 
-static std::atomic<void (*)(const char*)> screen_log_callback {nullptr};
+static std::atomic<void (*)(const char*)> screen_log_callback{nullptr};
 
 void Server::register_screen_log_callback(void (*callback)(const char*)) {
     screen_log_callback.store(callback, std::memory_order_release);
@@ -113,15 +114,16 @@ void Server::log_to_screen(const char* format, ...) {
     }
 
     uint32_t now = mp_hal_ticks_ms();
+    uint32_t last_log = last_screen_log_ms.load(std::memory_order_relaxed);
 
-    if (now - last_screen_log_ms < FTP_LOG_THROTTLE_MS) {
-        screen_log_count++;
-        if (screen_log_count > FTP_LOG_THROTTLE_MAX) {
+    if (now - last_log < FTP_LOG_THROTTLE_MS) {
+        uint32_t count = screen_log_count.fetch_add(1, std::memory_order_relaxed);
+        if (count >= FTP_LOG_THROTTLE_MAX) {
             return;
         }
     } else {
-        screen_log_count = 0;
-        last_screen_log_ms = now;
+        screen_log_count.store(0, std::memory_order_relaxed);
+        last_screen_log_ms.store(now, std::memory_order_relaxed);
     }
 
     char buffer[128];
@@ -1417,7 +1419,7 @@ void Server::deinit() {
 }
 
 bool Server::init() {
-    ftp_stop = 0;
+    ftp_stop.store(0, std::memory_order_release);
     deinit();
     // Reset buffer size to default at init to prevent memory accumulation from previous sessions
     ftp_buff_size = FTPSERVER_BUFFER_SIZE;
@@ -1471,7 +1473,7 @@ int Server::run(uint32_t elapsed) {
     }
     xSemaphoreTake(ftp_mutex, portMAX_DELAY);
 
-    if (ftp_stop) {
+    if (ftp_stop.load(std::memory_order_acquire)) {
         ESP_LOGI(TAG, "Stop flag detected in run()");
         xSemaphoreGive(ftp_mutex);
         return -2;
@@ -1658,14 +1660,14 @@ bool Server::disable() {
 bool Server::terminate() {
     bool res = false;
     if (ftp_data.state == E_FTP_STE_READY) {
-        ftp_stop = 1;
+        ftp_stop.store(1, std::memory_order_release);
         reset();
         res = true;
     }
     return res;
 }
 
-bool Server::stop_requested() { return (ftp_stop == 1); }
+bool Server::stop_requested() { return ftp_stop.load(std::memory_order_acquire) == 1; }
 
 // Task loop - the main FTP server loop running in FreeRTOS task
 void Server::task_loop() {
@@ -1695,7 +1697,7 @@ void Server::task_loop() {
 
     while (1) {
         // CHECK STOP FLAG FIRST
-        if (ftp_stop || stop_requested()) {
+        if (ftp_stop.load(std::memory_order_acquire) || stop_requested()) {
             ESP_LOGI(TAG, "Stop requested, exiting task loop");
             break;
         }
@@ -1796,7 +1798,7 @@ void Server::stop() {
     ESP_LOGI(TAG, "Setting stop bit");
 
     // Set the stop flag so task_loop and run() see it
-    ftp_stop = 1;
+    ftp_stop.store(1, std::memory_order_release);
 
     // Release mutex before waiting (task needs it to check stop flag)
     if (ftp_mutex) {
@@ -1849,7 +1851,7 @@ void Server::stop() {
     }
     ftp_task_handle = nullptr;
     ftp_data.enabled = false; // Clear enabled flag so isEnabled() returns false
-    ftp_stop = 0; // Reset stop flag for next start
+    ftp_stop.store(0, std::memory_order_release); // Reset stop flag for next start
 
     if (ftp_mutex) {
         xSemaphoreGive(ftp_mutex);
