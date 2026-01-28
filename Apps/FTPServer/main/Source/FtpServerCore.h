@@ -1,6 +1,10 @@
 #ifndef FTP_SERVER_CORE_H
 #define FTP_SERVER_CORE_H
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <ctime>
 #include <dirent.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -8,40 +12,35 @@
 #include "freertos/semphr.h"
 #include "sdkconfig.h"
 
-namespace FtpServer {
-
-// Constants
-#define FTP_CMD_PORT 21
-#define FTP_PASSIVE_DATA_PORT 2024
-#define FTP_CMD_SIZE_MAX 6
-#define FTP_CMD_CLIENTS_MAX 1
-#define FTP_DATA_CLIENTS_MAX 1
-#define FTP_MAX_PARAM_SIZE ((512) + 1)
-// 180 days = 15552000 seconds
-// FTP LIST shows "MMM DD YYYY" for old files, "MMM DD HH:MM" for recent
-#define FTP_UNIX_SECONDS_180_DAYS (180 * 24 * 60 * 60)
-#define FTP_DATA_TIMEOUT_MS 10000
-#define FTP_SOCKETFIFO_ELEMENTS_MAX 4
-#define FTP_USER_PASS_LEN_MAX 32
-#define FTP_CMD_TIMEOUT_MS (300 * 1000)
-#define FTPSERVER_BUFFER_SIZE 1024
-#define FTPSERVER_MAX_BUFFER_SIZE (16 * 1024)  // Maximum buffer growth cap (16KB)
-#define FTP_MAX_PATH_SIZE 256  // Safe maximum path size for all operations
-
-#define VFS_NATIVE_INTERNAL_MP "/data"
-#define VFS_NATIVE_EXTERNAL_MP "/sdcard"
+// String constants used for compile-time concatenation (must be macros)
 #define FTP_STORAGE_NAME_INTERNAL "data"
 #define FTP_STORAGE_NAME_SDCARD "sdcard"
-#define FTP_SERVER_NAME "Tactility FTP Server"
 
-#ifndef MIN
-template<typename T>
-inline constexpr T MIN(const T& x, const T& y) { return (x < y) ? x : y; }
-#endif
-#ifndef MAX
-template<typename T>
-inline constexpr T MAX(const T& x, const T& y) { return (x > y) ? x : y; }
-#endif
+namespace FtpServer {
+
+// Namespace-scoped constants (preferred over macros for type safety)
+inline constexpr uint16_t FTP_CMD_PORT = 21;
+inline constexpr uint16_t FTP_PASSIVE_DATA_PORT = 2024;
+inline constexpr size_t FTP_CMD_SIZE_MAX = 6;
+inline constexpr uint8_t FTP_CMD_CLIENTS_MAX = 1;
+inline constexpr uint8_t FTP_DATA_CLIENTS_MAX = 1;
+inline constexpr size_t FTP_MAX_PARAM_SIZE = 512 + 1;
+// 180 days = 15552000 seconds
+// FTP LIST shows "MMM DD YYYY" for old files, "MMM DD HH:MM" for recent
+inline constexpr time_t FTP_UNIX_SECONDS_180_DAYS = 180 * 24 * 60 * 60;
+inline constexpr uint32_t FTP_DATA_TIMEOUT_MS = 10000;
+inline constexpr uint8_t FTP_SOCKETFIFO_ELEMENTS_MAX = 4;
+inline constexpr size_t FTP_USER_PASS_LEN_MAX = 32;
+inline constexpr uint32_t FTP_CMD_TIMEOUT_MS = 300 * 1000;
+inline constexpr size_t FTPSERVER_BUFFER_SIZE = 1024;
+inline constexpr size_t FTPSERVER_MAX_BUFFER_SIZE = 16 * 1024;  // Maximum buffer growth cap (16KB)
+inline constexpr size_t FTP_MAX_PATH_SIZE = 256;  // Safe maximum path size for all operations
+
+inline constexpr const char* VFS_NATIVE_INTERNAL_MP = "/data";
+inline constexpr const char* VFS_NATIVE_EXTERNAL_MP = "/sdcard";
+inline constexpr const char* FTP_SERVER_NAME = "Tactility FTP Server";
+
+// Use std::min/std::max from <algorithm> instead of custom MIN/MAX macros
 
 class Server {
 public:
@@ -174,7 +173,7 @@ private:
     char* ftp_path;
     char* ftp_scratch_buffer;
     char* ftp_cmd_buffer;
-    uint8_t ftp_stop;
+    std::atomic<uint8_t> ftp_stop;
     char ftp_user[FTP_USER_PASS_LEN_MAX + 1];
     char ftp_pass[FTP_USER_PASS_LEN_MAX + 1];
     uint8_t ftp_nlist;

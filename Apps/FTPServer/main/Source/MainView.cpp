@@ -1,5 +1,6 @@
 #include "MainView.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <tt_app.h>
 #include <tt_lvgl_keyboard.h>
@@ -91,7 +92,7 @@ void MainView::logToScreen(const char* message) {
 
     tt_lvgl_lock(tt::kernel::MAX_TICKS);
     const char* current = lv_textarea_get_text(logTextarea);
-    
+
     // Treat empty string same as nullptr (ignores placeholder)
     if (current && current[0] == '\0') {
         current = nullptr;
@@ -114,16 +115,42 @@ void MainView::logToScreen(const char* message) {
         else start = current;
     }
 
+    // Calculate required buffer size to avoid truncation
+    size_t start_len = (start && start[0] != '\0') ? strlen(start) : 0;
+    size_t msg_len = strlen(message);
+    size_t required_size = start_len + 1 + msg_len + 1; // existing + newline + message + null
+
+    // Use stack buffer for small content, heap for larger
+    static constexpr size_t STACK_BUFFER_SIZE = 512;
+    char stack_buffer[STACK_BUFFER_SIZE];
+    char* buffer = stack_buffer;
+    bool heap_allocated = false;
+
+    if (required_size > STACK_BUFFER_SIZE) {
+        buffer = static_cast<char*>(malloc(required_size));
+        if (buffer == nullptr) {
+            // Fallback: use stack buffer with truncation
+            buffer = stack_buffer;
+            required_size = STACK_BUFFER_SIZE;
+        } else {
+            heap_allocated = true;
+        }
+    }
+
     // Build new text
-    char buffer[512];
     if (start && start[0] != '\0') {
-        snprintf(buffer, sizeof(buffer), "%s\n%s", start, message);
+        snprintf(buffer, required_size, "%s\n%s", start, message);
     } else {
-        snprintf(buffer, sizeof(buffer), "%s", message);
+        snprintf(buffer, required_size, "%s", message);
     }
 
     lv_textarea_set_text(logTextarea, buffer);
     lv_obj_scroll_to_y(logTextarea, LV_COORD_MAX, LV_ANIM_ON);
+
+    if (heap_allocated) {
+        free(buffer);
+    }
+
     tt_lvgl_unlock();
 }
 

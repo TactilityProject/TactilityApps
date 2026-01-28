@@ -169,11 +169,14 @@ bool Server::sanitize_path(const char* path, size_t max_len) {
                 while (*scan) {
                     if (*scan == '/') {
                         scan++;
-                        if (!after_prefix && (*scan == 'd' || *scan == 's')) {
-                            // Skip first path component (data or sdcard)
-                            while (*scan && *scan != '/') scan++;
-                            after_prefix = true;
-                            continue;
+                        if (!after_prefix) {
+                            // Check for known storage prefixes
+                            if (strncmp(scan, FTP_STORAGE_NAME_INTERNAL, strlen(FTP_STORAGE_NAME_INTERNAL)) == 0 ||
+                                strncmp(scan, FTP_STORAGE_NAME_SDCARD, strlen(FTP_STORAGE_NAME_SDCARD)) == 0) {
+                                while (*scan && *scan != '/') scan++;
+                                after_prefix = true;
+                                continue;
+                            }
                         }
                         if (scan[0] == '.' && scan[1] == '.' && (scan[2] == '/' || scan[2] == '\0')) {
                             depth--;
@@ -632,56 +635,80 @@ void Server::send_reply(uint32_t status, const char* message) {
 
 void Server::send_list(uint32_t datasize) {
     int32_t timeout = 200;
-    ssize_t send_result;
+    uint32_t bytes_sent = 0;
 
     vTaskDelay(1);
 
-    while (timeout > 0) {
-        send_result = send(ftp_data.d_sd, ftp_data.dBuffer, datasize, 0);
-        if (send_result == (ssize_t)datasize) {
-            vTaskDelay(1);
-            ESP_LOGI(TAG, "Send OK");
-            break;
-        } else {
-            if (errno != EAGAIN) {
-                reset();
-                ESP_LOGW(TAG, "Error sending list data.");
-                break;
+    while (timeout > 0 && bytes_sent < datasize) {
+        ssize_t send_result = send(ftp_data.d_sd, ftp_data.dBuffer + bytes_sent, datasize - bytes_sent, 0);
+        if (send_result > 0) {
+            bytes_sent += send_result;
+            if (bytes_sent >= datasize) {
+                vTaskDelay(1);
+                ESP_LOGI(TAG, "Send OK");
+                return;
             }
-            vTaskDelay(1);
-            timeout -= portTICK_PERIOD_MS;
+            // Partial send - continue without resetting timeout
+        } else if (send_result < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Would block - wait and retry
+                vTaskDelay(1);
+                timeout -= portTICK_PERIOD_MS;
+            } else {
+                // Actual error
+                ESP_LOGW(TAG, "Error sending list data (errno=%d).", errno);
+                reset();
+                return;
+            }
+        } else {
+            // send_result == 0: connection closed
+            ESP_LOGW(TAG, "Connection closed while sending list data.");
+            reset();
+            return;
         }
     }
-    if (timeout <= 0) {
-        ESP_LOGW(TAG, "Timeout sending list data.");
+    if (bytes_sent < datasize) {
+        ESP_LOGW(TAG, "Timeout sending list data (sent %" PRIu32 "/%" PRIu32 ").", bytes_sent, datasize);
         reset();
     }
 }
 
 void Server::send_file_data(uint32_t datasize) {
-    ssize_t send_result;
     uint32_t timeout = 200;
+    uint32_t bytes_sent = 0;
 
     vTaskDelay(1);
 
-    while (timeout > 0) {
-        send_result = send(ftp_data.d_sd, ftp_data.dBuffer, datasize, 0);
-        if (send_result == (ssize_t)datasize) {
-            vTaskDelay(1);
-            ESP_LOGI(TAG, "Send OK");
-            break;
-        } else {
-            if (errno != EAGAIN) {
-                reset();
-                ESP_LOGW(TAG, "Error sending file data.");
-                break;
+    while (timeout > 0 && bytes_sent < datasize) {
+        ssize_t send_result = send(ftp_data.d_sd, ftp_data.dBuffer + bytes_sent, datasize - bytes_sent, 0);
+        if (send_result > 0) {
+            bytes_sent += send_result;
+            if (bytes_sent >= datasize) {
+                vTaskDelay(1);
+                ESP_LOGI(TAG, "Send OK");
+                return;
             }
-            vTaskDelay(1);
-            timeout -= portTICK_PERIOD_MS;
+            // Partial send - continue without resetting timeout
+        } else if (send_result < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Would block - wait and retry
+                vTaskDelay(1);
+                timeout -= portTICK_PERIOD_MS;
+            } else {
+                // Actual error
+                ESP_LOGW(TAG, "Error sending file data (errno=%d).", errno);
+                reset();
+                return;
+            }
+        } else {
+            // send_result == 0: connection closed
+            ESP_LOGW(TAG, "Connection closed while sending file data.");
+            reset();
+            return;
         }
     }
-    if (timeout <= 0) {
-        ESP_LOGW(TAG, "Timeout sending file data.");
+    if (bytes_sent < datasize) {
+        ESP_LOGW(TAG, "Timeout sending file data (sent %" PRIu32 "/%" PRIu32 ").", bytes_sent, datasize);
         reset();
     }
 }
@@ -756,10 +783,30 @@ void Server::close_child(char* pwd) {
 
 void Server::remove_fname_from_path(char* pwd, char* fname) {
     ESP_LOGD(TAG, "remove_fname_from_path: %s - %s", pwd, fname);
-    if (strlen(fname) == 0) return;
-    char* xpwd = strstr(pwd, fname);
-    if (xpwd == nullptr) return;
-    xpwd[0] = '\0';
+    size_t fname_len = strlen(fname);
+    if (fname_len == 0) return;
+
+    size_t pwd_len = strlen(pwd);
+    if (pwd_len < fname_len) return;
+
+    // Check if fname is the suffix of pwd (the last path component)
+    // It should match at the end, possibly preceded by '/'
+    char* suffix_start = pwd + pwd_len - fname_len;
+    if (strcmp(suffix_start, fname) == 0) {
+        // Verify it's a complete path component (preceded by '/' or is the entire path after root)
+        if (suffix_start == pwd || *(suffix_start - 1) == '/') {
+            // Remove the trailing slash before the filename too, if present
+            if (suffix_start > pwd && *(suffix_start - 1) == '/') {
+                suffix_start--;
+            }
+            *suffix_start = '\0';
+            // Ensure we don't leave an empty path
+            if (pwd[0] == '\0') {
+                pwd[0] = '/';
+                pwd[1] = '\0';
+            }
+        }
+    }
     ESP_LOGD(TAG, "remove_fname_from_path: New pwd: %s", pwd);
 }
 
@@ -1012,6 +1059,7 @@ void Server::process_cmd() {
             case E_FTP_CMD_USER:
                 pop_param(&bufptr, ftp_scratch_buffer, FTP_MAX_PARAM_SIZE, true, true);
                 {
+                    ftp_data.loggin.uservalid = false;
                     size_t user_len = strlen(ftp_user);
                     size_t input_len = strlen(ftp_scratch_buffer);
                     if (user_len == input_len && user_len > 0 &&
@@ -1417,6 +1465,10 @@ error_dbuffer:
 }
 
 int Server::run(uint32_t elapsed) {
+    if (!ftp_mutex) {
+        ESP_LOGE(TAG, "FTP mutex not initialized");
+        return -1;
+    }
     xSemaphoreTake(ftp_mutex, portMAX_DELAY);
 
     if (ftp_stop) {
