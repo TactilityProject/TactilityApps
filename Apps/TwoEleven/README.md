@@ -13,13 +13,14 @@ TwoEleven is a faithful implementation of the popular 2048 game, where you slide
 - **Intuitive Controls**: Swipe gestures on touchscreens or use arrow keys for keyboard input.
 - **Visual Feedback**: Color-coded tiles with smooth animations.
 - **Score Tracking**: Real-time score display with win/lose detection.
+- **High Score Persistence**: Saves best scores for each grid size.
 - **Responsive UI**: Optimized for small screens with clean, modern design.
 - **Thread-Safe**: Proper handling of UI updates to prevent crashes.
 
 ## Screenshots
 
 Screenshots taken directly from my Lilygo T-Deck Plus.
-Which is also the only device it has been tested on so far.
+Tested on Lilygo T-Deck Plus and M5Stack Cardputer.
 
 ![alt text](images/3x3.png) ![alt text](images/4x4.png) ![alt text](images/5x5.png)
 ![alt text](images/6x6.png) ![alt text](images/selection.png)
@@ -31,7 +32,7 @@ Which is also the only device it has been tested on so far.
 
 ## Usage
 
-1. Launch the TwoEleven app.
+1. Launch the 2048 app.
 2. Select your preferred grid size (3x3 to 6x6).
 3. Swipe tiles in any direction to move and combine them.
 4. Reach the 2048 tile to win, or get stuck to lose.
@@ -40,8 +41,10 @@ Which is also the only device it has been tested on so far.
 ## Controls
 
 - **Touchscreen**: Swipe up, down, left, or right to move tiles.
-- **Keyboard**: Use arrow keys (↑, ↓, ←, →) for movement.
-- **New Game**: Press the "New" button to reset the board.
+- **Keyboard (Arrow Keys)**: Use arrow keys (Up, Down, Left, Right) for movement.
+- **Keyboard (WASD)**: Use W, A, S, D keys for movement.
+- **Keyboard (Cardputer)**: Use semicolon (;), comma (,), period (.), slash (/) for up, left, down, right.
+- **New Game**: Press the refresh button in the toolbar to reset the board.
 
 ## Game Rules
 
@@ -51,7 +54,3 @@ Which is also the only device it has been tested on so far.
 - New tiles appear after each move.
 - Game ends when you reach 2048 (win) or no moves are possible (lose).
 
-## TODO
-
-- Maybe trackball one day?
-- Maybe other keys rather being limited to arrow directions. (why so limited lvgl?)

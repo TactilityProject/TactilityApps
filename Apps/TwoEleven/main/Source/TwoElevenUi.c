@@ -3,9 +3,11 @@
 #include "TwoElevenHelpers.h"
 #include <stdlib.h>
 #include <string.h>
+#include <tt_lvgl_keyboard.h>
 
 static void game_play_event(lv_event_t * e);
 static void btnm_event_cb(lv_event_t * e);
+static void focus_event(lv_event_t* e);
 
 /**
  * @brief Free all resources for the 2048 game object
@@ -15,6 +17,13 @@ static void delete_event(lv_event_t * e)
     lv_obj_t * obj = lv_event_get_target_obj(e);
     twoeleven_t * game_2048 = (twoeleven_t *)lv_obj_get_user_data(obj);
     if (game_2048) {
+        // Reset group editing mode if we enabled it
+        if (tt_lvgl_hardware_keyboard_is_available()) {
+            lv_group_t* group = lv_group_get_default();
+            if (group) {
+                lv_group_set_editing(group, false);
+            }
+        }
         for (uint16_t index = 0; index < game_2048->map_count; index++) {
             if (game_2048->btnm_map[index]) {
                 lv_free(game_2048->btnm_map[index]);
@@ -29,6 +38,24 @@ static void delete_event(lv_event_t * e)
         lv_free(game_2048->matrix);
         lv_free(game_2048);
         lv_obj_set_user_data(obj, NULL);
+    }
+}
+
+/**
+ * @brief Handle focus/defocus to manage edit mode for keyboard input
+ */
+static void focus_event(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_group_t* group = lv_group_get_default();
+
+    if (!group) return;
+
+    if (code == LV_EVENT_FOCUSED) {
+        // Enable edit mode so arrow keys control the game
+        lv_group_set_editing(group, true);
+    } else if (code == LV_EVENT_DEFOCUSED) {
+        // Restore normal focus navigation
+        lv_group_set_editing(group, false);
     }
 }
 
@@ -113,9 +140,22 @@ lv_obj_t * twoeleven_create(lv_obj_t * parent, uint16_t matrix_size)
     lv_btnmatrix_set_map(game_2048->btnm, (const char **)game_2048->btnm_map);
     lv_btnmatrix_set_btn_ctrl_all(game_2048->btnm, LV_BTNMATRIX_CTRL_DISABLED);
 
-    lv_obj_add_event_cb(game_2048->btnm, game_play_event, LV_EVENT_ALL, obj);
+    lv_obj_add_event_cb(game_2048->btnm, game_play_event, LV_EVENT_GESTURE, obj);
+    lv_obj_add_event_cb(game_2048->btnm, game_play_event, LV_EVENT_KEY, obj);
     lv_obj_add_event_cb(game_2048->btnm, btnm_event_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
     lv_obj_add_event_cb(obj, delete_event, LV_EVENT_DELETE, NULL);
+
+    if (tt_lvgl_hardware_keyboard_is_available()) {
+        lv_group_t* group = lv_group_get_default();
+        if (group) {
+            lv_group_add_obj(group, game_2048->btnm);
+            // Register focus handlers to manage edit mode lifecycle
+            lv_obj_add_event_cb(game_2048->btnm, focus_event, LV_EVENT_FOCUSED, NULL);
+            lv_obj_add_event_cb(game_2048->btnm, focus_event, LV_EVENT_DEFOCUSED, NULL);
+            // Focus the container (will trigger FOCUSED event and enable edit mode)
+            lv_group_focus_obj(game_2048->btnm);
+        }
+    }
 
     return obj;
 }
@@ -175,17 +215,31 @@ static void game_play_event(lv_event_t * e)
     } else if (code == LV_EVENT_KEY) {
         game_2048->game_over = game_over(game_2048->matrix_size, (const uint16_t **)game_2048->matrix);
         if (!game_2048->game_over) {
-            switch (*((const uint8_t *) lv_event_get_param(e))) {
+            uint32_t key = lv_event_get_key(e);
+            switch (key) {
+                // Arrow keys, WASD, and punctuation keys for cardputer
                 case LV_KEY_UP:
+                case 'w':
+                case 'W':
+                case ';':
                     success = move_right(&(game_2048->score), game_2048->matrix_size, game_2048->matrix);
                     break;
                 case LV_KEY_DOWN:
+                case 's':
+                case 'S':
+                case '.':
                     success = move_left(&(game_2048->score), game_2048->matrix_size, game_2048->matrix);
                     break;
                 case LV_KEY_LEFT:
+                case 'a':
+                case 'A':
+                case ',':
                     success = move_up(&(game_2048->score), game_2048->matrix_size, game_2048->matrix);
                     break;
                 case LV_KEY_RIGHT:
+                case 'd':
+                case 'D':
+                case '/':
                     success = move_down(&(game_2048->score), game_2048->matrix_size, game_2048->matrix);
                     break;
                 default:

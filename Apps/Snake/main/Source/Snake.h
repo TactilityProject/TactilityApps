@@ -1,19 +1,22 @@
+/**
+ * @file Snake.h
+ * @brief Snake game app class for Tactility
+ */
 #pragma once
 
 #include <tt_app.h>
-
 #include <lvgl.h>
 #include <TactilityCpp/App.h>
 
-#include "TwoElevenUi.h"
-#include "TwoElevenLogic.h"
-#include "TwoElevenHelpers.h"
+#include "SnakeUi.h"
+#include "SnakeLogic.h"
+#include "SnakeHelpers.h"
 
-class TwoEleven final : public App {
+class Snake final : public App {
 
-    static void twoElevenEventCb(lv_event_t* e);
+    static void snakeEventCb(lv_event_t* e);
     static void newGameBtnEvent(lv_event_t* e);
-    static void createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* toolbar);
+    static void createGame(lv_obj_t* parent, uint16_t cell_size, bool wallCollision, lv_obj_t* toolbar);
 
 public:
 
