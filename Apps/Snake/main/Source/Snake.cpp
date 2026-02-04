@@ -133,7 +133,7 @@ static void showHelpDialog() {
 void Snake::snakeEventCb(lv_event_t* e) {
     lv_event_code_t code = lv_event_get_code(e);
     lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
-    lv_obj_t* target = lv_event_get_target(e);
+    lv_obj_t* target = lv_event_get_target_obj(e);
 
     if (code == LV_EVENT_VALUE_CHANGED) {
         if (snake_get_game_over(target)) {
