@@ -12,7 +12,7 @@ jobs:
   Build:
     strategy:
       matrix:
-        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven]
+        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven, FTPServer, MystifyDemo, Snake]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

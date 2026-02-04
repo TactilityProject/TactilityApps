@@ -173,7 +173,7 @@ void TwoEleven::twoElevenEventCb(lv_event_t* e) {
             }
         } else {
             // Update score display
-            lv_label_set_text_fmt(label, "SCORE: %" PRId32, score);
+            lv_label_set_text_fmt(label, "SCORE: %" PRIu32, score);
         }
     }
 }
@@ -186,7 +186,7 @@ void TwoEleven::newGameBtnEvent(lv_event_t* e) {
     twoeleven_set_new_game(obj);
     // Update score label
     if (scoreLabel) {
-        lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(obj));
+        lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRIu16, twoeleven_get_score(obj));
     }
 }
 
@@ -215,7 +215,7 @@ void TwoEleven::createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
 
     // Create score label
     scoreLabel = lv_label_create(scoreWrapper);
-    lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(gameObject));
+    lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRIu16, twoeleven_get_score(gameObject));
     lv_obj_set_style_text_align(scoreLabel, LV_TEXT_ALIGN_LEFT, LV_STATE_DEFAULT);
     lv_obj_align(scoreLabel, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_size(scoreLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
