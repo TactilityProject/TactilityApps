@@ -181,6 +181,9 @@ void Snake::createGame(lv_obj_t* parent, uint16_t cell_size, bool wallCollision,
 
     // Create game widget
     gameObject = snake_create(parent, cell_size, wallCollision);
+    if (!gameObject) {
+        return;
+    }
     lv_obj_set_size(gameObject, LV_PCT(100), LV_PCT(100));
     lv_obj_set_flex_grow(gameObject, 1);
 

@@ -180,6 +180,11 @@ static void snake_timer_cb(lv_timer_t* timer) {
         }
         if (tail && !tail->obj && game->container) {
             tail->obj = lv_obj_create(game->container);
+            if (!tail->obj) {
+                game->game_over = true;
+                lv_obj_send_event(game->widget, LV_EVENT_VALUE_CHANGED, NULL);
+                return;
+            }
             lv_obj_set_size(tail->obj, game->cell_size - 2, game->cell_size - 2);
             lv_obj_set_style_radius(tail->obj, SNAKE_CELL_RADIUS, LV_PART_MAIN);
             lv_obj_set_style_border_width(tail->obj, 0, LV_PART_MAIN);

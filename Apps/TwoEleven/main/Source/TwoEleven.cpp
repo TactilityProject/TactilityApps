@@ -135,7 +135,7 @@ void TwoEleven::twoElevenEventCb(lv_event_t* e) {
     if (code == LV_EVENT_VALUE_CHANGED) {
         int32_t score = twoeleven_get_score(gameObject);
 
-        if (twoeleven_get_best_tile(gameObject) >= 2048) {
+        if (winDialogId == 0 && twoeleven_get_best_tile(gameObject) >= 2048) {
             int32_t prevHighScore = getHighScore(currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
@@ -153,7 +153,7 @@ void TwoEleven::twoElevenEventCb(lv_event_t* e) {
                 snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(currentGridSize));
                 winDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
             }
-        } else if (twoeleven_get_status(gameObject)) {
+        } else if (gameOverDialogId == 0 && twoeleven_get_status(gameObject)) {
             int32_t prevHighScore = getHighScore(currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
