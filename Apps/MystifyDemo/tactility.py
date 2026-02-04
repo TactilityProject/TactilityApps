@@ -12,8 +12,8 @@ import requests
 import tarfile
 
 ttbuild_path = ".tactility"
-ttbuild_version = "3.1.0"
-ttbuild_cdn = "https://cdn.tactility.one"
+ttbuild_version = "3.2.0"
+ttbuild_cdn = "https://cdn.tactilityproject.org"
 ttbuild_sdk_json_validity = 3600  # seconds
 ttport = 6666
 verbose = False
@@ -636,7 +636,7 @@ if __name__ == "__main__":
     validate_manifest(manifest)
     all_platform_targets = manifest["target"]["platforms"].split(",")
     # Update SDK cache (tool.json)
-    if should_update_tool_json() and not update_tool_json():
+    if not use_local_sdk and should_update_tool_json() and not update_tool_json():
         exit_with_error("Failed to retrieve SDK info")
     # Actions
     if action_arg == "build":
