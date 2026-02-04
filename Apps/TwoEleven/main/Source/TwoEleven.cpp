@@ -49,6 +49,8 @@ static bool showHelpOnShow = false;    // Show help dialog when onShow is called
 
 static constexpr size_t SIZE_COUNT = 4;
 
+static bool highScoresLoaded = false;
+
 // Selection dialog indices (0 = How to Play, 1-4 = grid sizes)
 static constexpr int32_t SELECTION_HOW_TO_PLAY = 0;
 static constexpr int32_t SELECTION_3X3 = 1;
@@ -253,6 +255,7 @@ void TwoEleven::createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
 
 void TwoEleven::onDestroy(AppHandle appHandle) {
     // Reset all static state
+    highScoresLoaded = false;
     scoreLabel = nullptr;
     scoreWrapper = nullptr;
     toolbar = nullptr;
@@ -306,7 +309,6 @@ void TwoEleven::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_remove_flag(mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
 
     // Load high scores on first show
-    static bool highScoresLoaded = false;
     if (!highScoresLoaded) {
         loadHighScores();
         highScoresLoaded = true;

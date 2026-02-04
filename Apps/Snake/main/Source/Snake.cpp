@@ -48,6 +48,8 @@ static bool showHelpOnShow = false;    // Show help dialog when onShow is called
 
 static constexpr size_t DIFFICULTY_COUNT = 4;
 
+static bool highScoresLoaded = false;
+
 // Selection dialog indices (0 = How to Play, 1-4 = difficulties)
 static constexpr int32_t SELECTION_HOW_TO_PLAY = 0;
 static constexpr int32_t SELECTION_EASY = 1;
@@ -131,11 +133,12 @@ static void showHelpDialog() {
 void Snake::snakeEventCb(lv_event_t* e) {
     lv_event_code_t code = lv_event_get_code(e);
     lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
+    lv_obj_t* target = lv_event_get_target(e);
 
     if (code == LV_EVENT_VALUE_CHANGED) {
-        if (snake_get_game_over(gameObject)) {
-            int32_t score = snake_get_score(gameObject);
-            int32_t length = snake_get_length(gameObject);
+        if (snake_get_game_over(target)) {
+            int32_t score = snake_get_score(target);
+            int32_t length = snake_get_length(target);
             int32_t prevHighScore = getHighScore(currentDifficulty);
             bool isNewHighScore = score > prevHighScore;
 
@@ -253,6 +256,7 @@ void Snake::onDestroy(AppHandle appHandle) {
     shouldExit = false;
     showHelpOnShow = false;
     currentDifficulty = -1;
+    highScoresLoaded = false;
 }
 
 void Snake::onHide(AppHandle appHandle) {
@@ -292,7 +296,6 @@ void Snake::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_remove_flag(mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
 
     // Load high scores on first show
-    static bool highScoresLoaded = false;
     if (!highScoresLoaded) {
         loadHighScores();
         highScoresLoaded = true;
