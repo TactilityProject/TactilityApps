@@ -13,7 +13,7 @@ import tarfile
 from urllib.parse import urlparse
 
 ttbuild_path = ".tactility"
-ttbuild_version = "3.3.0"
+ttbuild_version = "3.4.0"
 ttbuild_cdn = "https://cdn.tactilityproject.org"
 ttbuild_sdk_json_validity = 3600  # seconds
 ttport = 6666
@@ -451,7 +451,7 @@ def package_intermediate_binaries(target_path, platforms):
     for platform in platforms:
         elf_path = find_elf_file(platform)
         if elf_path is None:
-            print_error(f"ELF file not found at {elf_path}")
+            print_error(f"ELF file not found for {platform}")
             return False
         shutil.copy(elf_path, os.path.join(elf_dir, f"{platform}.elf"))
     return True
@@ -486,9 +486,8 @@ def package_all(platforms):
     # Create build/something.app
     try:
         tar_path = package_name(platforms)
-        tar = tarfile.open(tar_path, mode="w", format=tarfile.USTAR_FORMAT)
-        tar.add(os.path.join("build", "package-intermediate"), arcname="")
-        tar.close()
+        with tarfile.open(tar_path, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+            tar.add(os.path.join("build", "package-intermediate"), arcname="")
         print_status_success(status)
         return True
     except Exception as e:
