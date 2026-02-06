@@ -26,29 +26,8 @@ static int32_t highScoreEasy = 0;
 static int32_t highScoreMedium = 0;
 static int32_t highScoreHard = 0;
 static int32_t highScoreHell = 0;
-static int32_t currentDifficulty = -1;  // Track which difficulty is being played
-
-// Static UI element pointers (invalidated on hide, recreated on show)
-static lv_obj_t* scoreLabel = nullptr;
-static lv_obj_t* scoreWrapper = nullptr;
-static lv_obj_t* toolbar = nullptr;
-static lv_obj_t* mainWrapper = nullptr;
-static lv_obj_t* newGameWrapper = nullptr;
-static lv_obj_t* gameObject = nullptr;
-
-// Dialog launch IDs for tracking which dialog returned
-static AppLaunchId selectionDialogId = 0;
-static AppLaunchId gameOverDialogId = 0;
-static AppLaunchId helpDialogId = 0;
-
-// State tracking (persists across hide/show cycles)
-static int32_t pendingSelection = -1;  // -1 = show selection, 1-3 = start game with difficulty
-static bool shouldExit = false;
-static bool showHelpOnShow = false;    // Show help dialog when onShow is called
 
 static constexpr size_t DIFFICULTY_COUNT = 4;
-
-static bool highScoresLoaded = false;
 
 // Selection dialog indices (0 = How to Play, 1-4 = difficulties)
 static constexpr int32_t SELECTION_HOW_TO_PLAY = 0;
@@ -115,12 +94,7 @@ static int32_t getHighScore(int32_t difficulty) {
     }
 }
 
-static void showSelectionDialog() {
-    const char* items[] = { "How to Play", "Easy", "Medium", "Hard", "Hell" };
-    selectionDialogId = tt_app_selectiondialog_start("Snake", 5, items);
-}
-
-static void showHelpDialog() {
+void Snake::showHelpDialog() {
     const char* buttons[] = { "OK" };
     helpDialogId = tt_app_alertdialog_start(
         "How to Play",
@@ -130,21 +104,26 @@ static void showHelpDialog() {
         buttons, 1);
 }
 
+void Snake::showSelectionDialog() {
+    const char* items[] = { "How to Play", "Easy", "Medium", "Hard", "Hell" };
+    selectionDialogId = tt_app_selectiondialog_start("Snake", 5, items);
+}
+
 void Snake::snakeEventCb(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
+    Snake* self = (Snake*)lv_event_get_user_data(e);
     lv_obj_t* target = lv_event_get_target_obj(e);
+    lv_event_code_t code = lv_event_get_code(e);
 
     if (code == LV_EVENT_VALUE_CHANGED) {
         if (snake_get_game_over(target)) {
             int32_t score = snake_get_score(target);
             int32_t length = snake_get_length(target);
-            int32_t prevHighScore = getHighScore(currentDifficulty);
+            int32_t prevHighScore = getHighScore(self->currentDifficulty);
             bool isNewHighScore = score > prevHighScore;
 
             // Save high score if it's a new record
             if (isNewHighScore) {
-                saveHighScore(currentDifficulty, score);
+                saveHighScore(self->currentDifficulty, score);
             }
 
             const char* alertDialogLabels[] = { "OK" };
@@ -154,27 +133,27 @@ void Snake::snakeEventCb(lv_event_t* e) {
                         score, length);
             } else {
                 snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nLENGTH: %" PRId32 "\nBEST: %" PRId32,
-                        score, length, getHighScore(currentDifficulty));
+                        score, length, getHighScore(self->currentDifficulty));
             }
-            gameOverDialogId = tt_app_alertdialog_start(
+            self->gameOverDialogId = tt_app_alertdialog_start(
                 isNewHighScore && score > 0 ? "NEW HIGH SCORE!" : "GAME OVER!",
                 message, alertDialogLabels, 1);
         } else {
             // Update score display
-            lv_label_set_text_fmt(label, "SCORE: %u", snake_get_score(gameObject));
+            lv_label_set_text_fmt(self->scoreLabel, "SCORE: %u", snake_get_score(self->gameObject));
         }
     }
 }
 
 void Snake::newGameBtnEvent(lv_event_t* e) {
-    lv_obj_t* obj = (lv_obj_t*)lv_event_get_user_data(e);
-    if (obj == nullptr) {
+    Snake* self = (Snake*)lv_event_get_user_data(e);
+    if (self == nullptr) {
         return;
     }
-    snake_set_new_game(obj);
+    snake_set_new_game(self->gameObject);
     // Update score label
-    if (scoreLabel) {
-        lv_label_set_text_fmt(scoreLabel, "SCORE: %u", snake_get_score(obj));
+    if (self->scoreLabel) {
+        lv_label_set_text_fmt(self->scoreLabel, "SCORE: %u", snake_get_score(self->gameObject));
     }
 }
 
@@ -211,9 +190,7 @@ void Snake::createGame(lv_obj_t* parent, uint16_t cell_size, bool wallCollision,
     lv_obj_set_size(scoreLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(scoreLabel, lv_font_get_default(), 0);
     lv_obj_set_style_text_color(scoreLabel, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
-
-    // Register event callback for game state changes
-    lv_obj_add_event_cb(gameObject, snakeEventCb, LV_EVENT_VALUE_CHANGED, scoreLabel);
+    lv_obj_add_event_cb(gameObject, snakeEventCb, LV_EVENT_VALUE_CHANGED, this);
 
     // Create new game button wrapper
     newGameWrapper = lv_obj_create(tb);
@@ -234,33 +211,14 @@ void Snake::createGame(lv_obj_t* parent, uint16_t cell_size, bool wallCollision,
     }
     lv_obj_set_style_pad_all(newGameBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(newGameBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, gameObject);
+    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, this);
 
     lv_obj_t* btnIcon = lv_image_create(newGameBtn);
     lv_image_set_src(btnIcon, LV_SYMBOL_REFRESH);
     lv_obj_align(btnIcon, LV_ALIGN_CENTER, 0, 0);
 }
 
-void Snake::onDestroy(AppHandle appHandle) {
-    // Reset all static state
-    scoreLabel = nullptr;
-    scoreWrapper = nullptr;
-    toolbar = nullptr;
-    mainWrapper = nullptr;
-    newGameWrapper = nullptr;
-    gameObject = nullptr;
-    selectionDialogId = 0;
-    gameOverDialogId = 0;
-    helpDialogId = 0;
-    pendingSelection = -1;
-    shouldExit = false;
-    showHelpOnShow = false;
-    currentDifficulty = -1;
-    highScoresLoaded = false;
-}
-
 void Snake::onHide(AppHandle appHandle) {
-    // LVGL objects are destroyed when app is hidden, mark pointers as invalid
     scoreLabel = nullptr;
     scoreWrapper = nullptr;
     toolbar = nullptr;
@@ -277,7 +235,6 @@ void Snake::onShow(AppHandle appHandle, lv_obj_t* parent) {
         return;
     }
 
-    // Always recreate UI when shown (previous objects destroyed on hide)
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 

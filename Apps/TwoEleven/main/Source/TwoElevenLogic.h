@@ -52,7 +52,7 @@ bool game_over(uint16_t matrix_size, const uint16_t **matrix);
 /**
  * @brief Get the current score
  */
-uint16_t twoeleven_get_score(lv_obj_t * obj);
+uint32_t twoeleven_get_score(lv_obj_t * obj);
 
 /**
  * @brief Get the game over status

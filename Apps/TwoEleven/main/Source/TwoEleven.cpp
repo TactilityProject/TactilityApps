@@ -26,30 +26,8 @@ static int32_t highScore3x3 = 0;
 static int32_t highScore4x4 = 0;
 static int32_t highScore5x5 = 0;
 static int32_t highScore6x6 = 0;
-static int32_t currentGridSize = -1;  // Track which grid size is being played
-
-// Static UI element pointers (invalidated on hide, recreated on show)
-static lv_obj_t* scoreLabel = nullptr;
-static lv_obj_t* scoreWrapper = nullptr;
-static lv_obj_t* toolbar = nullptr;
-static lv_obj_t* mainWrapper = nullptr;
-static lv_obj_t* newGameWrapper = nullptr;
-static lv_obj_t* gameObject = nullptr;
-
-// Dialog launch IDs for tracking which dialog returned
-static AppLaunchId selectionDialogId = 0;
-static AppLaunchId gameOverDialogId = 0;
-static AppLaunchId winDialogId = 0;
-static AppLaunchId helpDialogId = 0;
-
-// State tracking (persists across hide/show cycles)
-static int32_t pendingSelection = -1;  // -1 = show selection, 1-4 = start game with size
-static bool shouldExit = false;
-static bool showHelpOnShow = false;    // Show help dialog when onShow is called
 
 static constexpr size_t SIZE_COUNT = 4;
-
-static bool highScoresLoaded = false;
 
 // Selection dialog indices (0 = How to Play, 1-4 = grid sizes)
 static constexpr int32_t SELECTION_HOW_TO_PLAY = 0;
@@ -115,12 +93,12 @@ static int32_t getHighScore(int32_t gridSize) {
     }
 }
 
-static void showSelectionDialog() {
+void TwoEleven::showSelectionDialog() {
     const char* items[] = { "How to Play", "3x3", "4x4", "5x5", "6x6" };
     selectionDialogId = tt_app_selectiondialog_start("2048", 5, items);
 }
 
-static void showHelpDialog() {
+void TwoEleven::showHelpDialog() {
     const char* buttons[] = { "OK" };
     helpDialogId = tt_app_alertdialog_start(
         "How to Play",
@@ -131,64 +109,67 @@ static void showHelpDialog() {
 }
 
 void TwoEleven::twoElevenEventCb(lv_event_t* e) {
+    TwoEleven* self = (TwoEleven*)lv_event_get_user_data(e);
+    if (self == nullptr) {
+        return;
+    }
     lv_event_code_t code = lv_event_get_code(e);
-    lv_obj_t* label = (lv_obj_t*)lv_event_get_user_data(e);
 
     if (code == LV_EVENT_VALUE_CHANGED) {
-        int32_t score = twoeleven_get_score(gameObject);
+        int32_t score = twoeleven_get_score(self->gameObject);
 
-        if (winDialogId == 0 && twoeleven_get_best_tile(gameObject) >= 2048) {
-            int32_t prevHighScore = getHighScore(currentGridSize);
+        if (self->gameOverDialogId == 0 && twoeleven_get_best_tile(self->gameObject) >= 2048) {
+            int32_t prevHighScore = getHighScore(self->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
             // Save high score if it's a new record
             if (isNewHighScore) {
-                saveHighScore(currentGridSize, score);
+                saveHighScore(self->currentGridSize, score);
             }
 
             const char* alertDialogLabels[] = { "OK" };
             char message[100];
             if (isNewHighScore) {
                 snprintf(message, sizeof(message), "NEW HIGH SCORE!\n\nSCORE: %" PRId32, score);
-                winDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
+                self->gameOverDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
             } else {
-                snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(currentGridSize));
-                winDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
+                snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(self->currentGridSize));
+                self->gameOverDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
             }
-        } else if (gameOverDialogId == 0 && twoeleven_get_status(gameObject)) {
-            int32_t prevHighScore = getHighScore(currentGridSize);
+        } else if (self->gameOverDialogId == 0 && twoeleven_get_status(self->gameObject)) {
+            int32_t prevHighScore = getHighScore(self->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
             // Save high score if it's a new record
             if (isNewHighScore) {
-                saveHighScore(currentGridSize, score);
+                saveHighScore(self->currentGridSize, score);
             }
 
             const char* alertDialogLabels[] = { "OK" };
             char message[100];
             if (isNewHighScore && score > 0) {
                 snprintf(message, sizeof(message), "NEW HIGH SCORE!\n\nSCORE: %" PRId32, score);
-                gameOverDialogId = tt_app_alertdialog_start("NEW HIGH SCORE!", message, alertDialogLabels, 1);
+                self->gameOverDialogId = tt_app_alertdialog_start("NEW HIGH SCORE!", message, alertDialogLabels, 1);
             } else {
-                snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(currentGridSize));
-                gameOverDialogId = tt_app_alertdialog_start("GAME OVER!", message, alertDialogLabels, 1);
+                snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(self->currentGridSize));
+                self->gameOverDialogId = tt_app_alertdialog_start("GAME OVER!", message, alertDialogLabels, 1);
             }
         } else {
             // Update score display
-            lv_label_set_text_fmt(label, "SCORE: %" PRIu32, score);
+            lv_label_set_text_fmt(self->scoreLabel, "SCORE: %" PRId32, score);
         }
     }
 }
 
 void TwoEleven::newGameBtnEvent(lv_event_t* e) {
-    lv_obj_t* obj = (lv_obj_t*)lv_event_get_user_data(e);
-    if (obj == nullptr) {
+    TwoEleven* self = (TwoEleven*)lv_event_get_user_data(e);
+    if (self == nullptr) {
         return;
     }
-    twoeleven_set_new_game(obj);
+    twoeleven_set_new_game(self->gameObject);
     // Update score label
-    if (scoreLabel) {
-        lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRIu16, twoeleven_get_score(obj));
+    if (self->scoreLabel) {
+        lv_label_set_text_fmt(self->scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(self->gameObject));
     }
 }
 
@@ -217,15 +198,13 @@ void TwoEleven::createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
 
     // Create score label
     scoreLabel = lv_label_create(scoreWrapper);
-    lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRIu16, twoeleven_get_score(gameObject));
+    lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(gameObject));
     lv_obj_set_style_text_align(scoreLabel, LV_TEXT_ALIGN_LEFT, LV_STATE_DEFAULT);
     lv_obj_align(scoreLabel, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_size(scoreLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(scoreLabel, lv_font_get_default(), 0);
     lv_obj_set_style_text_color(scoreLabel, lv_palette_main(LV_PALETTE_AMBER), LV_PART_MAIN);
-
-    // Register event callback for game state changes
-    lv_obj_add_event_cb(gameObject, twoElevenEventCb, LV_EVENT_VALUE_CHANGED, scoreLabel);
+    lv_obj_add_event_cb(gameObject, twoElevenEventCb, LV_EVENT_VALUE_CHANGED, this);
 
     // Create new game button wrapper
     newGameWrapper = lv_obj_create(tb);
@@ -246,34 +225,14 @@ void TwoEleven::createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
     }
     lv_obj_set_style_pad_all(newGameBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(newGameBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, gameObject);
+    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, this);
 
     lv_obj_t* btnIcon = lv_image_create(newGameBtn);
     lv_image_set_src(btnIcon, LV_SYMBOL_REFRESH);
     lv_obj_align(btnIcon, LV_ALIGN_CENTER, 0, 0);
 }
 
-void TwoEleven::onDestroy(AppHandle appHandle) {
-    // Reset all static state
-    highScoresLoaded = false;
-    scoreLabel = nullptr;
-    scoreWrapper = nullptr;
-    toolbar = nullptr;
-    mainWrapper = nullptr;
-    newGameWrapper = nullptr;
-    gameObject = nullptr;
-    selectionDialogId = 0;
-    gameOverDialogId = 0;
-    winDialogId = 0;
-    helpDialogId = 0;
-    pendingSelection = -1;
-    shouldExit = false;
-    showHelpOnShow = false;
-    currentGridSize = -1;
-}
-
 void TwoEleven::onHide(AppHandle appHandle) {
-    // LVGL objects are destroyed when app is hidden, mark pointers as invalid
     scoreLabel = nullptr;
     scoreWrapper = nullptr;
     toolbar = nullptr;
@@ -290,7 +249,6 @@ void TwoEleven::onShow(AppHandle appHandle, lv_obj_t* parent) {
         return;
     }
 
-    // Always recreate UI when shown (previous objects destroyed on hide)
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
