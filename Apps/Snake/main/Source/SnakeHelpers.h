@@ -26,7 +26,7 @@ extern "C" {
 #define SNAKE_CELL_SMALL     8   // Hard - smaller cells, more cells fit
 
 // Game timing
-#define SNAKE_GAME_SPEED_MS      150  // Initial timer interval in milliseconds
+#define SNAKE_GAME_SPEED_MS      300  // Initial timer interval in milliseconds
 #define SNAKE_MIN_SPEED_MS       60   // Minimum (fastest) timer interval
 #define SNAKE_SPEED_DECREASE_MS  5    // Speed increase per food eaten (ms reduction)
 
