@@ -7,6 +7,6 @@ idf_component_register(
     # Library headers must be included directly,
     # because all regular dependencies get stripped by elf_loader's cmake script
     INCLUDE_DIRS ../../../Libraries/TactilityCpp/Include
-    REQUIRES TactilitySDK
+    REQUIRES TactilitySDK driver
 )
 

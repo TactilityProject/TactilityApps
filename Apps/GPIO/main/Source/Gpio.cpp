@@ -3,18 +3,18 @@
 #include <Tactility/kernel/Kernel.h>
 
 #include <tt_hal.h>
-#include <tt_hal_gpio.h>
 #include <tt_lvgl.h>
 #include <tt_lvgl_toolbar.h>
 
 #include <esp_log.h>
+#include <driver/gpio.h>
 
 constexpr char* TAG = "GPIO";
 
 void Gpio::updatePinStates() {
     // Update pin states
     for (int i = 0; i < pinStates.size(); ++i) {
-        pinStates[i] = tt_hal_gpio_get_level(i);
+        pinStates[i] = gpio_get_level((gpio_num_t)i);
     }
 }
 
@@ -113,11 +113,10 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
 
     mutex.lock();
 
-    auto pin_count = tt_hal_gpio_get_pin_count();
-    pinStates.resize(pin_count);
-    pinWidgets.resize(pin_count);
+    pinStates.resize(GPIO_PIN_COUNT);
+    pinWidgets.resize(GPIO_PIN_COUNT);
 
-    for (int i = 0; i < pin_count; ++i) {
+    for (int i = 0; i < GPIO_PIN_COUNT; ++i) {
         constexpr uint8_t offset_from_left_label = 4;
 
         // Add the GPIO number before the first item on a row
