@@ -37,19 +37,6 @@ void TamaTac::onCreate(AppHandle app) {
     // Seed RNG once so rand() produces different sequences each run
     srand(tt::kernel::getMillis());
 
-    // Initialize SfxEngine
-    if (sfxEngine == nullptr) {
-        sfxEngine = new SfxEngine();
-        sfxEngine->start();
-        sfxEngine->applyVolumePreset(SfxEngine::VolumePreset::Normal);
-
-        // Load settings
-        bool soundEnabled;
-        SettingsView::loadSettings(&soundEnabled, &decaySpeed);
-        sfxEngine->setEnabled(soundEnabled);
-        PetLogic::setDecaySpeed(static_cast<uint8_t>(decaySpeed));
-    }
-
     if (petLogic == nullptr) {
         petLogic = new PetLogic();
 
@@ -62,6 +49,21 @@ void TamaTac::onCreate(AppHandle app) {
 
     if (timerMutex == nullptr) {
         timerMutex = xSemaphoreCreateMutex();
+    }
+}
+
+void TamaTac::onShow(AppHandle context, lv_obj_t* parent) {
+    // Initialize SfxEngine
+    if (sfxEngine == nullptr) {
+        sfxEngine = new SfxEngine();
+        sfxEngine->start();
+        sfxEngine->applyVolumePreset(SfxEngine::VolumePreset::Normal);
+
+        // Load settings
+        bool soundEnabled;
+        SettingsView::loadSettings(&soundEnabled, &decaySpeed);
+        sfxEngine->setEnabled(soundEnabled);
+        PetLogic::setDecaySpeed(static_cast<uint8_t>(decaySpeed));
     }
 
     if (updateTimer == nullptr) {
@@ -77,9 +79,7 @@ void TamaTac::onCreate(AppHandle app) {
             xTimerStart(updateTimer, 0);
         }
     }
-}
 
-void TamaTac::onShow(AppHandle context, lv_obj_t* parent) {
     currentApp = context;
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
@@ -105,6 +105,18 @@ void TamaTac::onShow(AppHandle context, lv_obj_t* parent) {
 }
 
 void TamaTac::onHide(AppHandle context) {
+    if (updateTimer != nullptr) {
+        xTimerStop(updateTimer, portMAX_DELAY);
+        xTimerDelete(updateTimer, portMAX_DELAY);
+        updateTimer = nullptr;
+    }
+
+    if (sfxEngine) {
+        sfxEngine->stop();
+        delete sfxEngine;
+        sfxEngine = nullptr;
+    }
+
     stopActiveView();
 
     wrapperWidget = nullptr;
@@ -113,12 +125,6 @@ void TamaTac::onHide(AppHandle context) {
 }
 
 void TamaTac::onDestroy(AppHandle app) {
-    if (updateTimer != nullptr) {
-        xTimerStop(updateTimer, portMAX_DELAY);
-        xTimerDelete(updateTimer, portMAX_DELAY);
-        updateTimer = nullptr;
-    }
-
     // Acquire mutex to guarantee any in-flight timer callback has completed.
     // The callback holds this mutex for its entire duration, so taking it
     // here blocks until the callback is done — no arbitrary delay needed.
@@ -136,12 +142,6 @@ void TamaTac::onDestroy(AppHandle app) {
         xSemaphoreGive(timerMutex);
         vSemaphoreDelete(timerMutex);
         timerMutex = nullptr;
-    }
-
-    if (sfxEngine) {
-        sfxEngine->stop();
-        delete sfxEngine;
-        sfxEngine = nullptr;
     }
 
     currentApp = nullptr;
