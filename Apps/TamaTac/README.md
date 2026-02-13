@@ -149,6 +149,7 @@ Adapts to all Tactility screen sizes:
 5. **Clean** poop from the toolbar button
 
 ### Evolution Timeline
+
 | Stage | Age |
 |-------|-----|
 | Egg | 0-1 hour |

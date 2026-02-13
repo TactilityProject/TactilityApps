@@ -272,10 +272,10 @@ def generate_spritedata(sprite_dir, frame_width, frame_height, transparent_color
     return "\n".join(lines)
 
 
-def process_file(filepath, name, frame_width, frame_height, transparent_color):
+def process_file(filepath, name, frame_width, frame_height, transparent_color, cols=None):
     """Process a single PNG file and return header content."""
     with Image.open(filepath) as img:
-        frames = convert_sprite(img, frame_width, frame_height, transparent_color)
+        frames = convert_sprite(img, frame_width, frame_height, transparent_color, cols)
     print(f"  {name}: {len(frames)} frame(s) from {os.path.basename(filepath)}")
     return generate_header(name, frames, frame_width, frame_height)
 
@@ -339,7 +339,7 @@ def main():
         for png_file in png_files:
             filepath = os.path.join(args.input, png_file)
             name = os.path.splitext(png_file)[0]
-            content = process_file(filepath, name, args.width, args.height, transparent_color)
+            content = process_file(filepath, name, args.width, args.height, transparent_color, args.cols)
 
             output_path = os.path.join(args.input, f"{name}.h")
             with open(output_path, "w") as f:
@@ -351,7 +351,7 @@ def main():
             sys.exit(1)
 
         name = args.name or os.path.splitext(os.path.basename(args.input))[0]
-        content = process_file(args.input, name, args.width, args.height, transparent_color)
+        content = process_file(args.input, name, args.width, args.height, transparent_color, args.cols)
 
         output_path = args.output or f"{name}.h"
         with open(output_path, "w") as f:

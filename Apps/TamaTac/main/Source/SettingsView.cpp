@@ -111,7 +111,7 @@ void SettingsView::saveSettings(bool soundEnabled, DecaySpeed decaySpeed) {
 
 void SettingsView::onSoundToggled(lv_event_t* e) {
     SettingsView* view = static_cast<SettingsView*>(lv_event_get_user_data(e));
-    if (view == nullptr || view->soundSwitch == nullptr || view->app == nullptr) return;
+    if (view == nullptr || view->soundSwitch == nullptr || view->decayDropdown == nullptr || view->app == nullptr) return;
 
     bool isChecked = lv_obj_has_state(view->soundSwitch, LV_STATE_CHECKED);
 
@@ -124,7 +124,7 @@ void SettingsView::onSoundToggled(lv_event_t* e) {
 
 void SettingsView::onDecayChanged(lv_event_t* e) {
     SettingsView* view = static_cast<SettingsView*>(lv_event_get_user_data(e));
-    if (view == nullptr || view->decayDropdown == nullptr || view->app == nullptr) return;
+    if (view == nullptr || view->decayDropdown == nullptr || view->soundSwitch == nullptr || view->app == nullptr) return;
 
     uint16_t selected = lv_dropdown_get_selected(view->decayDropdown);
 

@@ -30,7 +30,7 @@ enum class LifeStage {
 enum class Personality : uint8_t {
     Energetic = 0,  // -1 energy decay, +1 hunger decay
     Lazy = 1,       // +1 energy decay, -1 happiness decay
-    Glutton = 2,    // +1 hunger decay, -1 cleanliness decay
+    Glutton = 2,    // +1 hunger decay, +1 cleanliness decay
     Cheerful = 3,   // -1 happiness decay, +1 energy decay
     Hardy = 4       // -1 health_neglect decay, +1 hunger decay
 };

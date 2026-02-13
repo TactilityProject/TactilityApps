@@ -54,6 +54,7 @@ void ReactionGame::onStart(lv_obj_t* parent, TamaTac* appInstance) {
     lv_obj_center(tapLabel);
 
     // Initialize game
+    srand(static_cast<unsigned>(tt::kernel::getMillis()));
     round = 0;
     score = 0;
     phase = Phase::WaitForTarget;
