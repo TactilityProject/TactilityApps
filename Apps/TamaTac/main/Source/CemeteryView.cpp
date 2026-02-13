@@ -10,29 +10,6 @@
 
 static constexpr const char* PREF_NS = "TamaTacCem";
 
-static const char* personalityName(Personality p) {
-    switch (p) {
-        case Personality::Energetic: return "Energetic";
-        case Personality::Lazy:      return "Lazy";
-        case Personality::Glutton:   return "Glutton";
-        case Personality::Cheerful:  return "Cheerful";
-        case Personality::Hardy:     return "Hardy";
-        default: return "Unknown";
-    }
-}
-
-static const char* stageName(LifeStage s) {
-    switch (s) {
-        case LifeStage::Egg:   return "Egg";
-        case LifeStage::Baby:  return "Baby";
-        case LifeStage::Teen:  return "Teen";
-        case LifeStage::Adult: return "Adult";
-        case LifeStage::Elder: return "Elder";
-        case LifeStage::Ghost: return "Ghost";
-        default: return "?";
-    }
-}
-
 void CemeteryView::loadRecords(PetRecord records[MAX_RECORDS]) {
     Preferences prefs(PREF_NS);
 
@@ -135,8 +112,8 @@ void CemeteryView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
         int hours = records[i].ageHours % 24;
         snprintf(text, sizeof(text), "#%d  %s  %s  %dd %dh",
                  i + 1,
-                 personalityName(records[i].personality),
-                 stageName(records[i].stageReached),
+                 personalityToString(records[i].personality),
+                 lifeStageToString(records[i].stageReached),
                  days, hours);
 
         lv_obj_t* label = lv_label_create(row);

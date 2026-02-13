@@ -15,7 +15,7 @@ struct PetRecord {
     Personality personality;
     LifeStage stageReached;
     uint16_t ageHours;
-    bool valid;
+    bool valid = false;
 };
 
 class CemeteryView {

@@ -273,26 +273,20 @@ void MainView::updatePetDisplay(PetLogic* petLogic, LifeStage& lastKnownStage) {
 
     const PetStats& stats = petLogic->getStats();
 
-    // Check for evolution
+    // Check for evolution (Ghost is death, not evolution)
     if (stats.stage != lastKnownStage && statusLabel != nullptr) {
         lastKnownStage = stats.stage;
 
-        const char* stageName = "Pet";
-        switch (stats.stage) {
-            case LifeStage::Egg: stageName = "Egg"; break;
-            case LifeStage::Baby: stageName = "Baby"; break;
-            case LifeStage::Teen: stageName = "Teen"; break;
-            case LifeStage::Adult: stageName = "Adult"; break;
-            case LifeStage::Elder: stageName = "Elder"; break;
-            case LifeStage::Ghost: stageName = "Ghost"; break;
+        if (stats.stage == LifeStage::Ghost) {
+            lv_label_set_text(statusLabel, LV_SYMBOL_WARNING " Your pet has died...");
+        } else {
+            char msg[64];
+            snprintf(msg, sizeof(msg), LV_SYMBOL_UP " Evolved to %s!", lifeStageToString(stats.stage));
+            lv_label_set_text(statusLabel, msg);
+
+            // Trigger evolution flash effect (400ms white flash)
+            evolutionFlashUntil = tt::kernel::getMillis() + 400;
         }
-
-        char msg[64];
-        snprintf(msg, sizeof(msg), LV_SYMBOL_UP " Evolved to %s!", stageName);
-        lv_label_set_text(statusLabel, msg);
-
-        // Trigger evolution flash effect (400ms white flash)
-        evolutionFlashUntil = tt::kernel::getMillis() + 400;
     }
 
     // Update day/night visual
@@ -309,7 +303,7 @@ void MainView::updatePetDisplay(PetLogic* petLogic, LifeStage& lastKnownStage) {
         currentSpriteId = newSprite;
         animStartTime = tt::kernel::getMillis();
     }
-    drawSprite(currentSpriteId);
+    drawSprite(currentSpriteId, &stats);
 
     // Update poop display
     for (int i = 0; i < 3; i++) {
@@ -375,7 +369,7 @@ SpriteId MainView::getSpriteForCurrentState(const PetStats& stats) const {
     return SPRITE_EGG_IDLE;
 }
 
-void MainView::drawSprite(SpriteId spriteId) {
+void MainView::drawSprite(SpriteId spriteId, const PetStats* stats) {
     if (petCanvas == nullptr) return;
 
     uint32_t now = tt::kernel::getMillis();
@@ -447,10 +441,10 @@ void MainView::drawSprite(SpriteId spriteId) {
     }
 
     // Draw overlays (Z's, mood indicator)
-    drawOverlays(spriteId);
+    drawOverlays(spriteId, stats);
 }
 
-void MainView::drawOverlays(SpriteId spriteId) {
+void MainView::drawOverlays(SpriteId spriteId, const PetStats* stats) {
     if (petCanvas == nullptr) return;
 
     int canvasSize = SPRITE_WIDTH * spriteScale;
@@ -491,17 +485,15 @@ void MainView::drawOverlays(SpriteId spriteId) {
     }
 
     // Mood indicator: small colored dot in bottom-right corner
-    PetLogic* petLogic = TamaTac::petLogic;
-    if (petLogic != nullptr && !petLogic->isDead()) {
-        const PetStats& stats = petLogic->getStats();
+    if (stats != nullptr && !stats->isDead) {
         lv_color_t moodColor;
         bool showMood = true;
 
-        if (stats.isSick) {
+        if (stats->isSick) {
             moodColor = lv_color_hex(0xFF0000);  // Red for sick
-        } else if (stats.hunger < 30 || stats.happiness < 30 || stats.energy < 30) {
+        } else if (stats->hunger < 30 || stats->happiness < 30 || stats->energy < 30) {
             moodColor = lv_color_hex(0xFF8800);  // Orange for warning
-        } else if (stats.hunger >= 70 && stats.happiness >= 70 && stats.health >= 70 && stats.energy >= 70) {
+        } else if (stats->hunger >= 70 && stats->happiness >= 70 && stats->health >= 70 && stats->energy >= 70) {
             moodColor = lv_color_hex(0x00FF00);  // Green for happy
         } else {
             showMood = false;  // Neutral — no indicator
@@ -568,7 +560,8 @@ void MainView::onAnimTimer(lv_timer_t* timer) {
         return;
     }
 
-    view->drawSprite(view->currentSpriteId);
+    const PetStats* stats = TamaTac::petLogic ? &TamaTac::petLogic->getStats() : nullptr;
+    view->drawSprite(view->currentSpriteId, stats);
 }
 
 void MainView::onRefreshTimer(lv_timer_t* timer) {

@@ -120,6 +120,30 @@ struct PetStats {
     {}
 };
 
+// Enum-to-string helpers (shared across views)
+inline const char* lifeStageToString(LifeStage stage) {
+    switch (stage) {
+        case LifeStage::Egg:   return "Egg";
+        case LifeStage::Baby:  return "Baby";
+        case LifeStage::Teen:  return "Teen";
+        case LifeStage::Adult: return "Adult";
+        case LifeStage::Elder: return "Elder";
+        case LifeStage::Ghost: return "Ghost";
+        default:               return "Unknown";
+    }
+}
+
+inline const char* personalityToString(Personality p) {
+    switch (p) {
+        case Personality::Energetic: return "Energetic";
+        case Personality::Lazy:      return "Lazy";
+        case Personality::Glutton:   return "Glutton";
+        case Personality::Cheerful:  return "Cheerful";
+        case Personality::Hardy:     return "Hardy";
+        default:                     return "Unknown";
+    }
+}
+
 // Stat thresholds
 namespace PetThresholds {
     constexpr uint8_t STAT_MAX = 100;
@@ -159,5 +183,5 @@ namespace ActionEffects {
     constexpr uint8_t SLEEP_HAPPINESS_LOSS = 10; // Boring to sleep
     constexpr uint32_t SLEEP_DURATION_MS = 5000; // 5 seconds sleep animation
 
-    static constexpr int PET_HAPPINESS_GAIN = 5;
+    constexpr uint8_t PET_HAPPINESS_GAIN = 5;
 }

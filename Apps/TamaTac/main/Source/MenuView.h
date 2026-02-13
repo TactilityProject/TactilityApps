@@ -27,6 +27,8 @@ public:
     void onStart(lv_obj_t* parentWidget, TamaTac* appInstance);
     void onStop();
 
+    lv_obj_t* addStyledListBtn(const char* icon, const char* text, lv_event_cb_t cb);
+
 private:
     // Static event handlers
     static void onStatsClicked(lv_event_t* e);

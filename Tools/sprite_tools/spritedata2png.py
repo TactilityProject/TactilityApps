@@ -62,11 +62,11 @@ def parse_sprite_arrays(header_text):
     )
 
     arrays = OrderedDict()
+    hex_pattern = re.compile(r'0x([0-9A-Fa-f]+)')
     for match in pattern.finditer(header_text):
         name = match.group(1)
         data_str = match.group(2)
 
-        hex_pattern = re.compile(r'0x([0-9A-Fa-f]+)')
         values = [int(h.group(1), 16) for h in hex_pattern.finditer(data_str)]
         arrays[name] = values
 

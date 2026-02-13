@@ -28,11 +28,6 @@ public:
     // Action handlers
     void performAction(PetAction action);
 
-    // State checks
-    void checkHealth();
-    void checkEvolution();
-    void applyStatDecay(uint32_t elapsedSeconds);
-
     // Getters
     const PetStats& getStats() const { return stats; }
     uint8_t getHunger() const { return stats.hunger; }
@@ -61,6 +56,11 @@ public:
     void reset();
 
 private:
+    // State checks (called internally during update)
+    void checkHealth();
+    void checkEvolution();
+    void applyStatDecay(uint32_t elapsedSeconds);
+
     // Action implementations
     void feed();
     void play();

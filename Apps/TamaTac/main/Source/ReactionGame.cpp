@@ -102,6 +102,9 @@ void ReactionGame::showTarget() {
 
     SfxEngine* se = TamaTac::getSfxEngine();
     if (se) se->play(SfxId::Blip);
+
+    // Timeout if player doesn't tap within 3 seconds
+    scheduleTimer(3000);
 }
 
 void ReactionGame::handleTap() {
@@ -179,6 +182,14 @@ void ReactionGame::onTimerTick(lv_timer_t* timer) {
         case Phase::WaitForTarget:
             self->showTarget();
             break;
+        case Phase::TargetShown:
+            // Timeout — player didn't tap in time
+            if (self->targetBtn) lv_obj_add_flag(self->targetBtn, LV_OBJ_FLAG_HIDDEN);
+            if (self->statusLabel) lv_label_set_text(self->statusLabel, "Too slow!");
+            self->round++;
+            self->phase = Phase::RoundResult;
+            self->scheduleTimer(1500);
+            break;
         case Phase::RoundResult:
             if (self->round >= MAX_ROUNDS) {
                 self->showFinalResult();
@@ -188,9 +199,6 @@ void ReactionGame::onTimerTick(lv_timer_t* timer) {
             break;
         case Phase::Done:
             self->returnToMain();
-            break;
-        case Phase::TargetShown:
-        case Phase::FinalResult:
             break;
     }
 }

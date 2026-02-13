@@ -133,7 +133,7 @@ def make_egg():
     for bounce in [0, 1]:
         g = make_oval(24, 24, 12, 12, 8, 10, CREAM, LBROWN)
         # Crack pattern
-        for i, (x, y) in enumerate([(10, 5), (11, 6), (12, 5), (13, 6), (14, 5)]):
+        for x, y in [(10, 5), (11, 6), (12, 5), (13, 6), (14, 5)]:
             g[y + bounce][x] = BROWN
         # Spots
         g[10 + bounce][8] = LBROWN
@@ -351,7 +351,8 @@ def make_sleeping():
         zy = 5 - phase
         if 0 <= zx < 24 and 0 <= zy < 24:
             g[zy][zx] = WHITE
-            g[zy][zx + 1] = WHITE if zx + 1 < 24 else WHITE
+            if zx + 1 < 24:
+                g[zy][zx + 1] = WHITE
         if 0 <= zy + 1 < 24:
             g[zy + 1][zx] = WHITE
         # Smaller Z

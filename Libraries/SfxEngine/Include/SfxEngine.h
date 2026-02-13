@@ -10,7 +10,7 @@
  *   - Waveforms: Square, Pulse (25%/12.5%/75%), Triangle, Sawtooth, Sine, Noise, RetroNoise
  *   - ADSR envelope + special types (Punch, Flare, Swell, Twang, Decay)
  *   - Effects: Vibrato, Pitch Sweep
- *   - 44 curated predefined sound effects
+ *   - 52 curated predefined sound effects
  *   - Queue-based triggering (thread-safe)
  *   - Persistent audio task
  *
@@ -29,6 +29,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 //==============================================================================
 // Configuration
@@ -140,6 +141,8 @@ public:
 
     SfxEngine(const SfxEngine&) = delete;
     SfxEngine& operator=(const SfxEngine&) = delete;
+    SfxEngine(SfxEngine&&) = delete;
+    SfxEngine& operator=(SfxEngine&&) = delete;
 
     // Lifecycle
     bool start();
@@ -276,6 +279,7 @@ private:
 
     Device* i2sDevice_ = nullptr;
     TaskHandle_t task_ = nullptr;
+    SemaphoreHandle_t stopSemaphore_ = nullptr;  // Signaled when audio task exits
     QueueHandle_t msgQueue_ = nullptr;
 
     volatile bool running_ = false;
@@ -291,16 +295,25 @@ private:
     volatile float targetRms_ = 0.35f;
     volatile float rmsSmoothing_ = 0.999f;
 
+    // Noise generator state (per-instance, audio task only)
+    uint16_t lfsr_ = 0xACE1;
+    uint16_t retroLfsr_ = 0xACE1;
+
     // Auto-normalization working state (audio task only)
     float currentRms_ = 0.0f;
     int rmsCalcCounter_ = 0;
     float cachedNormGain_ = 1.0f;
+
+    // Audio buffer (member to avoid stack pressure in audio task)
+    int16_t audioBuffer_[BUFFER_SAMPLES * 2] = {};
 
     //--------------------------------------------------------------------------
     // Audio Generation
     //--------------------------------------------------------------------------
 
     static float midiToFreq(uint8_t midi);
+    float generateNoise();
+    float generateRetroNoise();
     float oscillator(SfxWaveType wave, float phase);
     void updateEnvelope(Voice& v);
     float generateVoiceSample(Voice& v);

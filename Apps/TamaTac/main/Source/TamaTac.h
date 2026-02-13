@@ -7,7 +7,7 @@
 #include <TactilityCpp/App.h>
 #include <tt_app.h>
 #include <lvgl.h>
-#include <freertos/freertos.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "PetLogic.h"
 #include "Sprites.h"
@@ -57,7 +57,7 @@ private:
     AchievementsView achievementsView;
     ViewType activeView = ViewType::None;
 
-    // Static data (persists across hide/show)
+    // Static data (singleton — only one TamaTac instance exists at a time)
     static PetLogic* petLogic;
     static TimerHandle_t updateTimer;
     static SemaphoreHandle_t timerMutex;

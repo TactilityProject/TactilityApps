@@ -27,7 +27,7 @@ static const AchievementInfo achievementInfos[] = {
 
 const AchievementInfo& AchievementsView::getInfo(AchievementId id) {
     int idx = static_cast<int>(id);
-    if (idx >= static_cast<int>(AchievementId::COUNT)) {
+    if (idx < 0 || idx >= static_cast<int>(AchievementId::COUNT)) {
         idx = 0;
     }
     return achievementInfos[idx];
@@ -76,7 +76,7 @@ void AchievementsView::incrementCleanCount() {
     Preferences prefs(PREF_NS);
     int32_t count = prefs.getInt32("cleanCnt", 0) + 1;
     prefs.putInt32("cleanCnt", count);
-    if (count == 10) {
+    if (count >= 10) {
         unlock(AchievementId::CleanFreak);
     }
 }

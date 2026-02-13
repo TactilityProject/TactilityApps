@@ -171,7 +171,7 @@ python tactility.py bir <device-ip>
 
 ## Project Structure
 
-```
+```text
 TamaTac/
   CMakeLists.txt
   manifest.properties
@@ -216,7 +216,7 @@ TamaTac uses a multi-view pattern with a shared `wrapperWidget`. Views are swapp
 |-----------|------|
 | `"TamaTac"` | `hunger`, `happiness`, `health`, `energy`, `cleanliness`, `poopCount`, `ageSeconds`, `ageHours`, `lifespan`, `isSick`, `isAsleep`, `isDead`, `stage`, `currentAnim`, `lastSaveTime`, `personality` |
 | `"TamaTacCfg"` | `soundEnabled`, `decaySpeed` |
-| `"TamaTacCem"` | `count`, `pers_0..4`, `stage_0..4`, `age_0..4`, `valid_0..4` |
+| `"TamaTacCem"` | `count`, `pers0..4`, `stage0..4`, `age0..4`, `valid0..4` |
 | `"TamaTacAch"` | `bits` (uint16 bitfield), `cleanCnt` |
 
 ## Screenshots

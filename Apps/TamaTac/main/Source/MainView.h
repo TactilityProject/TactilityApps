@@ -59,8 +59,8 @@ public:
     void setStatusText(const char* text);
 
 private:
-    void drawSprite(SpriteId spriteId);
-    void drawOverlays(SpriteId spriteId);
+    void drawSprite(SpriteId spriteId, const PetStats* stats = nullptr);
+    void drawOverlays(SpriteId spriteId, const PetStats* stats);
     void drawIcon(lv_obj_t* canvas, IconId iconId);
     void drawIconWithBg(lv_obj_t* canvas, IconId iconId, lv_color_t bgColor, lv_color_t fgColor);
     SpriteId getSpriteForCurrentState(const PetStats& stats) const;

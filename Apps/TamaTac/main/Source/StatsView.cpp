@@ -107,24 +107,13 @@ void StatsView::updateStats(PetLogic* petLogic) {
     const PetStats& stats = petLogic->getStats();
 
     // Update title with stage and age
-    const char* stageName = "Unknown";
-    switch (stats.stage) {
-        case LifeStage::Egg: stageName = "Egg"; break;
-        case LifeStage::Baby: stageName = "Baby"; break;
-        case LifeStage::Teen: stageName = "Teen"; break;
-        case LifeStage::Adult: stageName = "Adult"; break;
-        case LifeStage::Elder: stageName = "Elder"; break;
-        case LifeStage::Ghost: stageName = "Ghost"; break;
-        default: break; // stageName remains "Unknown"
-    }
-
     int hours = stats.ageHours;
     int days = hours / 24;
     hours = hours % 24;
 
     // Update title (stage and age)
     char titleText[64];
-    snprintf(titleText, sizeof(titleText), "%s | %dd %dh", stageName, days, hours);
+    snprintf(titleText, sizeof(titleText), "%s | %dd %dh", lifeStageToString(stats.stage), days, hours);
     lv_label_set_text(titleLabel, titleText);
 
     // Update status label (right-aligned)
@@ -136,11 +125,7 @@ void StatsView::updateStats(PetLogic* petLogic) {
 
     // Update personality
     if (personalityValue) {
-        const char* personalityNames[] = {"Energetic", "Lazy", "Glutton", "Cheerful", "Hardy"};
-        int idx = static_cast<int>(stats.personality);
-        if (idx >= 0 && idx < 5) {
-            lv_label_set_text(personalityValue, personalityNames[idx]);
-        }
+        lv_label_set_text(personalityValue, personalityToString(stats.personality));
     }
 
     // Update individual stat values

@@ -274,8 +274,8 @@ def generate_spritedata(sprite_dir, frame_width, frame_height, transparent_color
 
 def process_file(filepath, name, frame_width, frame_height, transparent_color):
     """Process a single PNG file and return header content."""
-    img = Image.open(filepath)
-    frames = convert_sprite(img, frame_width, frame_height, transparent_color)
+    with Image.open(filepath) as img:
+        frames = convert_sprite(img, frame_width, frame_height, transparent_color)
     print(f"  {name}: {len(frames)} frame(s) from {os.path.basename(filepath)}")
     return generate_header(name, frames, frame_width, frame_height)
 

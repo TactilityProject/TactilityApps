@@ -23,7 +23,6 @@ private:
     // UI elements
     lv_obj_t* mainWrapper = nullptr;
     lv_obj_t* soundSwitch = nullptr;
-    lv_obj_t* musicSwitch = nullptr;
     lv_obj_t* decayDropdown = nullptr;
 
 public:
@@ -45,6 +44,5 @@ private:
 
     // Static event handlers
     static void onSoundToggled(lv_event_t* e);
-    static void onMusicToggled(lv_event_t* e);
     static void onDecayChanged(lv_event_t* e);
 };

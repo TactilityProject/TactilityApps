@@ -6,7 +6,6 @@
 
 #include <lvgl.h>
 #include <cstdint>
-#include "PetStats.h"
 
 class TamaTac;
 
@@ -39,6 +38,11 @@ private:
     lv_obj_t* mainWrapper = nullptr;
 
 public:
+    AchievementsView() = default;
+    ~AchievementsView() = default;
+    AchievementsView(const AchievementsView&) = delete;
+    AchievementsView& operator=(const AchievementsView&) = delete;
+
     void onStart(lv_obj_t* parentWidget, TamaTac* appInstance);
     void onStop();
 

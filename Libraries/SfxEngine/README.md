@@ -100,11 +100,11 @@ idf_component_register(
 
 ## File Structure
 
-```
+```text
 Libraries/SfxEngine/
   Include/
     SfxEngine.h        # Core engine header
-    SfxDefinitions.h   # 44 curated SFX definitions
+    SfxDefinitions.h   # 52 curated SFX definitions
   Source/
     SfxEngine.cpp      # Implementation
   LICENSE.md           # GPL v3

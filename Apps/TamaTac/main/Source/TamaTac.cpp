@@ -152,12 +152,16 @@ void TamaTac::onResult(AppHandle app, void* data, AppLaunchId launchId, AppResul
         int32_t buttonIndex = tt_app_alertdialog_get_result_index(resultData);
         if (buttonIndex == 0) {
             // User clicked "Reset" (first button)
+            if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
             if (petLogic) {
                 petLogic->reset();
                 petLogic->saveState();
                 lastKnownStage = LifeStage::Egg;
                 pendingResetUI = true;  // Defer UI update to LVGL task
             }
+
+            if (timerMutex) xSemaphoreGive(timerMutex);
         }
         resetDialogId = 0;
     }
@@ -268,6 +272,8 @@ void TamaTac::setDecaySpeed(DecaySpeed speed) {
 //==============================================================================================
 
 void TamaTac::handleFeedAction() {
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
     if (petLogic) {
         petLogic->performAction(PetAction::Feed);
         petLogic->saveState();
@@ -281,12 +287,21 @@ void TamaTac::handleFeedAction() {
         snprintf(msg, sizeof(msg), "Fed! Hunger: %d%%", petLogic->getHunger());
         mainView.setStatusText(msg);
     }
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
 }
 
 void TamaTac::handlePlayAction() {
-    if (petLogic && !petLogic->isDead()) {
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
+    bool canPlay = petLogic && !petLogic->isDead();
+    DayPhase phase = canPlay ? petLogic->getDayPhase() : DayPhase::Day;
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
+
+    if (canPlay) {
         AchievementsView::unlock(AchievementId::FirstPlay);
-        if (petLogic->getDayPhase() == DayPhase::Night) {
+        if (phase == DayPhase::Night) {
             AchievementsView::unlock(AchievementId::NightOwl);
         }
         if (rand() % 2 == 0) {
@@ -298,16 +313,28 @@ void TamaTac::handlePlayAction() {
 }
 
 void TamaTac::handlePetTap() {
-    if (!petLogic || petLogic->isDead() || activeView != ViewType::Main) return;
+    if (activeView != ViewType::Main) return;
+
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
+    if (!petLogic || petLogic->isDead()) {
+        if (timerMutex) xSemaphoreGive(timerMutex);
+        return;
+    }
 
     // 3-second cooldown between pets
     uint32_t now = tt::kernel::getMillis();
-    if (now - lastPetTime < 3000) return;
+    if (now - lastPetTime < 3000) {
+        if (timerMutex) xSemaphoreGive(timerMutex);
+        return;
+    }
     lastPetTime = now;
 
     petLogic->performAction(PetAction::Pet);
     petLogic->saveState();
     mainView.updateUI(petLogic, lastKnownStage);
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
 
     if (sfxEngine) sfxEngine->play(SfxId::Chirp);
 }
@@ -325,31 +352,42 @@ void TamaTac::showReactionGame() {
 }
 
 void TamaTac::onReactionGameComplete(int score, bool won) {
-    if (petLogic) {
-        petLogic->applyPlayResult(score, ReactionGame::MAX_ROUNDS);
-        petLogic->saveState();
-        if (won) AchievementsView::unlock(AchievementId::PerfectGame);
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
 
-        if (sfxEngine) sfxEngine->play(SfxId::Play);
+    if (petLogic) {
+        int clampedScore = std::max(0, std::min(score, ReactionGame::MAX_ROUNDS));
+        petLogic->applyPlayResult(clampedScore, ReactionGame::MAX_ROUNDS);
+        petLogic->saveState();
     }
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
+
+    if (won) AchievementsView::unlock(AchievementId::PerfectGame);
+    if (sfxEngine) sfxEngine->play(SfxId::Play);
 
     showMainView();
 }
 
 void TamaTac::onPatternGameComplete(int score, bool won) {
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
     if (petLogic) {
         int clampedScore = std::max(0, std::min(score, PatternGame::MAX_ROUNDS));
         petLogic->applyPlayResult(clampedScore, PatternGame::MAX_ROUNDS);
         petLogic->saveState();
-        if (won) AchievementsView::unlock(AchievementId::PerfectGame);
-
-        if (sfxEngine) sfxEngine->play(SfxId::Play);
     }
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
+
+    if (won) AchievementsView::unlock(AchievementId::PerfectGame);
+    if (sfxEngine) sfxEngine->play(SfxId::Play);
 
     showMainView();
 }
 
 void TamaTac::handleMedicineAction() {
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
     if (petLogic) {
         bool wasSick = petLogic->isSick();
         petLogic->performAction(PetAction::Medicine);
@@ -365,9 +403,13 @@ void TamaTac::handleMedicineAction() {
             mainView.setStatusText("Medicine given");
         }
     }
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
 }
 
 void TamaTac::handleSleepAction() {
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
     if (petLogic) {
         petLogic->performAction(PetAction::Sleep);
         petLogic->saveState();
@@ -379,6 +421,8 @@ void TamaTac::handleSleepAction() {
         snprintf(msg, sizeof(msg), "Sleeping... Energy: %d%%", petLogic->getEnergy());
         mainView.setStatusText(msg);
     }
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
 }
 
 //==============================================================================================
@@ -440,6 +484,8 @@ void TamaTac::onCleanClicked(lv_event_t* e) {
     TamaTac* app = static_cast<TamaTac*>(lv_event_get_user_data(e));
     if (app == nullptr) return;
 
+    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+
     if (petLogic && app->activeView == ViewType::Main) {
         int poopCount = petLogic->getStats().poopCount;
         if (poopCount > 0) {
@@ -455,6 +501,8 @@ void TamaTac::onCleanClicked(lv_event_t* e) {
             app->mainView.setStatusText("Nothing to clean!");
         }
     }
+
+    if (timerMutex) xSemaphoreGive(timerMutex);
 }
 
 void TamaTac::onMenuClicked(lv_event_t* e) {
@@ -468,7 +516,7 @@ void TamaTac::onMenuClicked(lv_event_t* e) {
     }
 }
 
-void TamaTac::onResetClicked(lv_event_t* e) {
+void TamaTac::onResetClicked([[maybe_unused]] lv_event_t* e) {
     const char* buttons[] = {"Reset", "Cancel"};
     resetDialogId = tt_app_alertdialog_start(
         "Reset Pet?",

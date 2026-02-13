@@ -553,33 +553,35 @@ inline void SfxEngine::loadSound(SfxId sound) {
 
         // ── Jingles ──────────────────────────────────────────────────────────
 
+        // Rising arpeggio (C4-E4-G4-C5-E5-G5-C6) with sustained bass (C3)
         case SfxId::LevelUp:
         {
             int i = 0;
-            ADD_SFX_NOTE(sequence_, i, {0, 60, 100, 0, SfxWaveType::Square, 0.28f});
-            ADD_SFX_NOTE(sequence_, i, {1, 48, 800, 0, SfxWaveType::Triangle, 0.16f});
-            ADD_SFX_NOTE(sequence_, i, {0, 64, 100, 80, SfxWaveType::Square, 0.28f});
-            ADD_SFX_NOTE(sequence_, i, {0, 67, 100, 80, SfxWaveType::Square, 0.28f});
-            ADD_SFX_NOTE(sequence_, i, {0, 72, 150, 80, SfxWaveType::Square, 0.32f});
-            ADD_SFX_NOTE(sequence_, i, {0, 76, 100, 130, SfxWaveType::Square, 0.32f});
-            ADD_SFX_NOTE(sequence_, i, {0, 79, 100, 80, SfxWaveType::Square, 0.32f});
-            ADD_SFX_NOTE(sequence_, i, {0, 84, 300, 80, SfxWaveType::Square, 0.40f});
+            ADD_SFX_NOTE(sequence_, i, {0, 60, 100, 0, SfxWaveType::Square, 0.28f});     // C4
+            ADD_SFX_NOTE(sequence_, i, {1, 48, 800, 0, SfxWaveType::Triangle, 0.16f});    // C3 bass pad
+            ADD_SFX_NOTE(sequence_, i, {0, 64, 100, 80, SfxWaveType::Square, 0.28f});     // E4
+            ADD_SFX_NOTE(sequence_, i, {0, 67, 100, 80, SfxWaveType::Square, 0.28f});     // G4
+            ADD_SFX_NOTE(sequence_, i, {0, 72, 150, 80, SfxWaveType::Square, 0.32f});     // C5
+            ADD_SFX_NOTE(sequence_, i, {0, 76, 100, 130, SfxWaveType::Square, 0.32f});    // E5
+            ADD_SFX_NOTE(sequence_, i, {0, 79, 100, 80, SfxWaveType::Square, 0.32f});     // G5
+            ADD_SFX_NOTE(sequence_, i, {0, 84, 300, 80, SfxWaveType::Square, 0.40f});     // C6 (hold)
             sequenceLength_ = i;
         }
         break;
 
+        // Descending chromatic line (C5-B4-A4-G4-F4-E4-C4) with bass drone
         case SfxId::GameOver:
         {
             int i = 0;
-            ADD_SFX_NOTE(sequence_, i, {0, 72, 200, 0, SfxWaveType::Square, 0.30f});
-            ADD_SFX_NOTE(sequence_, i, {1, 60, 800, 0, SfxWaveType::Triangle, 0.15f});
-            ADD_SFX_NOTE(sequence_, i, {0, 71, 200, 180, SfxWaveType::Square, 0.28f});
-            ADD_SFX_NOTE(sequence_, i, {0, 69, 200, 180, SfxWaveType::Square, 0.27f});
-            ADD_SFX_NOTE(sequence_, i, {0, 67, 200, 180, SfxWaveType::Square, 0.25f});
-            ADD_SFX_NOTE(sequence_, i, {1, 55, 600, 0, SfxWaveType::Triangle, 0.15f});
-            ADD_SFX_NOTE(sequence_, i, {0, 65, 250, 180, SfxWaveType::Square, 0.24f});
-            ADD_SFX_NOTE(sequence_, i, {0, 64, 400, 230, SfxWaveType::Square, 0.22f});
-            ADD_SFX_NOTE(sequence_, i, {0, 60, 600, 380, SfxWaveType::Square, 0.18f});
+            ADD_SFX_NOTE(sequence_, i, {0, 72, 200, 0, SfxWaveType::Square, 0.30f});     // C5
+            ADD_SFX_NOTE(sequence_, i, {1, 60, 800, 0, SfxWaveType::Triangle, 0.15f});    // C4 bass drone
+            ADD_SFX_NOTE(sequence_, i, {0, 71, 200, 180, SfxWaveType::Square, 0.28f});    // B4
+            ADD_SFX_NOTE(sequence_, i, {0, 69, 200, 180, SfxWaveType::Square, 0.27f});    // A4
+            ADD_SFX_NOTE(sequence_, i, {0, 67, 200, 180, SfxWaveType::Square, 0.25f});    // G4
+            ADD_SFX_NOTE(sequence_, i, {1, 55, 600, 0, SfxWaveType::Triangle, 0.15f});    // G3 bass shift
+            ADD_SFX_NOTE(sequence_, i, {0, 65, 250, 180, SfxWaveType::Square, 0.24f});    // F4
+            ADD_SFX_NOTE(sequence_, i, {0, 64, 400, 230, SfxWaveType::Square, 0.22f});    // E4
+            ADD_SFX_NOTE(sequence_, i, {0, 60, 600, 380, SfxWaveType::Square, 0.18f});    // C4 (hold)
             sequenceLength_ = i;
         }
         break;

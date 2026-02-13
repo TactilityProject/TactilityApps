@@ -22,19 +22,16 @@
 // Noise Generators
 //==============================================================================
 
-static uint16_t s_lfsr = 0xACE1;
-static uint16_t s_retro_lfsr = 0xACE1;
-
-static float generateNoise() {
-    uint16_t bit = ((s_lfsr >> 0) ^ (s_lfsr >> 2) ^ (s_lfsr >> 3) ^ (s_lfsr >> 5)) & 1;
-    s_lfsr = (s_lfsr >> 1) | (bit << 15);
-    return (s_lfsr & 1) ? 1.0f : -1.0f;
+float SfxEngine::generateNoise() {
+    uint16_t bit = ((lfsr_ >> 0) ^ (lfsr_ >> 2) ^ (lfsr_ >> 3) ^ (lfsr_ >> 5)) & 1;
+    lfsr_ = (lfsr_ >> 1) | (bit << 15);
+    return (lfsr_ & 1) ? 1.0f : -1.0f;
 }
 
-static float generateRetroNoise() {
-    uint16_t bit = ((s_retro_lfsr >> 0) ^ (s_retro_lfsr >> 1)) & 1;
-    s_retro_lfsr = (s_retro_lfsr >> 1) | (bit << 14);
-    return (s_retro_lfsr & 1) ? 1.0f : -1.0f;
+float SfxEngine::generateRetroNoise() {
+    uint16_t bit = ((retroLfsr_ >> 0) ^ (retroLfsr_ >> 1)) & 1;
+    retroLfsr_ = (retroLfsr_ >> 1) | (bit << 14);
+    return (retroLfsr_ & 1) ? 1.0f : -1.0f;
 }
 
 //==============================================================================
@@ -424,7 +421,6 @@ void SfxEngine::processSequence() {
 void SfxEngine::audioTaskFunc(void* param) {
     auto* self = static_cast<SfxEngine*>(param);
 
-    int16_t buffer[BUFFER_SAMPLES * 2];
     size_t written;
     QueueMsg msg;
 
@@ -464,11 +460,12 @@ void SfxEngine::audioTaskFunc(void* param) {
             }
         }
 
-        // Fill audio buffer
-        self->fillStereoBuffer(buffer, BUFFER_SAMPLES);
+        // Fill audio buffer (member buffer to avoid stack pressure)
+        self->fillStereoBuffer(self->audioBuffer_, BUFFER_SAMPLES);
 
         // Write to I2S
-        error_t error = i2s_controller_write(self->i2sDevice_, buffer, sizeof(buffer), &written, pdMS_TO_TICKS(100));
+        error_t error = i2s_controller_write(self->i2sDevice_, self->audioBuffer_,
+                                              sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(100));
         if (error != ERROR_NONE) {
             ESP_LOGE(TAG, "I2S write error");
             self->running_ = false;
@@ -477,10 +474,16 @@ void SfxEngine::audioTaskFunc(void* param) {
     }
 
     // Flush silence
-    memset(buffer, 0, sizeof(buffer));
-    i2s_controller_write(self->i2sDevice_, buffer, sizeof(buffer), &written, pdMS_TO_TICKS(50));
+    memset(self->audioBuffer_, 0, sizeof(self->audioBuffer_));
+    i2s_controller_write(self->i2sDevice_, self->audioBuffer_, sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(50));
 
     ESP_LOGI(TAG, "Audio task exiting");
+
+    // Signal stop() that we're done
+    if (self->stopSemaphore_ != nullptr) {
+        xSemaphoreGive(self->stopSemaphore_);
+    }
+
     vTaskDelete(NULL);
 }
 
@@ -550,11 +553,21 @@ bool SfxEngine::start() {
 void SfxEngine::stop() {
     if (!running_) return;
 
+    // Create semaphore for deterministic shutdown
+    stopSemaphore_ = xSemaphoreCreateBinary();
     running_ = false;
 
     if (task_ != nullptr) {
-        vTaskDelay(pdMS_TO_TICKS(300));
+        // Wait for audio task to signal completion (up to 500ms)
+        if (stopSemaphore_ != nullptr) {
+            xSemaphoreTake(stopSemaphore_, pdMS_TO_TICKS(500));
+        }
         task_ = nullptr;
+    }
+
+    if (stopSemaphore_ != nullptr) {
+        vSemaphoreDelete(stopSemaphore_);
+        stopSemaphore_ = nullptr;
     }
 
     if (msgQueue_ != nullptr) {

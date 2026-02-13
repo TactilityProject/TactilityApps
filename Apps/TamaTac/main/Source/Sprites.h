@@ -82,7 +82,9 @@ struct Icon {
 extern const AnimatedSprite animatedSprites[PET_SPRITE_COUNT];
 
 inline const AnimatedSprite& getAnimSprite(SpriteId id) {
-    return animatedSprites[id];
+    int idx = static_cast<int>(id);
+    if (idx < 0 || idx >= PET_SPRITE_COUNT) idx = 0;
+    return animatedSprites[idx];
 }
 
 // ── Icon Data (8x8 monochrome, defined inline) ──────────────────────────────
@@ -136,5 +138,7 @@ inline const Icon icons[ICON_COUNT] = {
 };
 
 inline const Icon& getIcon(IconId id) {
-    return icons[id];
+    int idx = static_cast<int>(id);
+    if (idx < 0 || idx >= ICON_COUNT) idx = 0;
+    return icons[idx];
 }

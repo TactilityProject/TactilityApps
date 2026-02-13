@@ -86,7 +86,6 @@ void SettingsView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
 void SettingsView::onStop() {
     mainWrapper = nullptr;
     soundSwitch = nullptr;
-    musicSwitch = nullptr;
     decayDropdown = nullptr;
     parent = nullptr;
     app = nullptr;
@@ -118,9 +117,8 @@ void SettingsView::onSoundToggled(lv_event_t* e) {
 
     view->app->setSoundEnabled(isChecked);
 
-    bool soundEnabled;
-    DecaySpeed decaySpeed;
-    view->loadSettings(&soundEnabled, &decaySpeed);
+    // Read decay speed from UI widget instead of redundant preferences load
+    DecaySpeed decaySpeed = static_cast<DecaySpeed>(lv_dropdown_get_selected(view->decayDropdown));
     view->saveSettings(isChecked, decaySpeed);
 }
 
@@ -137,8 +135,7 @@ void SettingsView::onDecayChanged(lv_event_t* e) {
 
     view->app->setDecaySpeed(newSpeed);
 
-    bool soundEnabled;
-    DecaySpeed decaySpeed;
-    view->loadSettings(&soundEnabled, &decaySpeed);
+    // Read sound state from UI widget instead of redundant preferences load
+    bool soundEnabled = lv_obj_has_state(view->soundSwitch, LV_STATE_CHECKED);
     view->saveSettings(soundEnabled, newSpeed);
 }

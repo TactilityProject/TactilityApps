@@ -414,7 +414,9 @@ void PetLogic::saveState() {
     prefs.putInt32("currentAnim", static_cast<int32_t>(stats.currentAnim));
     prefs.putInt32("personality", static_cast<int32_t>(stats.personality));
 
-    prefs.putInt32("lastSaveTime", tt::kernel::getMillis());
+    // Note: uint32_t millis stored as int32_t (Preferences API limitation).
+    // Two's complement round-trips correctly; no unsigned API available.
+    prefs.putInt32("lastSaveTime", static_cast<int32_t>(tt::kernel::getMillis()));
 }
 
 bool PetLogic::loadState() {
@@ -426,18 +428,20 @@ bool PetLogic::loadState() {
         return false;
     }
 
-    // Reuse savedHunger to avoid redundant fetch
-    stats.hunger = static_cast<uint8_t>(savedHunger);
-    stats.happiness = prefs.getInt32("happiness", 70);
-    stats.health = prefs.getInt32("health", 100);
-    stats.energy = prefs.getInt32("energy", 90);
+    // Clamp loaded values to valid ranges (guard against corrupted preferences)
+    stats.hunger = clampStat(savedHunger);
+    stats.happiness = clampStat(prefs.getInt32("happiness", 70));
+    stats.health = clampStat(prefs.getInt32("health", 100));
+    stats.energy = clampStat(prefs.getInt32("energy", 90));
 
-    stats.cleanliness = prefs.getInt32("cleanliness", 100);
-    stats.poopCount = prefs.getInt32("poopCount", 0);
+    stats.cleanliness = clampStat(prefs.getInt32("cleanliness", 100));
+    int32_t loadedPoopCount = prefs.getInt32("poopCount", 0);
+    stats.poopCount = (loadedPoopCount < 0) ? 0 : (loadedPoopCount > 3) ? 3 : static_cast<uint8_t>(loadedPoopCount);
 
-    stats.ageSeconds = prefs.getInt32("ageSeconds", 0);
+    // uint32_t fields stored as int32_t (Preferences API limitation); cast back explicitly
+    stats.ageSeconds = static_cast<uint32_t>(prefs.getInt32("ageSeconds", 0));
     stats.ageHours = static_cast<uint16_t>(prefs.getInt32("ageHours", 0));
-    stats.lifespan = prefs.getInt32("lifespan", 0);
+    stats.lifespan = static_cast<uint32_t>(prefs.getInt32("lifespan", 0));
 
     stats.isSick = prefs.getBool("isSick", false);
     stats.isAsleep = prefs.getBool("isAsleep", false);

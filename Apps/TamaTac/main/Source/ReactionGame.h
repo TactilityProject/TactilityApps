@@ -25,7 +25,7 @@ private:
     static constexpr uint32_t GREAT_TIME_MS = 250;
 
     // State machine
-    enum class Phase { WaitForTarget, TargetShown, RoundResult, FinalResult, Done };
+    enum class Phase { WaitForTarget, TargetShown, RoundResult, Done };
     Phase phase = Phase::WaitForTarget;
 
     // Game state
