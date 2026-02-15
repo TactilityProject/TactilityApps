@@ -2,9 +2,10 @@
 
 #include <Tactility/kernel/Kernel.h>
 
-#include <tt_hal.h>
 #include <tt_lvgl.h>
 #include <tt_lvgl_toolbar.h>
+
+#include <tactility/lvgl_module.h>
 
 #include <esp_log.h>
 #include <driver/gpio.h>
@@ -66,8 +67,8 @@ void Gpio::stopTask() {
 
 // endregion Task
 
-static int getSquareSpacing(UiScale scale) {
-    if (scale == UiScaleSmallest) {
+static int getSquareSpacing(UiDensity density) {
+    if (density == LVGL_UI_DENSITY_COMPACT) {
         return 0;
     } else {
         return 4;
@@ -75,8 +76,6 @@ static int getSquareSpacing(UiScale scale) {
 }
 
 void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
-    // auto ui_scale = hal::getConfiguration()->uiScale;
-
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
 
@@ -102,8 +101,8 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
     bool is_landscape_display = horizontal_px > vertical_px;
 
     constexpr auto block_width = 16;
-    auto ui_scale = tt_hal_configuration_get_ui_scale();
-    const auto square_spacing = getSquareSpacing(ui_scale);
+    auto ui_density = lvgl_get_ui_density();
+    const auto square_spacing = getSquareSpacing(ui_density);
     int32_t x_spacing = block_width + square_spacing;
     uint8_t column = 0;
     const uint8_t column_limit = is_landscape_display ? 10 : 5;

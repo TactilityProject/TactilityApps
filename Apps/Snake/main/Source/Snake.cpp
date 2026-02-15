@@ -5,12 +5,14 @@
 #include "Snake.h"
 
 #include <inttypes.h>
-#include <tt_hal.h>
 #include <tt_lvgl_toolbar.h>
 #include <tt_app_alertdialog.h>
 #include <tt_app_selectiondialog.h>
 #include <tt_preferences.h>
+
 #include <TactilityCpp/LvglLock.h>
+
+#include <tactility/lvgl_module.h>
 
 constexpr auto* TAG = "Snake";
 
@@ -40,8 +42,8 @@ static constexpr int32_t SELECTION_HELL = 4;
 // Hell uses same size as Hard but with wall collision enabled
 static const uint16_t difficultySizes[DIFFICULTY_COUNT] = { SNAKE_CELL_LARGE, SNAKE_CELL_MEDIUM, SNAKE_CELL_SMALL, SNAKE_CELL_SMALL };
 
-static int getToolbarHeight(UiScale uiScale) {
-    if (uiScale == UiScale::UiScaleSmallest) {
+static int getToolbarHeight(UiDensity density) {
+    if (density == LVGL_UI_DENSITY_COMPACT) {
         return 22;
     } else {
         return 40;
@@ -201,10 +203,10 @@ void Snake::createGame(lv_obj_t* parent, uint16_t cell_size, bool wallCollision,
     lv_obj_set_style_bg_opa(newGameWrapper, 0, LV_STATE_DEFAULT);
 
     // Create new game button
-    auto ui_scale = tt_hal_configuration_get_ui_scale();
-    auto toolbar_height = getToolbarHeight(ui_scale);
+    auto ui_density = lvgl_get_ui_density();
+    auto toolbar_height = getToolbarHeight(ui_density);
     lv_obj_t* newGameBtn = lv_btn_create(newGameWrapper);
-    if (ui_scale == UiScale::UiScaleSmallest) {
+    if (ui_density == LVGL_UI_DENSITY_COMPACT) {
         lv_obj_set_size(newGameBtn, toolbar_height - 8, toolbar_height - 8);
     } else {
         lv_obj_set_size(newGameBtn, toolbar_height - 6, toolbar_height - 6);
