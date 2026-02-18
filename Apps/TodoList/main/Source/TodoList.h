@@ -26,6 +26,7 @@ private:
     TodoItem items[MAX_TODOS] = {};
     int count = 0;
     bool rebuildPending = false;
+    lv_timer_t* rebuildTimer = nullptr;
 
     // Persistence
     void saveTodos();

@@ -307,6 +307,8 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
         needsInit = false;
     } else {
         // Restore visual positions from saved state
+        // Re-apply extended paddle width if still active
+        if (extendActive && paddle) lv_obj_set_width(paddle, paddleW);
         lv_obj_set_pos(paddle, (int)paddleX, paddleYPos);
         for (int i = 0; i < MAX_BALLS; i++) {
             if (balls[i].active && balls[i].obj) {
@@ -314,6 +316,15 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
                 lv_obj_clear_flag(balls[i].obj, LV_OBJ_FLAG_HIDDEN);
             }
         }
+    // Restore falling capsules
+    for (int i = 0; i < MAX_CAPSULES; i++) {
+        if (capsules[i].active && capsuleObjs[i]) {
+            lv_obj_set_pos(capsuleObjs[i], (int)capsules[i].x, (int)capsules[i].y);
+            lv_obj_clear_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    // Restore exit indicator
+    if (exitOpen && exitIndicator) lv_obj_clear_flag(exitIndicator, LV_OBJ_FLAG_HIDDEN);
         updateScoreDisplay();
         updateMessage();
     }

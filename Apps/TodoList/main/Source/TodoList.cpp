@@ -120,13 +120,14 @@ void TodoList::addItem(const char* text) {
 void TodoList::scheduleRebuild() {
     if (rebuildPending) return;
     rebuildPending = true;
-    lv_timer_t* t = lv_timer_create(onDeferredRebuild, 0, this);
-    lv_timer_set_repeat_count(t, 1);
+    rebuildTimer = lv_timer_create(onDeferredRebuild, 0, this);
+    lv_timer_set_repeat_count(rebuildTimer, 1);
 }
 
 void TodoList::onDeferredRebuild(lv_timer_t* timer) {
     TodoList* self = static_cast<TodoList*>(lv_timer_get_user_data(timer));
     if (self) {
+        self->rebuildTimer = nullptr;
         self->rebuildPending = false;
         self->rebuildList();
     }
@@ -329,6 +330,10 @@ void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
 }
 
 void TodoList::onHide(AppHandle app) {
+    if (rebuildTimer) {
+        lv_timer_delete(rebuildTimer);
+        rebuildTimer = nullptr;
+    }
     list = nullptr;
     inputRow = nullptr;
     inputTa = nullptr;

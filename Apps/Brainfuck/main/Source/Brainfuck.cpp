@@ -187,7 +187,11 @@ void Brainfuck::runCode(const char* code) {
     bfInit();
     bfRun(code);
 
-    char result[MAX_OUTPUT + 128];
+    char* result = (char*)malloc(MAX_OUTPUT + 128);
+    if (!result) {
+        lv_textarea_set_text(outputTa, "Out of memory");
+        return;
+    }
     int pos = 0;
     int remaining;
 
@@ -221,6 +225,7 @@ void Brainfuck::runCode(const char* code) {
 
     lv_textarea_set_text(outputTa, result);
     lv_obj_scroll_to_y(outputTa, LV_COORD_MAX, LV_ANIM_ON);
+    free(result);
 }
 
 /* ── View management ──────────────────────────────────────────────── */
@@ -270,7 +275,7 @@ void Brainfuck::onExampleSelected(lv_event_t* e) {
     if (!g_instance) return;
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx >= 0 && idx < NUM_EXAMPLES) {
-        lv_textarea_set_text(g_instance->inputTa, examples[idx].code);
+        if (g_instance->inputTa) lv_textarea_set_text(g_instance->inputTa, examples[idx].code);
         g_instance->showMainView();
         g_instance->runCode(examples[idx].code);
     }
@@ -279,7 +284,7 @@ void Brainfuck::onExampleSelected(lv_event_t* e) {
 void Brainfuck::onFileSelected(lv_event_t* e) {
     if (!g_instance) return;
     const char* path = (const char*)lv_event_get_user_data(e);
-    FILE* f = fopen(path, "r");
+    FILE* f = fopen(path, "rb");
     if (!f) {
         lv_textarea_set_text(g_instance->outputTa, "Cannot open file");
         g_instance->showMainView();
@@ -308,7 +313,7 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     fclose(f);
     buf[bytesRead] = '\0';
 
-    lv_textarea_set_text(g_instance->inputTa, buf);
+    if (g_instance->inputTa) lv_textarea_set_text(g_instance->inputTa, buf);
     g_instance->showMainView();
     g_instance->runCode(buf);
     free(buf);
@@ -407,7 +412,7 @@ void Brainfuck::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_flex_align(inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(inputRow, 0, 0);
     lv_obj_set_style_pad_gap(inputRow, 4, 0);
-    lv_obj_clear_flag(inputRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(inputRow, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_border_width(inputRow, 0, 0);
     lv_obj_add_flag(inputRow, LV_OBJ_FLAG_HIDDEN);
 
