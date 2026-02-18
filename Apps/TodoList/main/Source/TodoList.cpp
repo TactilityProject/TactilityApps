@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static constexpr const char* SAVE_DIR = "/sdcard/tactility/todolist";
 static constexpr const char* SAVE_FILE = "/sdcard/tactility/todolist/todos.txt";
