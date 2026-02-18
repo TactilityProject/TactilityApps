@@ -795,7 +795,6 @@ void Breakout::loseLife() {
             balls[i].vx = 0;
             balls[i].vy = 0;
         }
-        saveHighScore(score);
         if (sfxEngine) sfxEngine->play(SfxId::GameOver);
     } else {
         state = GameState::Ready;
@@ -805,6 +804,9 @@ void Breakout::loseLife() {
     }
     updateScoreDisplay();
     updateMessage();
+    if (lives <= 0) {
+        saveHighScore(score);
+    }
 }
 
 void Breakout::winLevel() {
@@ -916,20 +918,22 @@ void Breakout::activatePowerUp(PowerUpType type) {
 
         case PowerUpType::Slow:
             if (slowRecoveryTicks <= 0) {
+                // First slow: save speed and apply reduction
                 originalBallSpeed = ballSpeed;
-            }
-            ballSpeed *= 0.6f;
-            slowRecoveryTicks = SLOW_RECOVERY_TICKS;
-            // Scale all active ball velocities
-            for (int b = 0; b < MAX_BALLS; b++) {
-                if (!balls[b].active) continue;
-                float curSpd = std::sqrt(balls[b].vx * balls[b].vx + balls[b].vy * balls[b].vy);
-                if (curSpd > 0.01f) {
-                    float scale = ballSpeed / curSpd;
-                    balls[b].vx *= scale;
-                    balls[b].vy *= scale;
+                ballSpeed *= 0.6f;
+                // Scale all active ball velocities
+                for (int b = 0; b < MAX_BALLS; b++) {
+                    if (!balls[b].active) continue;
+                    float curSpd = std::sqrt(balls[b].vx * balls[b].vx + balls[b].vy * balls[b].vy);
+                    if (curSpd > 0.01f) {
+                        float scale = ballSpeed / curSpd;
+                        balls[b].vx *= scale;
+                        balls[b].vy *= scale;
+                    }
                 }
             }
+            // Reset (or extend) recovery timer
+            slowRecoveryTicks = SLOW_RECOVERY_TICKS;
             break;
 
         case PowerUpType::Catch:

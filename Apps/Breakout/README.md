@@ -18,7 +18,7 @@ A classic brick-breaking arcade game inspired by Arkanoid, built for Tactility d
 
 Each level has a unique brick layout pattern. Colors rotate each level, and Silver/Gold bricks are added as difficulty increases.
 
-```
+```text
  Level 1: Full Grid          Level 2: Checkerboard       Level 3: Diamond
  [][][][][][][][]            [] [] [] [] []              [][][][][][]
  [][][][][][][][]            [] [] [] [] []                [][][][]
@@ -50,7 +50,7 @@ After level 12, layouts are **procedurally generated** using a seeded algorithm 
 
 Capsules drop from destroyed bricks (~15% chance) and fall toward the paddle. Catch them to activate!
 
-```
+```text
   Capsule drops from brick:          Catch with paddle:
 
         [brick]                            |C|
@@ -75,7 +75,7 @@ Power-ups reset on life lost or level clear. No capsules drop while multiple bal
 
 ## Brick Types
 
-```
+```text
  Normal bricks:     Silver bricks:      Gold bricks:
  +-----------+      +===========+       +###########+
  |  colored  |      | multi-hit |       | unbreakable|

@@ -253,8 +253,8 @@ void Brainfuck::onRunClicked(lv_event_t* e) {
 
 void Brainfuck::onClearClicked(lv_event_t* e) {
     if (!g_instance) return;
-    lv_textarea_set_text(g_instance->outputTa, "");
-    lv_textarea_set_text(g_instance->inputTa, "");
+    if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "");
+    if (g_instance->inputTa) lv_textarea_set_text(g_instance->inputTa, "");
 }
 
 void Brainfuck::onExamplesClicked(lv_event_t* e) {

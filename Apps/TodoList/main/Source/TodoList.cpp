@@ -32,6 +32,7 @@ static int getToolbarHeight(UiDensity density) {
 void TodoList::saveTodos() {
     ensureDir();
     auto lock = tt_lock_alloc_for_path(SAVE_FILE);
+    if (!lock) return;
     if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
         FILE* f = fopen(SAVE_FILE, "w");
         if (f) {
@@ -49,9 +50,10 @@ void TodoList::saveTodos() {
 
 void TodoList::loadTodos() {
     auto lock = tt_lock_alloc_for_path(SAVE_FILE);
-    count = 0;
+    if (!lock) return;
 
     if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
+        count = 0;
         FILE* f = fopen(SAVE_FILE, "r");
         if (f) {
             char line[MAX_TEXT_LEN + 4];
@@ -115,10 +117,29 @@ void TodoList::addItem(const char* text) {
     rebuildList();
 }
 
+void TodoList::scheduleRebuild() {
+    if (rebuildPending) return;
+    rebuildPending = true;
+    lv_timer_t* t = lv_timer_create(onDeferredRebuild, 0, this);
+    lv_timer_set_repeat_count(t, 1);
+}
+
+void TodoList::onDeferredRebuild(lv_timer_t* timer) {
+    TodoList* self = static_cast<TodoList*>(lv_timer_get_user_data(timer));
+    if (self) {
+        self->rebuildPending = false;
+        self->rebuildList();
+    }
+}
+
 void TodoList::rebuildList() {
     if (!list) return;
 
     lv_obj_clean(list);
+
+    UiDensity uiDensity = lvgl_get_ui_density();
+    int toolbarHeight = getToolbarHeight(uiDensity);
+    int btnSize = (uiDensity == LVGL_UI_DENSITY_COMPACT) ? toolbarHeight - 8 : toolbarHeight - 6;
 
     if (count == 0) {
         lv_list_add_text(list, "No tasks yet. Add one below!");
@@ -137,10 +158,6 @@ void TodoList::rebuildList() {
         }
 
         lv_obj_add_event_cb(btn, onItemClicked, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)i);
-
-        UiDensity uiDensity = lvgl_get_ui_density();
-        int toolbarHeight = getToolbarHeight(uiDensity);
-        int btnSize = (uiDensity == LVGL_UI_DENSITY_COMPACT) ? toolbarHeight - 8 : toolbarHeight - 6;
 
         lv_obj_t* delBtn = lv_button_create(btn);
         lv_obj_set_size(delBtn, btnSize, btnSize);
@@ -168,13 +185,11 @@ void TodoList::onItemClicked(lv_event_t* e) {
 
     g_instance->items[idx].done = !g_instance->items[idx].done;
     g_instance->saveTodos();
-    g_instance->rebuildList();
+    g_instance->scheduleRebuild();
 }
 
 void TodoList::onDeleteClicked(lv_event_t* e) {
     if (!g_instance) return;
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code != LV_EVENT_CLICKED) return;
 
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx < 0 || idx >= g_instance->count) return;
@@ -185,7 +200,7 @@ void TodoList::onDeleteClicked(lv_event_t* e) {
     g_instance->count--;
 
     g_instance->saveTodos();
-    g_instance->rebuildList();
+    g_instance->scheduleRebuild();
 }
 
 void TodoList::onAddClicked(lv_event_t* e) {
@@ -212,7 +227,7 @@ void TodoList::onClearDoneClicked(lv_event_t* e) {
     }
     g_instance->count = write;
     g_instance->saveTodos();
-    g_instance->rebuildList();
+    g_instance->scheduleRebuild();
 }
 
 /* ── Lifecycle ────────────────────────────────────────────────────── */

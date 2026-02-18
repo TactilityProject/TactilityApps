@@ -1,6 +1,5 @@
 #pragma once
 
-#include <tt_app.h>
 #include <lvgl.h>
 #include <TactilityCpp/App.h>
 

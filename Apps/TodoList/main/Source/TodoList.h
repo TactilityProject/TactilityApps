@@ -25,6 +25,7 @@ private:
     // Data
     TodoItem items[MAX_TODOS] = {};
     int count = 0;
+    bool rebuildPending = false;
 
     // Persistence
     void saveTodos();
@@ -33,7 +34,10 @@ private:
     // UI helpers
     void updateCountLabel();
     void rebuildList();
+    void scheduleRebuild();
     void addItem(const char* text);
+
+    static void onDeferredRebuild(lv_timer_t* timer);
 
     // Static callbacks
     static void onItemClicked(lv_event_t* e);
