@@ -184,6 +184,7 @@ void Brainfuck::bfRun(const char* code) {
 }
 
 void Brainfuck::runCode(const char* code) {
+    if (!outputTa) return;
     bfInit();
     bfRun(code);
 
@@ -287,7 +288,7 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     const char* path = (const char*)lv_event_get_user_data(e);
     FILE* f = fopen(path, "rb");
     if (!f) {
-        lv_textarea_set_text(g_instance->outputTa, "Cannot open file");
+        if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "Cannot open file");
         g_instance->showMainView();
         return;
     }
@@ -296,7 +297,7 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     long fsize = ftell(f);
     if (fsize <= 0 || fsize > 32768) {
         fclose(f);
-        lv_textarea_set_text(g_instance->outputTa, "File too large or empty");
+        if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "File too large or empty");
         g_instance->showMainView();
         return;
     }
@@ -305,7 +306,7 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     char* buf = (char*)malloc(fsize + 1);
     if (!buf) {
         fclose(f);
-        lv_textarea_set_text(g_instance->outputTa, "Out of memory");
+        if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "Out of memory");
         g_instance->showMainView();
         return;
     }
@@ -347,8 +348,8 @@ void Brainfuck::buildScriptList(lv_obj_t* list) {
         size_t len = strlen(name);
         if (len < 3) continue;
 
-        const char* ext3 = (len >= 3) ? &name[len - 3] : "";
-        const char* ext2 = (len >= 2) ? &name[len - 2] : "";
+        const char* ext3 = &name[len - 3];
+        const char* ext2 = &name[len - 2];
         if (ciStrcmp(ext3, ".bf") != 0 && ciStrcmp(ext2, ".b") != 0) {
             continue;
         }

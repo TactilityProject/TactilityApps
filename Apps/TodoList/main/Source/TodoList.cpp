@@ -121,6 +121,10 @@ void TodoList::scheduleRebuild() {
     if (rebuildPending) return;
     rebuildPending = true;
     rebuildTimer = lv_timer_create(onDeferredRebuild, 0, this);
+    if (!rebuildTimer) {
+        rebuildPending = false;
+        return;
+    }
     lv_timer_set_repeat_count(rebuildTimer, 1);
 }
 
@@ -334,6 +338,7 @@ void TodoList::onHide(AppHandle app) {
         lv_timer_delete(rebuildTimer);
         rebuildTimer = nullptr;
     }
+    rebuildPending = false;
     list = nullptr;
     inputRow = nullptr;
     inputTa = nullptr;
