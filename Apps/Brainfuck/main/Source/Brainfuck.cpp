@@ -187,7 +187,8 @@ void Brainfuck::runCode(const char* code) {
     bfInit();
     bfRun(code);
 
-    char* result = (char*)malloc(MAX_OUTPUT + 128);
+    constexpr int resultSize = MAX_OUTPUT + 128;
+    char* result = (char*)malloc(resultSize);
     if (!result) {
         lv_textarea_set_text(outputTa, "Out of memory");
         return;
@@ -195,14 +196,14 @@ void Brainfuck::runCode(const char* code) {
     int pos = 0;
     int remaining;
 
-    remaining = (int)sizeof(result) - pos;
+    remaining = resultSize - pos;
     if (remaining > 0) {
         int n = snprintf(result + pos, remaining, "> RUN (%d chars)\n", (int)strlen(code));
         pos += (n < remaining) ? n : (remaining - 1);
     }
 
     if (vm.outLen > 0) {
-        remaining = (int)sizeof(result) - pos;
+        remaining = resultSize - pos;
         if (remaining > 0) {
             int n = snprintf(result + pos, remaining, "%s\n", vm.output);
             pos += (n < remaining) ? n : (remaining - 1);
@@ -210,13 +211,13 @@ void Brainfuck::runCode(const char* code) {
     }
 
     if (vm.error) {
-        remaining = (int)sizeof(result) - pos;
+        remaining = resultSize - pos;
         if (remaining > 0) {
             int n = snprintf(result + pos, remaining, "ERROR: %s\n", vm.errorMsg);
             pos += (n < remaining) ? n : (remaining - 1);
         }
     } else {
-        remaining = (int)sizeof(result) - pos;
+        remaining = resultSize - pos;
         if (remaining > 0) {
             int n = snprintf(result + pos, remaining, "OK (%d cycles)\n", vm.cycles);
             pos += (n < remaining) ? n : (remaining - 1);
