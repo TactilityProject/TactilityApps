@@ -12,7 +12,7 @@ jobs:
   Build:
     strategy:
       matrix:
-        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven, TamaTac, MystifyDemo, Snake]
+        app_name: [Brainfuck, Breakout, Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, Magic8Ball, MystifyDemo, SerialConsole, Snake, TamaTac, TodoList, TwoEleven]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
