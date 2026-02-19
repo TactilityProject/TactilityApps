@@ -1,4 +1,5 @@
 #include "Brainfuck.h"
+#include <tt_app.h>
 #include <tt_lvgl_toolbar.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -66,18 +67,21 @@ static const BfExample examples[] = {
 
 static constexpr int NUM_EXAMPLES = sizeof(examples) / sizeof(examples[0]);
 
-/* ── SD card script loading ───────────────────────────────────────── */
+/* ── App handle for user data path ────────────────────────────────── */
 
-static constexpr const char* TACTILITY_DIR = "/sdcard/tactility";
-static constexpr const char* SCRIPT_DIR = "/sdcard/tactility/brainfuck";
+static AppHandle s_appHandle = nullptr;
+
+static bool getScriptDir(char* buf, size_t bufSize) {
+    if (!s_appHandle) return false;
+    size_t size = bufSize;
+    tt_app_get_user_data_path(s_appHandle, buf, &size);
+    if (size == 0) return false;
+    mkdir(buf, 0755);
+    return true;
+}
 
 static char** scriptPaths = nullptr;
 static int scriptCount = 0;
-
-static void ensureScriptDir() {
-    mkdir(TACTILITY_DIR, 0755);
-    mkdir(SCRIPT_DIR, 0755);
-}
 
 static int ciStrcmp(const char* a, const char* b) {
     while (*a && *b) {
@@ -335,10 +339,17 @@ void Brainfuck::buildScriptList(lv_obj_t* list) {
         lv_obj_add_event_cb(btn, onExampleSelected, LV_EVENT_CLICKED, (void*)(intptr_t)i);
     }
 
-    ensureScriptDir();
-    DIR* dir = opendir(SCRIPT_DIR);
+    char scriptDir[256];
+    if (!getScriptDir(scriptDir, sizeof(scriptDir))) {
+        lv_list_add_text(list, "No storage available for .bf files");
+        return;
+    }
+
+    DIR* dir = opendir(scriptDir);
     if (!dir) {
-        lv_list_add_text(list, "Put .bf files in /sdcard/tactility/brainfuck/");
+        char hint[300];
+        snprintf(hint, sizeof(hint), "Put .bf files in %s", scriptDir);
+        lv_list_add_text(list, hint);
         return;
     }
 
@@ -354,10 +365,10 @@ void Brainfuck::buildScriptList(lv_obj_t* list) {
             continue;
         }
 
-        size_t pathLen = strlen(SCRIPT_DIR) + 1 + len + 1;
+        size_t pathLen = strlen(scriptDir) + 1 + len + 1;
         char* path = (char*)malloc(pathLen);
         if (!path) break;
-        snprintf(path, pathLen, "%s/%s", SCRIPT_DIR, name);
+        snprintf(path, pathLen, "%s/%s", scriptDir, name);
 
         char** tmp = (char**)realloc(scriptPaths, sizeof(char*) * (scriptCount + 1));
         if (!tmp) { free(path); break; }
@@ -371,7 +382,7 @@ void Brainfuck::buildScriptList(lv_obj_t* list) {
     closedir(dir);
 
     if (scriptCount == 0) {
-        lv_list_add_text(list, "No custom scripts on SD card");
+        lv_list_add_text(list, "No custom scripts found on storage");
     }
 }
 
@@ -379,6 +390,7 @@ void Brainfuck::buildScriptList(lv_obj_t* list) {
 
 void Brainfuck::onShow(AppHandle app, lv_obj_t* parent) {
     g_instance = this;
+    s_appHandle = app;
     state = BfState::Examples;
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
@@ -445,4 +457,5 @@ void Brainfuck::onHide(AppHandle app) {
     examplesList = nullptr;
     clrBtn = nullptr;
     g_instance = nullptr;
+    s_appHandle = nullptr;
 }

@@ -4,7 +4,7 @@ A Brainfuck esoteric programming language interpreter for Tactility.
 
 ## Overview
 
-Run Brainfuck programs on your device. Includes built-in examples and support for loading scripts from the SD card. Features cycle limit protection to prevent infinite loops from locking up the device.
+Run Brainfuck programs on your device. Includes built-in examples and support for loading custom scripts. Features cycle limit protection to prevent infinite loops from locking up the device.
 
 ## Features
 
@@ -13,7 +13,7 @@ Run Brainfuck programs on your device. Includes built-in examples and support fo
 - Built-in examples (Hello World, Fibonacci, Alphabet, Beer song)
 - Multi-line code editor
 - Execution statistics (cycle count display)
-- Load scripts from SD card
+- Load custom scripts from user data directory
 
 ## Controls
 
@@ -23,9 +23,9 @@ Run Brainfuck programs on your device. Includes built-in examples and support fo
   - Trash icon: Clear output and input
   - List icon: Toggle between examples/scripts list and editor
 
-## SD Card Support
+## Custom Scripts
 
-Place `.bf` or `.b` files (up to 32 KB each) in `/sdcard/tactility/brainfuck/` to load them from the app.
+Place `.bf` or `.b` files (up to 32 KB each) in the app's user data directory to load them from the app. The directory path is shown in the script list when no scripts are found.
 
 ## Brainfuck Reference
 

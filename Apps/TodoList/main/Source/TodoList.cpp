@@ -1,4 +1,5 @@
 #include "TodoList.h"
+#include <tt_app.h>
 #include <tt_lock.h>
 #include <Tactility/kernel/Kernel.h>
 #include <tt_lvgl_toolbar.h>
@@ -10,17 +11,29 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static constexpr const char* SAVE_DIR = "/sdcard/tactility/todolist";
-static constexpr const char* SAVE_FILE = "/sdcard/tactility/todolist/todos.txt";
+static constexpr const char* SAVE_FILENAME = "todos.txt";
 
 /* File-scope instance pointer for index-based callbacks */
 static TodoList* g_instance = nullptr;
+static AppHandle s_appHandle = nullptr;
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
-static void ensureDir() {
-    mkdir("/sdcard/tactility", 0755);
-    mkdir(SAVE_DIR, 0755);
+static bool getSaveFilePath(char* buf, size_t bufSize) {
+    if (!s_appHandle) return false;
+    size_t size = bufSize;
+    tt_app_get_user_data_child_path(s_appHandle, SAVE_FILENAME, buf, &size);
+    return size > 0;
+}
+
+static bool ensureDir() {
+    if (!s_appHandle) return false;
+    char dir[256];
+    size_t size = sizeof(dir);
+    tt_app_get_user_data_path(s_appHandle, dir, &size);
+    if (size == 0) return false;
+    mkdir(dir, 0755);
+    return true;
 }
 
 static int getToolbarHeight(UiDensity density) {
@@ -30,17 +43,18 @@ static int getToolbarHeight(UiDensity density) {
 /* ── Persistence ──────────────────────────────────────────────────── */
 
 void TodoList::saveTodos() {
-    ensureDir();
-    auto lock = tt_lock_alloc_for_path(SAVE_FILE);
+    if (!ensureDir()) return;
+    char savePath[256];
+    if (!getSaveFilePath(savePath, sizeof(savePath))) return;
+
+    auto lock = tt_lock_alloc_for_path(savePath);
     if (!lock) return;
     if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
-        FILE* f = fopen(SAVE_FILE, "w");
+        FILE* f = fopen(savePath, "w");
         if (f) {
             for (int i = 0; i < count; i++) {
                 fprintf(f, "%c %s\n", items[i].done ? '+' : '-', items[i].text);
             }
-            fflush(f);
-            fsync(fileno(f));
             fclose(f);
         }
         tt_lock_release(lock);
@@ -49,12 +63,15 @@ void TodoList::saveTodos() {
 }
 
 void TodoList::loadTodos() {
-    auto lock = tt_lock_alloc_for_path(SAVE_FILE);
+    char savePath[256];
+    if (!getSaveFilePath(savePath, sizeof(savePath))) return;
+
+    auto lock = tt_lock_alloc_for_path(savePath);
     if (!lock) return;
 
     if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
         count = 0;
-        FILE* f = fopen(SAVE_FILE, "r");
+        FILE* f = fopen(savePath, "r");
         if (f) {
             char line[MAX_TEXT_LEN + 4];
             while (count < MAX_TODOS && fgets(line, sizeof(line), f)) {
@@ -239,6 +256,7 @@ void TodoList::onClearDoneClicked(lv_event_t* e) {
 
 void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
     g_instance = this;
+    s_appHandle = app;
 
     loadTodos();
 
@@ -344,4 +362,5 @@ void TodoList::onHide(AppHandle app) {
     inputTa = nullptr;
     countLabel = nullptr;
     g_instance = nullptr;
+    s_appHandle = nullptr;
 }
