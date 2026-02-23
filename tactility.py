@@ -13,7 +13,7 @@ import tarfile
 from urllib.parse import urlparse
 
 ttbuild_path = ".tactility"
-ttbuild_version = "3.4.0"
+ttbuild_version = "3.5.0"
 ttbuild_cdn = "https://cdn.tactilityproject.org"
 ttbuild_sdk_json_validity = 3600  # seconds
 ttport = 6666
@@ -30,10 +30,10 @@ shell_color_cyan = "\033[36m"
 shell_color_reset = "\033[m"
 
 def print_help():
-    print("Usage: python tactility.py [action] [options]")
+    print("Usage: python tactility.py [app_path] [action] [options]")
     print("")
     print("Actions:")
-    print("  build [platform]              Build the app. Optionally specify a platform.")
+    print("  build [platform]               Build the app. Optionally specify a platform.")
     print("    Supported platforms are lower case. Example: esp32s3")
     print("    Supported platforms are read from manifest.properties")
     print("  clean                          Clean the build folders")
@@ -50,6 +50,10 @@ def print_help():
     print("  --local-sdk                    Use SDK specified by environment variable TACTILITY_SDK_PATH with platform subfolders matching target platforms.")
     print("  --skip-build                   Run everything except the idf.py/CMake commands")
     print("  --verbose                      Show extra console output")
+    print("")
+    print("Examples:")
+    print("  python tactility.py Apps/Snake build esp32s3 --verbose")
+    print("  python tactility.py Apps/Snake bir 192.168.1.50 esp32s3")
 
 # region Core
 
@@ -644,6 +648,20 @@ if __name__ == "__main__":
     if "--local-sdk" in sys.argv:
         use_local_sdk = True
         sys.argv.remove("--local-sdk")
+    
+    # Check if the first argument is a path to an app directory
+    if len(sys.argv) > 2:
+        potential_app_dir = sys.argv[1]
+        if os.path.isdir(potential_app_dir) and os.path.isfile(os.path.join(potential_app_dir, "manifest.properties")):
+            if verbose:
+                print_status_success(f"Switching to app directory: {potential_app_dir}")
+            os.chdir(potential_app_dir)
+            sys.argv = [sys.argv[0]] + sys.argv[2:]
+    
+    if len(sys.argv) < 2:
+        print_help()
+        sys.exit(1)
+    
     action_arg = sys.argv[1]
 
     # Environment setup

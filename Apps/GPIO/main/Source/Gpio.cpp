@@ -2,19 +2,20 @@
 
 #include <Tactility/kernel/Kernel.h>
 
-#include <tt_hal.h>
-#include <tt_hal_gpio.h>
 #include <tt_lvgl.h>
 #include <tt_lvgl_toolbar.h>
 
+#include <tactility/lvgl_module.h>
+
 #include <esp_log.h>
+#include <driver/gpio.h>
 
 constexpr char* TAG = "GPIO";
 
 void Gpio::updatePinStates() {
     // Update pin states
     for (int i = 0; i < pinStates.size(); ++i) {
-        pinStates[i] = tt_hal_gpio_get_level(i);
+        pinStates[i] = gpio_get_level((gpio_num_t)i);
     }
 }
 
@@ -66,8 +67,8 @@ void Gpio::stopTask() {
 
 // endregion Task
 
-static int getSquareSpacing(UiScale scale) {
-    if (scale == UiScaleSmallest) {
+static int getSquareSpacing(UiDensity density) {
+    if (density == LVGL_UI_DENSITY_COMPACT) {
         return 0;
     } else {
         return 4;
@@ -75,8 +76,6 @@ static int getSquareSpacing(UiScale scale) {
 }
 
 void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
-    // auto ui_scale = hal::getConfiguration()->uiScale;
-
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
 
@@ -102,8 +101,8 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
     bool is_landscape_display = horizontal_px > vertical_px;
 
     constexpr auto block_width = 16;
-    auto ui_scale = tt_hal_configuration_get_ui_scale();
-    const auto square_spacing = getSquareSpacing(ui_scale);
+    auto ui_density = lvgl_get_ui_density();
+    const auto square_spacing = getSquareSpacing(ui_density);
     int32_t x_spacing = block_width + square_spacing;
     uint8_t column = 0;
     const uint8_t column_limit = is_landscape_display ? 10 : 5;
@@ -113,11 +112,10 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
 
     mutex.lock();
 
-    auto pin_count = tt_hal_gpio_get_pin_count();
-    pinStates.resize(pin_count);
-    pinWidgets.resize(pin_count);
+    pinStates.resize(GPIO_PIN_COUNT);
+    pinWidgets.resize(GPIO_PIN_COUNT);
 
-    for (int i = 0; i < pin_count; ++i) {
+    for (int i = 0; i < GPIO_PIN_COUNT; ++i) {
         constexpr uint8_t offset_from_left_label = 4;
 
         // Add the GPIO number before the first item on a row
