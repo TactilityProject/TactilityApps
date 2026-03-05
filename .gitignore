@@ -1,5 +1,6 @@
 .idea/
 .DS_Store
+.cache
 
 build/
 cmake-build-*/
