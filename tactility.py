@@ -426,7 +426,7 @@ def build_consecutively(version, platform, skip_build):
     shell_needed = sys.platform == "win32"
     build_command = ["idf.py", "-B", cmake_path, "elf"]
     if verbose:
-        print(f"Running command: {" ".join(build_command)}")
+        print(f"Running command: {' '.join(build_command)}")
     with subprocess.Popen(build_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=shell_needed) as process:
         build_output = wait_for_process(process)
         if process.returncode == 0:
