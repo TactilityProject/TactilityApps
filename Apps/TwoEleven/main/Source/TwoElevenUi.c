@@ -7,7 +7,7 @@
 
 static void game_play_event(lv_event_t * e);
 static void btnm_event_cb(lv_event_t * e);
-static void focus_event(lv_event_t* e);
+static void reenter_key_mode_event(lv_event_t* e);
 
 /**
  * @brief Free all resources for the 2048 game object
@@ -17,12 +17,11 @@ static void delete_event(lv_event_t * e)
     lv_obj_t * obj = lv_event_get_target_obj(e);
     twoeleven_t * game_2048 = (twoeleven_t *)lv_obj_get_user_data(obj);
     if (game_2048) {
-        // Reset group editing mode if we enabled it
+        // Restore edit mode and remove from group before cleanup
         if (tt_lvgl_hardware_keyboard_is_available()) {
             lv_group_t* group = lv_group_get_default();
-            if (group) {
-                lv_group_set_editing(group, false);
-            }
+            if (group) lv_group_set_editing(group, false);
+            lv_group_remove_obj(game_2048->btnm);
         }
         for (uint16_t index = 0; index < game_2048->map_count; index++) {
             if (game_2048->btnm_map[index]) {
@@ -42,21 +41,17 @@ static void delete_event(lv_event_t * e)
 }
 
 /**
- * @brief Handle focus/defocus to manage edit mode for keyboard input
+ * @brief Re-enter key mode when the game area is clicked after Q/Esc exit
  */
-static void focus_event(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
+static void reenter_key_mode_event(lv_event_t* e) {
+    lv_obj_t* btnm = lv_event_get_current_target_obj(e);
     lv_group_t* group = lv_group_get_default();
-
     if (!group) return;
-
-    if (code == LV_EVENT_FOCUSED) {
-        // Enable edit mode so arrow keys control the game
-        lv_group_set_editing(group, true);
-    } else if (code == LV_EVENT_DEFOCUSED) {
-        // Restore normal focus navigation
-        lv_group_set_editing(group, false);
+    if (lv_obj_get_group(btnm) == NULL) {
+        lv_group_add_obj(group, btnm);
     }
+    lv_group_focus_obj(btnm);
+    lv_group_set_editing(group, true);
 }
 
 /**
@@ -149,11 +144,9 @@ lv_obj_t * twoeleven_create(lv_obj_t * parent, uint16_t matrix_size)
         lv_group_t* group = lv_group_get_default();
         if (group) {
             lv_group_add_obj(group, game_2048->btnm);
-            // Register focus handlers to manage edit mode lifecycle
-            lv_obj_add_event_cb(game_2048->btnm, focus_event, LV_EVENT_FOCUSED, NULL);
-            lv_obj_add_event_cb(game_2048->btnm, focus_event, LV_EVENT_DEFOCUSED, NULL);
-            // Focus the container (will trigger FOCUSED event and enable edit mode)
+            lv_obj_add_event_cb(game_2048->btnm, reenter_key_mode_event, LV_EVENT_CLICKED, NULL);
             lv_group_focus_obj(game_2048->btnm);
+            lv_group_set_editing(group, true);
         }
     }
 
@@ -242,6 +235,16 @@ static void game_play_event(lv_event_t * e)
                 case '/':
                     success = move_down(&(game_2048->score), game_2048->matrix_size, game_2048->matrix);
                     break;
+                case LV_KEY_ESC:
+                case 'q':
+                case 'Q': {
+                    // Exit key/edit mode - remove from group so navigation is restored
+                    // Re-entry: tap/click the game area to return to key mode
+                    lv_group_t* grp = lv_group_get_default();
+                    if (grp) lv_group_set_editing(grp, false);
+                    lv_group_remove_obj(lv_event_get_current_target_obj(e));
+                    break;
+                }
                 default:
                     break;
             }

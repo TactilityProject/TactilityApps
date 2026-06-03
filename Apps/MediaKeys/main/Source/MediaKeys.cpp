@@ -16,6 +16,16 @@ static const char* BTN_MAP[] = {
     LV_SYMBOL_MUTE, LV_SYMBOL_VOLUME_MID, LV_SYMBOL_VOLUME_MAX, ""
 };
 
+// Physical key → button matrix index mapping (B=prev, P=play, N=next, M=mute, D=vol-, U=vol+)
+static const struct { uint32_t key; uint32_t btnIdx; } KEY_MAP[] = {
+    { 'b', 0 }, { 'B', 0 },
+    { 'p', 1 }, { 'P', 1 },
+    { 'n', 2 }, { 'N', 2 },
+    { 'm', 3 }, { 'M', 3 },
+    { 'd', 4 }, { 'D', 4 },
+    { 'u', 5 }, { 'U', 5 },
+};
+
 // HID Consumer Page (0x0C) usage codes for each button, in BTN_MAP order
 static const uint16_t CONSUMER_USAGE[6] = {
     0x00B6, // 0 – PREV:      Previous Track
@@ -70,6 +80,71 @@ void MediaKeys::onButtonPressed(lv_event_t* event) {
     }
 }
 
+void MediaKeys::onKeyEvent(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_KEY) return;
+    MediaKeys* self = static_cast<MediaKeys*>(lv_event_get_user_data(event));
+    if (!self || !self->_buttonMatrix) return;
+
+    uint32_t key = lv_event_get_key(event);
+
+    // Q or Esc exits key mode and returns focus to normal UI navigation
+    if (key == 'q' || key == 'Q' || key == LV_KEY_ESC) {
+        self->exitKeyMode();
+        return;
+    }
+
+    if (!self->_isEnabled) return;
+
+    for (auto& mapping : KEY_MAP) {
+        if (mapping.key == key) {
+            // Highlight: select the button and mark checked for visual feedback
+            self->_activeKeyBtn = mapping.btnIdx;
+            lv_buttonmatrix_set_selected_button(self->_buttonMatrix, mapping.btnIdx);
+            lv_buttonmatrix_set_button_ctrl(self->_buttonMatrix, mapping.btnIdx, LV_BTNMATRIX_CTRL_CHECKED);
+
+            // Restart the highlight-clear timer
+            if (self->_keyHighlightTimer) {
+                lv_timer_reset(self->_keyHighlightTimer);
+                lv_timer_resume(self->_keyHighlightTimer);
+            }
+
+            self->handleButtonPress(mapping.btnIdx);
+            return;
+        }
+    }
+}
+
+void MediaKeys::enterKeyMode() {
+    if (_keyboardActive || !_buttonMatrix) return;
+    lv_group_t* group = lv_group_get_default();
+    if (!group) return;
+    lv_group_add_obj(group, _buttonMatrix);
+    lv_group_focus_obj(_buttonMatrix);
+    lv_group_set_editing(group, true);
+    _keyboardActive = true;
+    LOG_I(TAG, "Key mode: ON (Q/Esc to exit)");
+}
+
+void MediaKeys::exitKeyMode() {
+    if (!_keyboardActive || !_buttonMatrix) return;
+    lv_group_t* group = lv_group_get_default();
+    if (group) lv_group_set_editing(group, false);
+    lv_group_remove_obj(_buttonMatrix);
+    _keyboardActive = false;
+    LOG_I(TAG, "Key mode: OFF");
+}
+
+void MediaKeys::onKeyHighlightTimer(lv_timer_t* t) {
+    MediaKeys* self = static_cast<MediaKeys*>(lv_timer_get_user_data(t));
+    if (!self || !self->_buttonMatrix) return;
+    if (self->_activeKeyBtn != LV_BTNMATRIX_BTN_NONE) {
+        lv_buttonmatrix_clear_button_ctrl(self->_buttonMatrix, self->_activeKeyBtn, LV_BTNMATRIX_CTRL_CHECKED);
+        self->_activeKeyBtn = LV_BTNMATRIX_BTN_NONE;
+    }
+    lv_obj_remove_state(self->_buttonMatrix, LV_STATE_FOCUSED);
+    lv_timer_pause(t);
+}
+
 void MediaKeys::btEventCallback(struct Device* /*device*/, void* context, struct BtEvent event) {
     MediaKeys* self = static_cast<MediaKeys*>(context);
     if (!self) return;
@@ -87,6 +162,7 @@ void MediaKeys::btEventCallback(struct Device* /*device*/, void* context, struct
             // Radio dropped while we were active - revert UI
             LOG_I(TAG, "BT radio turned off, disabling HID");
             if (tt_lvgl_lock(1000)) {
+                if (tt_lvgl_hardware_keyboard_is_available()) self->exitKeyMode();
                 self->_hidDevice = nullptr;
                 self->_isEnabled = false;
                 self->_radioEnabling = false;
@@ -129,6 +205,7 @@ void MediaKeys::startHid() {
     }
 
     if (_mainWrapper) lv_obj_remove_flag(_mainWrapper, LV_OBJ_FLAG_HIDDEN);
+    if (tt_lvgl_hardware_keyboard_is_available()) enterKeyMode();
 }
 
 void MediaKeys::handleSwitchToggle(bool enabled) {
@@ -166,6 +243,7 @@ void MediaKeys::handleSwitchToggle(bool enabled) {
         }
     } else {
         _radioEnabling = false;
+        if (tt_lvgl_hardware_keyboard_is_available()) exitKeyMode();
         if (_hidDevice) bluetooth_hid_device_stop(_hidDevice);
         if (_btDevice) bluetooth_remove_event_callback(_btDevice, btEventCallback);
         if (_btDevice && _radioWasOff) bluetooth_set_radio_enabled(_btDevice, false);
@@ -194,6 +272,7 @@ void MediaKeys::handleButtonPress(uint32_t buttonId) {
 }
 
 void MediaKeys::onShow(AppHandle appHandle, lv_obj_t* parent) {
+    _parent = parent;
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
@@ -231,6 +310,13 @@ void MediaKeys::onShow(AppHandle appHandle, lv_obj_t* parent) {
 
     lv_obj_add_event_cb(_buttonMatrix, onButtonPressed, LV_EVENT_VALUE_CHANGED, this);
 
+    // Physical keyboard support: key events on the matrix (entered when BT enabled, Q/Esc exits)
+    if (tt_lvgl_hardware_keyboard_is_available()) {
+        lv_obj_add_event_cb(_buttonMatrix, onKeyEvent, LV_EVENT_KEY, this);
+        _keyHighlightTimer = lv_timer_create(onKeyHighlightTimer, 150, this);
+        lv_timer_pause(_keyHighlightTimer);
+    }
+
     lv_obj_add_flag(_mainWrapper, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -244,6 +330,14 @@ void MediaKeys::onHide(AppHandle /*appHandle*/) {
     _radioEnabling = false;
     _radioWasOff = false;
 
+    if (tt_lvgl_hardware_keyboard_is_available()) exitKeyMode();
+    if (_keyHighlightTimer) {
+        lv_timer_delete(_keyHighlightTimer);
+        _keyHighlightTimer = nullptr;
+    }
+    _activeKeyBtn = LV_BTNMATRIX_BTN_NONE;
+
+    _parent = nullptr;
     _mainWrapper = nullptr;
     _switchWidget = nullptr;
     _buttonMatrix = nullptr;

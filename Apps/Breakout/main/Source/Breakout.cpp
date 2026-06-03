@@ -339,9 +339,9 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_add_event_cb(gameArea, onPressed, LV_EVENT_PRESSING, this);
     lv_obj_add_event_cb(gameArea, onClicked, LV_EVENT_SHORT_CLICKED, this);
     lv_obj_add_event_cb(gameArea, onKey, LV_EVENT_KEY, this);
-    lv_obj_add_event_cb(gameArea, onFocused, LV_EVENT_FOCUSED, this);
+    lv_obj_add_event_cb(gameArea, onReenterKeyMode, LV_EVENT_CLICKED, this);
 
-    // Keyboard focus
+    // Keyboard focus - explicit enter/exit, no focus/defocus handlers
     lv_group_t* group = lv_group_get_default();
     if (group) {
         lv_group_add_obj(group, gameArea);
@@ -357,6 +357,11 @@ void Breakout::onHide(AppHandle appHandle) {
     if (gameTimer) {
         lv_timer_delete(gameTimer);
         gameTimer = nullptr;
+    }
+    if (gameArea) {
+        lv_group_t* group = lv_group_get_default();
+        if (group) lv_group_set_editing(group, false);
+        lv_group_remove_obj(gameArea);
     }
     gameArea = nullptr;
     paddle = nullptr;
@@ -1460,6 +1465,16 @@ void Breakout::onKey(lv_event_t* e) {
                 }
             }
             break;
+        case LV_KEY_ESC:
+        case 'q':
+        case 'Q': {
+            // Exit key/edit mode - remove from group so navigation is restored
+            // Re-entry: tap/click the game area to return to key mode
+            lv_group_t* group = lv_group_get_default();
+            if (group) lv_group_set_editing(group, false);
+            lv_group_remove_obj(lv_event_get_current_target_obj(e));
+            break;
+        }
     }
 }
 
@@ -1478,7 +1493,13 @@ void Breakout::onSoundToggled(lv_event_t* e) {
     self->updateSoundIcon();
 }
 
-void Breakout::onFocused(lv_event_t* e) {
+void Breakout::onReenterKeyMode(lv_event_t* e) {
+    lv_obj_t* area = lv_event_get_current_target_obj(e);
     lv_group_t* group = lv_group_get_default();
-    if (group) lv_group_set_editing(group, true);
+    if (!group) return;
+    if (lv_obj_get_group(area) == NULL) {
+        lv_group_add_obj(group, area);
+    }
+    lv_group_focus_obj(area);
+    lv_group_set_editing(group, true);
 }

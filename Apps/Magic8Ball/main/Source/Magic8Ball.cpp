@@ -36,7 +36,7 @@ static const char* responses[] = {
 
 static const char* getInputHint() {
     if (tt_lvgl_hardware_keyboard_is_available()) {
-        return "Touch or press Space to ask";
+        return "Touch or Space to ask  Q to exit";
     }
     return "Touch the ball to ask";
 }
@@ -67,8 +67,21 @@ void Magic8Ball::onBallClick(lv_event_t* e) {
 void Magic8Ball::onKey(lv_event_t* e) {
     auto* self = (Magic8Ball*)lv_event_get_user_data(e);
     uint32_t key = lv_event_get_key(e);
-    if (key == LV_KEY_ENTER || key == ' ') {
-        self->revealAnswer();
+    switch (key) {
+        case LV_KEY_ENTER:
+        case ' ':
+            self->revealAnswer();
+            break;
+        case LV_KEY_ESC:
+        case 'q':
+        case 'Q': {
+            lv_group_t* grp = lv_group_get_default();
+            if (grp) lv_group_set_editing(grp, false);
+            lv_group_remove_obj(lv_event_get_current_target_obj(e));
+            break;
+        }
+        default:
+            break;
     }
 }
 
@@ -127,15 +140,19 @@ void Magic8Ball::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_add_flag(ballObj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ballObj, onBallClick, LV_EVENT_CLICKED, this);
 
-    /* Keyboard support */
-    lv_group_t* grp = lv_group_get_default();
-    if (grp) lv_group_add_obj(grp, ballObj);
-    lv_obj_add_event_cb(ballObj, onKey, LV_EVENT_KEY, this);
+    /* Keyboard support - no editing mode needed, just focus the ball */
+    if (tt_lvgl_hardware_keyboard_is_available()) {
+        lv_group_t* grp = lv_group_get_default();
+        if (grp) {
+            lv_group_add_obj(grp, ballObj);
+            lv_group_focus_obj(ballObj);
+        }
+        lv_obj_add_event_cb(ballObj, onKey, LV_EVENT_KEY, this);
+    }
 }
 
 void Magic8Ball::onHide(AppHandle app) {
-    lv_group_t* grp = lv_group_get_default();
-    if (grp && ballObj) {
+    if (tt_lvgl_hardware_keyboard_is_available() && ballObj) {
         lv_group_remove_obj(ballObj);
     }
     answerLabel = nullptr;

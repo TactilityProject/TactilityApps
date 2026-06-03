@@ -13,7 +13,7 @@
 static void game_play_event(lv_event_t* e);
 static void snake_timer_cb(lv_timer_t* timer);
 static void delete_event(lv_event_t* e);
-static void focus_event(lv_event_t* e);
+static void reenter_key_mode_event(lv_event_t* e);
 static void snake_draw(snake_game_t* game);
 static void snake_create_segment_objects(snake_game_t* game);
 static void snake_delete_segment_objects(snake_game_t* game);
@@ -35,12 +35,11 @@ static void delete_event(lv_event_t* e) {
             game->timer = NULL;
         }
 
-        // Restore edit mode to false before cleanup
+        // Restore edit mode and remove from group before cleanup
         if (tt_lvgl_hardware_keyboard_is_available()) {
             lv_group_t* group = lv_group_get_default();
-            if (group) {
-                lv_group_set_editing(group, false);
-            }
+            if (group) lv_group_set_editing(group, false);
+            lv_group_remove_obj(game->container);
         }
 
         // Delete LVGL objects for snake segments
@@ -59,21 +58,17 @@ static void delete_event(lv_event_t* e) {
 }
 
 /**
- * @brief Handle focus/defocus to manage edit mode for keyboard input
+ * @brief Re-enter key mode when the game area is clicked after Q/Esc exit
  */
-static void focus_event(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
+static void reenter_key_mode_event(lv_event_t* e) {
+    lv_obj_t* container = lv_event_get_current_target_obj(e);
     lv_group_t* group = lv_group_get_default();
-
     if (!group) return;
-
-    if (code == LV_EVENT_FOCUSED) {
-        // Enable edit mode so arrow keys control the game
-        lv_group_set_editing(group, true);
-    } else if (code == LV_EVENT_DEFOCUSED) {
-        // Restore normal focus navigation
-        lv_group_set_editing(group, false);
+    if (lv_obj_get_group(container) == NULL) {
+        lv_group_add_obj(group, container);
     }
+    lv_group_focus_obj(container);
+    lv_group_set_editing(group, true);
 }
 
 /**
@@ -278,6 +273,16 @@ static void game_play_event(lv_event_t* e) {
             case '/':
                 snake_set_direction(game, SNAKE_DIR_RIGHT);
                 break;
+            case LV_KEY_ESC:
+            case 'q':
+            case 'Q': {
+                // Exit key/edit mode - remove from group so navigation is restored
+                // Re-entry: tap/click the game area to return to key mode
+                lv_group_t* grp = lv_group_get_default();
+                if (grp) lv_group_set_editing(grp, false);
+                lv_group_remove_obj(lv_event_get_current_target_obj(e));
+                break;
+            }
             default:
                 break;
         }
@@ -396,11 +401,9 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
         lv_group_t* group = lv_group_get_default();
         if (group) {
             lv_group_add_obj(group, game->container);
-            // Register focus handlers to manage edit mode lifecycle
-            lv_obj_add_event_cb(game->container, focus_event, LV_EVENT_FOCUSED, NULL);
-            lv_obj_add_event_cb(game->container, focus_event, LV_EVENT_DEFOCUSED, NULL);
-            // Focus the container (will trigger FOCUSED event and enable edit mode)
+            lv_obj_add_event_cb(game->container, reenter_key_mode_event, LV_EVENT_CLICKED, NULL);
             lv_group_focus_obj(game->container);
+            lv_group_set_editing(group, true);
         }
     }
 

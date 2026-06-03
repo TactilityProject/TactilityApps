@@ -133,7 +133,7 @@ private:
     static void onPressed(lv_event_t* e);
     static void onClicked(lv_event_t* e);
     static void onKey(lv_event_t* e);
-    static void onFocused(lv_event_t* e);
+    static void onReenterKeyMode(lv_event_t* e);
     static void onPauseClicked(lv_event_t* e);
     static void onSoundToggled(lv_event_t* e);
 
