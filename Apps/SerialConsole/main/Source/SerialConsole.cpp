@@ -11,10 +11,14 @@ void SerialConsole::stopActiveView() {
     }
 }
 
-void SerialConsole::showConsoleView(std::unique_ptr<Uart> uart) {
+void SerialConsole::showConsoleView(Device* dev) {
+    if (dev == nullptr) {
+        ESP_LOGE(TAG, "showConsoleView: null device");
+        return;
+    }
     stopActiveView();
     activeView = &consoleView;
-    consoleView.onStart(wrapperWidget, std::move(uart));
+    consoleView.onStart(wrapperWidget, dev);
     lv_obj_remove_flag(disconnectButton, LV_OBJ_FLAG_HIDDEN);
 }
 

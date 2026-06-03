@@ -5,6 +5,7 @@
 #include <tt_lvgl_toolbar.h>
 #include <tt_lvgl_keyboard.h>
 #include <tactility/lvgl_module.h>
+#include <tactility/lvgl_fonts.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,12 +33,24 @@ static bool ensureDir() {
     size_t size = sizeof(dir);
     tt_app_get_user_data_path(s_appHandle, dir, &size);
     if (size == 0) return false;
+    for (char* p = dir + 1; *p; ++p) {
+        if (*p == '/') { *p = '\0'; mkdir(dir, 0755); *p = '/'; }
+    }
     mkdir(dir, 0755);
     return true;
 }
 
-static int getToolbarHeight(UiDensity density) {
-    return (density == LVGL_UI_DENSITY_COMPACT) ? 22 : 40;
+static uint32_t getToolbarHeight(UiDensity uiDensity) {
+    if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
+        return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
+    } else {
+        return lvgl_get_text_font_height(FONT_SIZE_LARGE) * 2.2f;
+    }
+}
+
+static uint32_t getActionIconPadding(UiDensity uiDensity) {
+    auto toolbar_height = getToolbarHeight(uiDensity);
+    return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
 }
 
 /* ── Persistence ──────────────────────────────────────────────────── */
@@ -159,9 +172,9 @@ void TodoList::rebuildList() {
 
     lv_obj_clean(list);
 
-    UiDensity uiDensity = lvgl_get_ui_density();
-    int toolbarHeight = getToolbarHeight(uiDensity);
-    int btnSize = (uiDensity == LVGL_UI_DENSITY_COMPACT) ? toolbarHeight - 8 : toolbarHeight - 6;
+    auto ui_density = lvgl_get_ui_density();
+    auto toolbar_height = getToolbarHeight(ui_density);
+    auto icon_padding = getActionIconPadding(ui_density);
 
     if (count == 0) {
         lv_list_add_text(list, "No tasks yet. Add one below!");
@@ -182,7 +195,7 @@ void TodoList::rebuildList() {
         lv_obj_add_event_cb(btn, onItemClicked, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)i);
 
         lv_obj_t* delBtn = lv_button_create(btn);
-        lv_obj_set_size(delBtn, btnSize, btnSize);
+        lv_obj_set_size(delBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
         lv_obj_align(delBtn, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_set_style_bg_color(delBtn, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
         lv_obj_set_style_pad_all(delBtn, 0, LV_PART_MAIN);
@@ -286,23 +299,20 @@ void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_style_text_font(countLabel, lv_font_get_default(), 0);
     lv_obj_set_style_text_color(countLabel, lv_palette_main(LV_PALETTE_CYAN), LV_PART_MAIN);
 
-    UiDensity uiDensity = lvgl_get_ui_density();
-    int toolbarHeight = getToolbarHeight(uiDensity);
+    auto ui_density = lvgl_get_ui_density();
+    auto toolbar_height = getToolbarHeight(ui_density);
+    auto icon_padding = getActionIconPadding(ui_density);
 
     lv_obj_t* btnWrapper = lv_obj_create(toolbar);
     lv_obj_set_width(btnWrapper, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(btnWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(btnWrapper, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(btnWrapper, icon_padding / 2, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_column(btnWrapper, 4, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(btnWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(btnWrapper, 0, LV_STATE_DEFAULT);
 
-    int btnSize = (uiDensity == LVGL_UI_DENSITY_COMPACT)
-        ? toolbarHeight - 8
-        : toolbarHeight - 6;
-
     lv_obj_t* clearBtn = lv_button_create(btnWrapper);
-    lv_obj_set_size(clearBtn, btnSize, btnSize);
+    lv_obj_set_size(clearBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(clearBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(clearBtn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_event_cb(clearBtn, onClearDoneClicked, LV_EVENT_CLICKED, nullptr);

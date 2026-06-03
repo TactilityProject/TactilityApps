@@ -13,6 +13,7 @@
 #include <tt_lvgl_keyboard.h>
 
 #include <tactility/lvgl_module.h>
+#include <tactility/lvgl_fonts.h>
 
 constexpr auto* TAG = "Breakout";
 
@@ -97,12 +98,17 @@ static uint32_t levelRng(uint32_t& seed) {
 
 // ── UI Creation ──────────────────────────────────────────────
 
-static int getToolbarHeight(UiDensity density) {
-    if (density == LVGL_UI_DENSITY_COMPACT) {
-        return 22;
+static uint32_t getToolbarHeight(UiDensity uiDensity) {
+    if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
+        return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
     } else {
-        return 40;
+        return lvgl_get_text_font_height(FONT_SIZE_LARGE) * 2.2f;
     }
+}
+
+static uint32_t getActionIconPadding(UiDensity uiDensity) {
+    auto toolbar_height = getToolbarHeight(uiDensity);
+    return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
 }
 
 void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
@@ -157,21 +163,21 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_style_text_color(livesLabel, lv_palette_main(LV_PALETTE_RED), 0);
     lv_obj_align(livesLabel, LV_ALIGN_CENTER, 0, 0);
 
+    auto ui_density = lvgl_get_ui_density();
+    auto toolbar_height = getToolbarHeight(ui_density);
+    auto icon_padding = getActionIconPadding(ui_density);
+
     // Toolbar buttons wrapper
     lv_obj_t* btnsWrapper = lv_obj_create(toolbar);
     lv_obj_set_width(btnsWrapper, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(btnsWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(btnsWrapper, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(btnsWrapper, icon_padding / 2, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(btnsWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(btnsWrapper, 0, LV_STATE_DEFAULT);
 
-    auto ui_density = lvgl_get_ui_density();
-    auto toolbar_height = getToolbarHeight(ui_density);
-    int btnSize = (ui_density == LVGL_UI_DENSITY_COMPACT) ? toolbar_height - 8 : toolbar_height - 6;
-
     // Pause button
     lv_obj_t* pauseBtn = lv_btn_create(btnsWrapper);
-    lv_obj_set_size(pauseBtn, btnSize, btnSize);
+    lv_obj_set_size(pauseBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(pauseBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_event_cb(pauseBtn, onPauseClicked, LV_EVENT_CLICKED, this);
@@ -182,7 +188,7 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
 
     // Sound toggle button
     lv_obj_t* soundBtn = lv_btn_create(btnsWrapper);
-    lv_obj_set_size(soundBtn, btnSize, btnSize);
+    lv_obj_set_size(soundBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(soundBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(soundBtn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_event_cb(soundBtn, onSoundToggled, LV_EVENT_CLICKED, this);

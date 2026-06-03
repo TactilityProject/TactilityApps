@@ -9,14 +9,14 @@ class SerialConsole final : public App {
 
     lv_obj_t* disconnectButton = nullptr;
     lv_obj_t* wrapperWidget = nullptr;
-    ConnectView connectView = ConnectView([this](auto uart){
-        showConsoleView(std::move(uart));
+    ConnectView connectView = ConnectView([this](Device* dev){
+        showConsoleView(dev);
     });
     ConsoleView consoleView;
     View* activeView = nullptr;
 
     void stopActiveView();
-    void showConsoleView(std::unique_ptr<Uart> uart);
+    void showConsoleView(Device* dev);
     void showConnectView();
     void onDisconnect();
     static void onDisconnectPressed(lv_event_t* event);

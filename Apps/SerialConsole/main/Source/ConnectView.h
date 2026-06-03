@@ -6,21 +6,20 @@
 #include <vector>
 #include <lvgl.h>
 #include <functional>
-#include <memory>
 
 #include <tt_app_alertdialog.h>
-#include <tt_hal_uart.h>
 #include <tt_lvgl.h>
 #include <TactilityCpp/LvglLock.h>
-#include <TactilityCpp/Uart.h>
 #include <TactilityCpp/Preferences.h>
+#include <tactility/device.h>
+#include <tactility/drivers/uart_controller.h>
 
 class ConnectView final : public View {
 
 public:
 
-    typedef std::function<void(std::unique_ptr<Uart>)> OnConnectedFunction;
-    std::vector<std::string> uartNames;
+    typedef std::function<void(Device*)> OnConnectedFunction;
+    std::vector<Device*> uartDevices;
     Preferences preferences = Preferences("SerialConsole");
     LvglLock lvglLock;
 
@@ -30,13 +29,11 @@ private:
     lv_obj_t* busDropdown = nullptr;
     lv_obj_t* speedTextarea = nullptr;
 
-    std::string join(const std::vector<std::string>& list) {
+    std::string buildDeviceOptions() {
         std::string output;
-        for (int i = list.size() - 1; i >= 0; i--) {
-            output.append(list[i].c_str());
-            if (i < list.size() - 1) {
-                output.append(",");
-            }
+        for (size_t i = 0; i < uartDevices.size(); i++) {
+            if (i > 0) output.append("\n");
+            output.append(uartDevices[i]->name);
         }
         return output;
     }
@@ -54,15 +51,9 @@ private:
 
         const char* alert_dialog_labels[] = { "OK" };
 
-        auto selected_uart_index = lv_dropdown_get_selected(busDropdown);
-        if (selected_uart_index >= uartNames.size()) {
+        uint32_t selected_index = lv_dropdown_get_selected(busDropdown);
+        if (selected_index >= uartDevices.size()) {
             tt_app_alertdialog_start("Error", "No UART selected", alert_dialog_labels, 1);
-            return;
-        }
-
-        auto uart = Uart::open(selected_uart_index);
-        if (uart == nullptr) {
-            tt_app_alertdialog_start("Error", "Failed to connect to UART", alert_dialog_labels, 1);
             return;
         }
 
@@ -72,18 +63,25 @@ private:
             return;
         }
 
-        if (!uart->start()) {
-            tt_app_alertdialog_start("Error", "Failed to initialize", alert_dialog_labels, 1);
-            return;
-        }
+        Device* dev = uartDevices[selected_index];
 
-        if (!uart->setBaudRate(speed)) {
-            uart->stop();
+        UartConfig cfg = {
+            (uint32_t)speed,
+            UART_CONTROLLER_DATA_8_BITS,
+            UART_CONTROLLER_PARITY_DISABLE,
+            UART_CONTROLLER_STOP_BITS_1,
+        };
+        if (uart_controller_set_config(dev, &cfg) != ERROR_NONE) {
             tt_app_alertdialog_start("Error", "Failed to set baud rate", alert_dialog_labels, 1);
             return;
         }
 
-        onConnected(std::move(uart));
+        if (uart_controller_open(dev) != ERROR_NONE) {
+            tt_app_alertdialog_start("Error", "Failed to open UART", alert_dialog_labels, 1);
+            return;
+        }
+
+        onConnected(dev);
     }
 
     static void onConnectCallback(lv_event_t* event) {
@@ -104,7 +102,12 @@ public:
     explicit ConnectView(OnConnectedFunction onConnected) : onConnected(std::move(onConnected)) {}
 
     void onStart(lv_obj_t* parent) {
-        uartNames = Uart::getNames();
+        // Enumerate UART controller devices
+        uartDevices.clear();
+        device_for_each_of_type(&UART_CONTROLLER_TYPE, &uartDevices, [](Device* d, void* ctx) -> bool {
+            static_cast<std::vector<Device*>*>(ctx)->push_back(d);
+            return true;
+        });
 
         auto* wrapper = lv_obj_create(parent);
         lv_obj_set_flex_flow(wrapper, LV_FLEX_FLOW_COLUMN);
@@ -118,15 +121,15 @@ public:
 
         busDropdown = lv_dropdown_create(bus_wrapper);
 
-        auto bus_options = join(uartNames);
-        lv_dropdown_set_options(busDropdown, bus_options.c_str());
+        auto bus_options = buildDeviceOptions();
+        lv_dropdown_set_options(busDropdown, bus_options.empty() ? "none" : bus_options.c_str());
         lv_obj_align(busDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_set_width(busDropdown, LV_PCT(50));
 
         int32_t bus_index = 0;
         preferences.optInt32("bus", bus_index);
-        if (bus_index < uartNames.size()) {
-            lv_dropdown_set_selected(busDropdown, bus_index);
+        if (bus_index >= 0 && (size_t)bus_index < uartDevices.size()) {
+            lv_dropdown_set_selected(busDropdown, (uint32_t)bus_index);
         }
 
         auto* bus_label = lv_label_create(bus_wrapper);

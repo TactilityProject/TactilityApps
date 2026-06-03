@@ -10,6 +10,7 @@
 #include <tt_app_selectiondialog.h>
 #include <tt_preferences.h>
 #include <tactility/lvgl_module.h>
+#include <tactility/lvgl_fonts.h>
 #include <TactilityCpp/LvglLock.h>
 
 constexpr auto* TAG = "TwoEleven";
@@ -39,12 +40,17 @@ static constexpr int32_t SELECTION_6X6 = 4;
 // Grid size options (index matches selection - 1)
 static const uint16_t gridSizes[SIZE_COUNT] = { 3, 4, 5, 6 };
 
-static int getToolbarHeight(UiDensity density) {
-    if (density == LVGL_UI_DENSITY_COMPACT) {
-        return 22;
+static uint32_t getToolbarHeight(UiDensity uiDensity) {
+    if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
+        return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
     } else {
-        return 40;
+        return lvgl_get_text_font_height(FONT_SIZE_LARGE) * 2.2f;
     }
+}
+
+static uint32_t getActionIconPadding(UiDensity uiDensity) {
+    auto toolbar_height = getToolbarHeight(uiDensity);
+    return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
 }
 
 static void loadHighScores() {
@@ -206,23 +212,21 @@ void TwoEleven::createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
     lv_obj_set_style_text_color(scoreLabel, lv_palette_main(LV_PALETTE_AMBER), LV_PART_MAIN);
     lv_obj_add_event_cb(gameObject, twoElevenEventCb, LV_EVENT_VALUE_CHANGED, this);
 
+    auto ui_density = lvgl_get_ui_density();
+    auto toolbar_height = getToolbarHeight(ui_density);
+    auto icon_padding = getActionIconPadding(ui_density);
+
     // Create new game button wrapper
     newGameWrapper = lv_obj_create(tb);
     lv_obj_set_width(newGameWrapper, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(newGameWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(newGameWrapper, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(newGameWrapper, icon_padding / 2, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(newGameWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(newGameWrapper, 0, LV_STATE_DEFAULT);
 
     // Create new game button
-    auto ui_density = lvgl_get_ui_density();
-    auto toolbar_height = getToolbarHeight(ui_density);
     lv_obj_t* newGameBtn = lv_btn_create(newGameWrapper);
-    if (ui_density == LVGL_UI_DENSITY_COMPACT) {
-        lv_obj_set_size(newGameBtn, toolbar_height - 8, toolbar_height - 8);
-    } else {
-        lv_obj_set_size(newGameBtn, toolbar_height - 6, toolbar_height - 6);
-    }
+    lv_obj_set_size(newGameBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(newGameBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(newGameBtn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, this);

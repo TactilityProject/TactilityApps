@@ -76,6 +76,9 @@ static bool getScriptDir(char* buf, size_t bufSize) {
     size_t size = bufSize;
     tt_app_get_user_data_path(s_appHandle, buf, &size);
     if (size == 0) return false;
+    for (char* p = buf + 1; *p; ++p) {
+        if (*p == '/') { *p = '\0'; mkdir(buf, 0755); *p = '/'; }
+    }
     mkdir(buf, 0755);
     return true;
 }

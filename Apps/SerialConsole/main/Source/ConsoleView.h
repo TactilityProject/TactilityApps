@@ -6,13 +6,14 @@
 #include <string>
 #include <sstream>
 #include <lvgl.h>
-#include <memory>
 
 #include <tt_lvgl.h>
 
 #include <Tactility/RecursiveMutex.h>
 #include <Tactility/Thread.h>
 #include <TactilityCpp/LvglLock.h>
+#include <tactility/device.h>
+#include <tactility/drivers/uart_controller.h>
 
 constexpr size_t receiveBufferSize = 512;
 constexpr size_t renderBufferSize = receiveBufferSize + 2; // Leave space for newline at split and null terminator at the end
@@ -24,7 +25,7 @@ class ConsoleView final : public View {
     lv_obj_t* _Nullable parent = nullptr;
     lv_obj_t* _Nullable logTextarea = nullptr;
     lv_obj_t* _Nullable inputTextarea = nullptr;
-    std::shared_ptr<Uart> _Nullable uart = nullptr;
+    Device* uartDev = nullptr;
     std::unique_ptr<tt::Thread> uartThread _Nullable = nullptr;
     bool uartThreadInterrupted = false;
     std::unique_ptr<tt::Thread> viewThread _Nullable = nullptr;
@@ -91,18 +92,16 @@ class ConsoleView final : public View {
     }
 
     int32_t uartThreadMain() {
-        char byte;
-
         while (!isUartThreadInterrupted()) {
-            assert(uart != nullptr);
-            bool success = uart->readByte(&byte, tt::kernel::millisToTicks(50));
+            uint8_t byte;
+            error_t err = uart_controller_read_byte(uartDev, &byte, tt::kernel::millisToTicks(50));
 
             // Thread might've been interrupted in the meanwhile
             if (isUartThreadInterrupted()) {
                 break;
             }
 
-            if (success) {
+            if (err == ERROR_NONE) {
                 mutex.lock();
                 receiveBuffer[receiveBufferPosition++] = byte;
                 if (receiveBufferPosition == receiveBufferSize) {
@@ -110,7 +109,6 @@ class ConsoleView final : public View {
                 }
                 mutex.unlock();
             }
-
         }
 
         return 0;
@@ -145,10 +143,17 @@ class ConsoleView final : public View {
         std::string input_text = lv_textarea_get_text(inputTextarea);
         std::string to_send;
         to_send.append(input_text + terminatorString);
+        Device* localUart = uartDev;
         mutex.unlock();
 
-        if (uart != nullptr) {
-            if (!uart->writeBytes(to_send.c_str(), to_send.length(), 100 / portTICK_PERIOD_MS)) {
+        if (localUart != nullptr) {
+            error_t err = uart_controller_write_bytes(
+                localUart,
+                reinterpret_cast<const uint8_t*>(to_send.c_str()),
+                to_send.length(),
+                tt::kernel::millisToTicks(100)
+            );
+            if (err != ERROR_NONE) {
                 ESP_LOGE(TAG, "Failed to send \"%s\"", input_text.c_str());
             }
         }
@@ -158,13 +163,16 @@ class ConsoleView final : public View {
 
 public:
 
-    void startLogic(std::unique_ptr<Uart> newUart) {
+    void startLogic(Device* dev) {
+        assert(dev != nullptr);
+        if (dev == nullptr) return;
+
         memset(receiveBuffer, 0, receiveBufferSize);
 
         assert(uartThread == nullptr);
-        assert(uart == nullptr);
+        assert(uartDev == nullptr);
 
-        uart = std::move(newUart);
+        uartDev = dev;
 
         uartThreadInterrupted = false;
         uartThread = std::make_unique<tt::Thread>(
@@ -205,7 +213,6 @@ public:
         lv_dropdown_set_options(terminator_dropdown, "\\n\n\\r\\n");
         lv_obj_set_width(terminator_dropdown, 70);
         lv_obj_add_event_cb(terminator_dropdown, onTerminatorDropdownValueChangedCallback, LV_EVENT_VALUE_CHANGED, this);
-
 
         auto* button = lv_button_create(input_wrapper);
         auto* button_label = lv_label_create(button);
@@ -261,17 +268,17 @@ public:
         auto lock = mutex.asScopedLock();
         lock.lock();
 
-        if (uart != nullptr && uart->isStarted()) {
-            uart->stop();
-            uart = nullptr;
+        if (uartDev != nullptr) {
+            uart_controller_close(uartDev);
+            uartDev = nullptr;
         }
     }
 
-    void onStart(lv_obj_t* parent, std::unique_ptr<Uart> newUart) {
+    void onStart(lv_obj_t* parent, Device* dev) {
         auto lock = mutex.asScopedLock();
         lock.lock();
 
-        startLogic(std::move(newUart));
+        startLogic(dev);
         startViews(parent);
     }
 
