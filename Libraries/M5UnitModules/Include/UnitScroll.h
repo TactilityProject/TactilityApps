@@ -32,6 +32,7 @@ public:
     UnitScroll(const UnitScroll&) = delete;
     UnitScroll& operator=(const UnitScroll&) = delete;
 
+    // Pass a I2C controller device
     [[nodiscard]] bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
     bool isPresent() const { return dev_ != nullptr; }
 

@@ -41,9 +41,11 @@ public:
     UnitCardKB2(const UnitCardKB2&) = delete;
     UnitCardKB2& operator=(const UnitCardKB2&) = delete;
 
+    // Pass a I2C controller device
     // I2C mode - probe and initialise. Returns false if not present.
     [[nodiscard]] bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
 
+    // Pass a UART controller device
     // UART mode - set_config then open uart_controller.
     // Returns false if the device is null or open fails.
     [[nodiscard]] bool beginUart(Device* dev);

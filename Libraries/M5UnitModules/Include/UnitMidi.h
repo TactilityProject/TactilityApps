@@ -34,7 +34,7 @@ public:
     UnitMidi(UnitMidi&&) = delete;
     UnitMidi& operator=(UnitMidi&&) = delete;
 
-    // Pass a Device* from device_find_by_name("uart1") or similar.
+    // Pass a UART controller device
     // begin() opens the controller, sets baud rate to 31250, and issues a system reset.
     [[nodiscard]] bool begin(Device* dev);
 

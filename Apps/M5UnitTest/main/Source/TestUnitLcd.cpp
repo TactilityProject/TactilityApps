@@ -101,7 +101,7 @@ void TestUnitLcd::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
         bool found = false;
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
             hub_.select(ch);
-            if (lcd_.begin(i2c)) found = true;
+            if (lcd_.begin(i2c)) { found = true; lcdChannel_ = ch; }
         }
         if (!found) {
             hub_.deselect();
@@ -121,7 +121,7 @@ void TestUnitLcd::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
 
 void TestUnitLcd::selectIfNeeded() {
     if (usingPaHub_ && hub_.isPresent())
-        hub_.select(hub_.currentChannel());
+        hub_.select(lcdChannel_);
 }
 
 void TestUnitLcd::onStop() {

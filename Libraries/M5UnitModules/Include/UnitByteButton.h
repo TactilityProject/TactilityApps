@@ -38,6 +38,7 @@ public:
     UnitByteButton(const UnitByteButton&) = delete;
     UnitByteButton& operator=(const UnitByteButton&) = delete;
 
+    // Pass a I2C controller device
     // Probe and initialise. Returns false if not present.
     // Sets show mode to user-defined so setLed/flushLeds take effect.
     [[nodiscard]] bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);

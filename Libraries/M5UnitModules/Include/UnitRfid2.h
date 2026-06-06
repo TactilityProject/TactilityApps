@@ -84,6 +84,7 @@ public:
 
     static constexpr uint8_t DEFAULT_ADDR = 0x28;
 
+    // Pass a I2C controller device
     bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
     bool isPresent() const { return dev_ != nullptr; }
 

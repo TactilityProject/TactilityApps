@@ -34,6 +34,7 @@ public:
     UnitDualButton(UnitDualButton&&) = delete;
     UnitDualButton& operator=(UnitDualButton&&) = delete;
 
+    // Pass a GPIO controller device
     // Acquire and configure both GPIO pins as inputs with pull-up.
     // controller: GPIO controller device (e.g. device_find_by_name("gpio0"))
     // pinA / pinB: physical GPIO pin numbers

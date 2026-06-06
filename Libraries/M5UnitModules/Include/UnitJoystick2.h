@@ -35,6 +35,7 @@ class UnitJoystick2 {
 public:
     static constexpr uint8_t DEFAULT_ADDR = 0x63;
 
+    // Pass a I2C controller device
     [[nodiscard]] bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
     bool isPresent() const { return dev_ != nullptr; }
 

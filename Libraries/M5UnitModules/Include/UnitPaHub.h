@@ -31,6 +31,7 @@ public:
     static constexpr uint8_t NUM_CHANNELS    = 6;
     static constexpr uint8_t NO_CHANNEL      = 0xFF;
 
+    // Pass a I2C controller device
     bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
     bool isPresent() const { return dev_ != nullptr; }
 

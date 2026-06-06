@@ -16,6 +16,7 @@ private:
     lv_obj_t* lblRotation_ = nullptr;
     uint8_t   rotation_    = 0;
     bool      usingPaHub_  = false;
+    uint8_t   lcdChannel_  = 0;
 
     void selectIfNeeded();
 

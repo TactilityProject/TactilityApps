@@ -43,6 +43,7 @@ public:
     Unit8Encoder(const Unit8Encoder&) = delete;
     Unit8Encoder& operator=(const Unit8Encoder&) = delete;
 
+    // Pass a I2C controller device
     // Probe and initialise. Returns false if the unit is not present.
     [[nodiscard]] bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
 

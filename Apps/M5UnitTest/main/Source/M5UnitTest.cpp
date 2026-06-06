@@ -46,6 +46,7 @@ void M5UnitTest::onHide(AppHandle handle) {
         delete activeTestView_;
         activeTestView_ = nullptr;
     }
+    if (listView_) listView_->onStop();
     delete listView_;
     listView_   = nullptr;
     wrapper_    = nullptr;

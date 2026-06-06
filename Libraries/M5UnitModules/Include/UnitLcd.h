@@ -49,6 +49,7 @@ public:
     UnitLcd(const UnitLcd&) = delete;
     UnitLcd& operator=(const UnitLcd&) = delete;
 
+    // Pass a I2C controller device
     // Probe and initialise. Sets brightness to 128, rotation to 0.
     [[nodiscard]] bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
 

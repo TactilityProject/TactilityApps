@@ -9,6 +9,7 @@ SimpleXmlParser::SimpleXmlParser() {
     buffer_ = (uint8_t*)malloc(BUFFER_SIZE);
     if (!buffer_) {
         LOG_E(TAG, "Failed to allocate buffer");
+        abort();
     }
 }
 

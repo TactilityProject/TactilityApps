@@ -583,7 +583,7 @@ void UnitLcd::drawChar(uint8_t x, uint8_t y, char ch, uint16_t fg, uint16_t bg, 
         }
     }
     // Trailing gap column in background colour
-    uint8_t gx = x + 5 * scale;
+    uint16_t gx = (uint16_t)x + 5 * scale;
     if (gx < W) {
         uint16_t gx1 = std::min((uint16_t)(gx + scale - 1), (uint16_t)(W - 1));
         uint16_t gy1 = std::min((uint16_t)(y + 7 * scale - 1), (uint16_t)(H - 1));

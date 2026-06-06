@@ -152,10 +152,13 @@ void MediaKeys::btEventCallback(struct Device* /*device*/, void* context, struct
     if (event.type == BT_EVENT_RADIO_STATE_CHANGED) {
         LOG_I(TAG, "BT radio state: %d", (int)event.radio_state);
 
-        if (event.radio_state == BT_RADIO_STATE_ON && self->_radioEnabling) {
+        if (event.radio_state == BT_RADIO_STATE_ON) {
             // Radio is now up - start HID (needs LVGL lock for UI update)
             if (tt_lvgl_lock(1000)) {
-                self->startHid();
+                // Re-check inside lock to avoid TOCTOU race with handleSwitchToggle(false)
+                if (self->_radioEnabling) {
+                    self->startHid();
+                }
                 tt_lvgl_unlock();
             }
         } else if (event.radio_state == BT_RADIO_STATE_OFF && self->_isEnabled) {

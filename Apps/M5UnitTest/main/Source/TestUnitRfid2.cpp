@@ -160,7 +160,8 @@ void TestUnitRfid2::showCard(const UnitRfid2::Uid& uid) {
     // UID string
     char uidBuf[40] = "UID: ";
     int pos = 5;
-    for (uint8_t i = 0; i < uid.size; i++)
+    uint8_t size = (uid.size <= 10) ? uid.size : 10;
+    for (uint8_t i = 0; i < size; i++)
         pos += snprintf(uidBuf + pos, sizeof(uidBuf) - (size_t)pos, "%02X ", uid.bytes[i]);
     lv_label_set_text(lblUid_, uidBuf);
 
