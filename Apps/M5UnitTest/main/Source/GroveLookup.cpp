@@ -28,19 +28,18 @@ bool onGroveDevice(Device* groveDevice, void* context) {
     return search->result == nullptr; // stop outer iteration once found
 }
 
-Device* findGroveChild(const DeviceType* childType, const char* fallbackName) {
+Device* findGroveChild(const DeviceType* childType) {
     GroveChildSearch search{childType, nullptr};
     device_for_each_of_type(&GROVE_TYPE, &search, onGroveDevice);
-    if (search.result) return search.result;
-    return device_find_by_name(fallbackName);
+    return search.result;
 }
 
 } // namespace
 
 Device* findGroveI2cDevice() {
-    return findGroveChild(&I2C_CONTROLLER_TYPE, "grove0_i2c");
+    return findGroveChild(&I2C_CONTROLLER_TYPE);
 }
 
 Device* findGroveUartDevice() {
-    return findGroveChild(&UART_CONTROLLER_TYPE, "grove0_uart");
+    return findGroveChild(&UART_CONTROLLER_TYPE);
 }
