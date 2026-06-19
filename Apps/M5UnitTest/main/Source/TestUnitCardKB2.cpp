@@ -1,4 +1,5 @@
 #include "TestUnitCardKB2.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/drivers/uart_controller.h>
@@ -116,10 +117,10 @@ void TestUnitCardKB2::connectI2C() {
     lv_obj_delete(connectOverlay_);
     connectOverlay_ = nullptr;
 
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) {
         buildMainUI();
-        lv_label_set_text(lblHistory_, "i2c1 not found");
+        lv_label_set_text(lblHistory_, "grove0_i2c not found");
         return;
     }
 
@@ -145,10 +146,10 @@ void TestUnitCardKB2::connectUart() {
     lv_obj_delete(connectOverlay_);
     connectOverlay_ = nullptr;
 
-    Device* uart = device_find_by_name("uart1");
+    Device* uart = findGroveUartDevice();
     buildMainUI();
     if (!uart) {
-        lv_label_set_text(lblHistory_, "uart1 not found");
+        lv_label_set_text(lblHistory_, "grove0_uart not found");
         return;
     }
     if (!unit_.beginUart(uart)) {

@@ -1,4 +1,5 @@
 #include "TestUnitByteButton.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -56,10 +57,10 @@ void TestUnitByteButton::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest*
     lv_obj_set_style_text_font(hint, lvgl_get_text_font(FONT_SIZE_SMALL), 0);
     lv_label_set_text(hint, "Press buttons - LEDs toggle");
 
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) {
         for (int i = 0; i < BTN_COUNT; i++) lv_obj_set_style_bg_color(indicators_[i], lv_color_hex(COLOR_ERROR), 0);
-        lv_label_set_text(hint, "i2c1 not found");
+        lv_label_set_text(hint, "grove0_i2c not found");
         return;
     }
 

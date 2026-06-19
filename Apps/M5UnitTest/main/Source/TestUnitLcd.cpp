@@ -1,4 +1,5 @@
 #include "TestUnitLcd.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -87,9 +88,9 @@ void TestUnitLcd::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
     lv_label_set_text(lText, "Write Text");
     lv_obj_set_style_text_font(lText, fnt, 0);
 
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        lv_label_set_text(lblStatus_, "i2c1 not found");
+        lv_label_set_text(lblStatus_, "grove0_i2c not found");
         return;
     }
 

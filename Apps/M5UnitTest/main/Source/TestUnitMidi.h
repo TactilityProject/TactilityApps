@@ -17,9 +17,6 @@ private:
     uint8_t   note_       = 60;  // middle C
     bool      notePlaying_= false;
 
-    // UART device name for MIDI unit (adjust to match your board wiring)
-    static constexpr const char* UART_DEVICE = "uart1";
-
     static void onNoteOnClicked(lv_event_t* e);
     static void onNoteOffClicked(lv_event_t* e);
     static void onChUp(lv_event_t* e);

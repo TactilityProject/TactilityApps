@@ -1,4 +1,5 @@
 #include "TestUnitMidi.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -84,7 +85,7 @@ void TestUnitMidi::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) 
     lv_obj_t* lOff = lv_label_create(btnOff); lv_label_set_text(lOff, "Note Off");
     lv_obj_set_style_text_font(lOff, fntS, 0);
 
-    Device* uart = device_find_by_name(UART_DEVICE);
+    Device* uart = findGroveUartDevice();
     if (!uart || !device_is_ready(uart) || !unit_.begin(uart)) {
         lv_label_set_text(lblStatus_, "MIDI UART not available");
         updateLabels();

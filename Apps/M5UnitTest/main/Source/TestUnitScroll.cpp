@@ -1,4 +1,5 @@
 #include "TestUnitScroll.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -57,9 +58,9 @@ void TestUnitScroll::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app
     sliderB_ = makeSlider("B");
     lv_label_set_text(lblLed_, "LED: #000000");
 
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        lv_label_set_text(lblCounter_, "i2c1 not found");
+        lv_label_set_text(lblCounter_, "grove0_i2c not found");
         return;
     }
 

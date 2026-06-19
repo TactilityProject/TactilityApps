@@ -21,6 +21,20 @@ static constexpr uint32_t UNIT_I2C_PROBE_TIMEOUT_MS = 10;  // shorter timeout fo
 static constexpr uint32_t UNIT_STM32_READ_DELAY_MS  =  2;  // STM32 needs STOP + delay before read
 static constexpr uint16_t UNIT_MAX_WRITE_PAYLOAD     = 32;  // max bytes in a single I2C write
 
+// I2C addresses of the unit modules this library can drive (excludes PaHub itself
+// and UART-only units like MIDI). Used by PaHub channel probing instead of a full
+// 0x08-0x77 bus scan: the ESP-IDF i2c_master driver's probe op can wedge the bus
+// FSM after heavy NACK traffic, so scanning only known addresses avoids that.
+static constexpr uint8_t KNOWN_UNIT_ADDRS[] = {
+    0x28, // UnitRfid2
+    0x3E, // UnitLcd
+    0x40, // UnitScroll
+    0x41, // Unit8Encoder
+    0x47, // UnitByteButton
+    0x5F, // UnitCardKB2
+    0x63, // UnitJoystick2
+};
+
 // Probe whether a device exists at the given address on the given I2C bus.
 inline bool unitProbe(Device* dev, uint8_t addr) {
     return i2c_controller_has_device_at_address(
