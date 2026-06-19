@@ -1,4 +1,5 @@
 #include "TestUnitJoystick2.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -56,9 +57,9 @@ void TestUnitJoystick2::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* 
     lv_obj_set_style_border_width(dot_, 0, 0);
     lv_obj_set_pos(dot_, (JOY_AREA - DOT_SIZE) / 2, (JOY_AREA - DOT_SIZE) / 2);
 
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        lv_label_set_text(lblXY_, "i2c1 not found");
+        lv_label_set_text(lblXY_, "grove0_i2c not found");
         return;
     }
 

@@ -1,4 +1,5 @@
 #include "TestUnitRfid2.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -101,7 +102,7 @@ void TestUnitRfid2::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app)
     lv_label_set_text(btnLbl, "Clear");
 
     // ── Device discovery ─────────────────────────────────────────────────────
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) return;
 
     if (unit_.begin(i2c)) {

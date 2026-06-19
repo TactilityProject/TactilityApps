@@ -1,4 +1,5 @@
 #include "TestUnitLcdGfx.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/lvgl_fonts.h>
@@ -65,8 +66,8 @@ void TestUnitLcdGfx::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app
     lv_obj_set_width(lblLog_, LV_PCT(100));
     lv_label_set_text(lblLog_, "");
 
-    Device* i2c = device_find_by_name("i2c1");
-    if (!i2c) { lv_label_set_text(lblPhase_, "i2c1 not found"); return; }
+    Device* i2c = findGroveI2cDevice();
+    if (!i2c) { lv_label_set_text(lblPhase_, "grove0_i2c not found"); return; }
 
     if (lcd_.begin(i2c)) {
         usingPaHub_ = false;

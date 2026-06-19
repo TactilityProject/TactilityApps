@@ -18,7 +18,7 @@ private:
     bool      notePlaying_= false;
 
     // UART device name for MIDI unit (adjust to match your board wiring)
-    static constexpr const char* UART_DEVICE = "uart1";
+    static constexpr const char* UART_DEVICE = "grove0_uart";
 
     static void onNoteOnClicked(lv_event_t* e);
     static void onNoteOffClicked(lv_event_t* e);

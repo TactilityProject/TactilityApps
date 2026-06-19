@@ -1,4 +1,5 @@
 #include "TestUnitPaHub.h"
+#include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/drivers/i2c_controller.h>
@@ -60,7 +61,7 @@ void TestUnitPaHub::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app)
         lv_label_set_text_fmt(lblCh_[i], "CH%d: -", i);
     }
 
-    Device* i2c = device_find_by_name("i2c1");
+    Device* i2c = findGroveI2cDevice();
     if (!i2c || !hub_.begin(i2c)) {
         lv_label_set_text(lblStatus_, "PaHub not found");
         return;
@@ -95,16 +96,16 @@ void TestUnitPaHub::probeSelected() {
 
     hub_.select((uint8_t)selChannel_);
 
-    // Scan I2C addresses 0x08-0x77 on this channel
-    Device* i2c = device_find_by_name("i2c1");
+    // Probe known unit addresses only (full-range scan can wedge the ESP-IDF i2c_master bus FSM)
+    Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        lv_label_set_text_fmt(lblCh_[selChannel_], "CH%d: i2c1 not found", selChannel_);
+        lv_label_set_text_fmt(lblCh_[selChannel_], "CH%d: grove0_i2c not found", selChannel_);
         hub_.deselect();
         return;
     }
     char found[256] = "Found: ";
     bool any = false;
-    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+    for (uint8_t addr : KNOWN_UNIT_ADDRS) {
         if (i2c_controller_has_device_at_address(i2c, addr,
             pdMS_TO_TICKS(10)) == ERROR_NONE) {
             size_t remaining = sizeof(found) - strlen(found) - 1;
