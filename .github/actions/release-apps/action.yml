@@ -1,5 +1,10 @@
 name: Release Apps
 
+outputs:
+  sdk_version:
+    description: 'Common SDK version shared by all bundled apps'
+    value: ${{ steps.release.outputs.sdk_version }}
+
 runs:
   using: 'composite'
   steps:
@@ -11,8 +16,11 @@ runs:
       run: rsync -av downloaded_apps/*/*.app cdn_files/
       shell: bash
     - name: 'Create CDN release files'
-      run: python release.py cdn_files/
+      id: release
       shell: bash
+      run: |
+        python release.py cdn_files/
+        echo "sdk_version=$(cat sdk_version.txt)" >> "$GITHUB_OUTPUT"
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
