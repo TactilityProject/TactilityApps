@@ -1,8 +1,10 @@
 import json
+import subprocess
 import tarfile
 import os
 import tempfile
 import sys
+from datetime import datetime, UTC
 
 def read_properties_file(path):
     properties = {}
@@ -81,6 +83,17 @@ def get_os_version(manifest):
     else:
         return sdk
 
+def check_and_get_sdk_version(manifest_map):
+    """Ensure all apps target the same (simplified) SDK version and return it."""
+    versions = {get_os_version(manifest) for manifest in manifest_map.values()}
+    if len(versions) != 1:
+        print(f"ERROR: Apps target multiple SDK versions: {sorted(versions)}. All apps must target the same SDK version.")
+        sys.exit(1)
+    return next(iter(versions))
+
+def get_git_commit_hash():
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+
 def manifest_config_to_flat_json(manifest):
     """Convert a flat (V2) manifest dict into a flat JSON-like dict.
 
@@ -136,15 +149,23 @@ if __name__ == "__main__":
         sys.exit()
     app_directory = sys.argv[1]
     manifest_map = {}
-    output_json = {
-        "apps": []
-    }
     any_manifest = None
     if os.path.exists(app_directory):
         for file in os.listdir(app_directory):
             if file.endswith(".app"):
                 file_path = os.path.join(app_directory, file)
                 manifest_map[file_path] = get_manifest(file_path)
+    # All bundled apps must target the same SDK version; this becomes the CDN path segment
+    sdk_version = check_and_get_sdk_version(manifest_map)
+    with open("sdk_version.txt", "w") as f:
+        f.write(sdk_version)
+    print(f"SDK version: {sdk_version}")
+    output_json = {
+        "sdkVersion": sdk_version,
+        "created": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S'),
+        "gitCommit": get_git_commit_hash(),
+        "apps": []
+    }
     # Rename files and collect manifest data into output json object
     for file_path in manifest_map.keys():
         print(f"Processing {file_path}: {manifest_map[file_path]}")
