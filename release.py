@@ -162,7 +162,7 @@ if __name__ == "__main__":
     print(f"SDK version: {sdk_version}")
     output_json = {
         "sdkVersion": sdk_version,
-        "created": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S'),
+        "created": datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
         "gitCommit": get_git_commit_hash(),
         "apps": []
     }

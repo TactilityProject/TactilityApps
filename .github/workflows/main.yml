@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: "Build"
         uses: ./.github/actions/build-app
         with:
@@ -36,6 +38,8 @@ jobs:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main')
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: "Publish Apps"
         env:
           CDN_ID: ${{ secrets.CDN_ID }}

@@ -33,18 +33,23 @@ def main(path: str, sdk_version: str, cloudflare_account_id, cloudflare_token_na
         region_name="auto"
     )
     files_to_upload = os.listdir(path)
+    if index_only:
+        files_to_upload = [f for f in files_to_upload if f == 'apps.json']
+    else:
+        # Ensure apps.json is uploaded last so it never references files that
+        # haven't finished uploading yet.
+        files_to_upload.sort(key=lambda f: f == 'apps.json')
     counter = 1
     total = len(files_to_upload)
     for file_name in files_to_upload:
-        if not index_only or file_name == 'apps.json':
-            object_path = f"apps/{sdk_version}/{file_name}"
-            print(f"[{counter}/{total}] Uploading {file_name} to {object_path}")
-            file_path = os.path.join(path, file_name)
-            try:
-                s3.upload_file(file_path, "tactility", object_path)
-            except Exception as e:
-                exit_with_error(f"Failed to upload {file_name}: {str(e)}")
-            counter += 1
+        object_path = f"apps/{sdk_version}/{file_name}"
+        print(f"[{counter}/{total}] Uploading {file_name} to {object_path}")
+        file_path = os.path.join(path, file_name)
+        try:
+            s3.upload_file(file_path, "tactility", object_path)
+        except Exception as e:
+            exit_with_error(f"Failed to upload {file_name}: {str(e)}")
+        counter += 1
 
 if __name__ == "__main__":
     print("Tactility CDN Apps Uploader")
