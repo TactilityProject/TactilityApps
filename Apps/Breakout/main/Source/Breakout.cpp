@@ -124,7 +124,6 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     if (!sfxEngine) {
         sfxEngine = new SfxEngine();
         sfxEngine->start();
-        sfxEngine->applyVolumePreset(SfxEngine::VolumePreset::Quiet);
         sfxEngine->setEnabled(soundEnabled);
     }
 

@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <tactility/device.h>
+#include <tactility/drivers/audio_stream.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -161,12 +162,6 @@ public:
     // Settings
     void setEnabled(bool enabled) { enabled_ = enabled; }
     bool isEnabled() const { return enabled_; }
-    void setVolume(float vol) { masterVolume_ = (vol < 0) ? 0 : (vol > 1.0f) ? 1.0f : vol; }
-    float getVolume() const { return masterVolume_; }
-
-    // Volume presets (consistent with SoundEngine naming)
-    enum class VolumePreset { Quiet, Normal, Loud };
-    void applyVolumePreset(VolumePreset preset);
 
     // Polyphonic gate (consistent with SoundEngine)
     void setPolyphonicGateEnabled(bool enabled) { polyphonicGateEnabled_ = enabled; }
@@ -277,14 +272,21 @@ private:
     // State
     //--------------------------------------------------------------------------
 
-    Device* i2sDevice_ = nullptr;
+    Device* audioStreamDevice_ = nullptr;
+    AudioStreamHandle audioStreamHandle_ = nullptr;
     TaskHandle_t task_ = nullptr;
     SemaphoreHandle_t stopSemaphore_ = nullptr;  // Signaled when audio task exits
     QueueHandle_t msgQueue_ = nullptr;
 
     volatile bool running_ = false;
     volatile bool enabled_ = true;
-    volatile float masterVolume_ = 0.5f;
+
+    // Cached system output volume (0..1), refreshed periodically from the shared
+    // audio_stream device so the preset acts as a relative multiplier on top of it
+    // rather than an absolute level (a "Quiet" preset should sound quiet relative
+    // to whatever the user has the system volume set to, not in absolute terms).
+    float systemVolumeMix_ = 1.0f;
+    int systemVolumePollCounter_ = 0;
 
     // Polyphonic gate
     volatile bool polyphonicGateEnabled_ = true;

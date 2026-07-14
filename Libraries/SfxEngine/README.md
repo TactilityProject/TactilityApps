@@ -35,11 +35,8 @@ if (!engine->start()) {
     ESP_LOGE(TAG, "Failed to start SfxEngine");
     return;
 }
-engine->applyVolumePreset(SfxEngine::VolumePreset::Normal);
-
 engine->play(SfxId::Coin);                // Predefined SFX
 engine->playNote(0, 60, 200);             // Manual: voice 0, C4, 200ms
-engine->setVolume(0.7f);                   // Volume control
 
 engine->stop();
 delete engine;
@@ -87,9 +84,11 @@ idf_component_register(
 - `void stopVoice(voice)` - Stop specific voice
 
 ### Settings
-- `void setVolume(float)` - Master volume (0.0-1.0, exponential curve)
 - `void setEnabled(bool)` - Mute/unmute
-- `void applyVolumePreset(VolumePreset)` - Apply Quiet/Normal/Loud preset (configures volume, gate, normalization)
+
+Loudness is controlled by the system output volume (set via the audio_stream device / Settings UI),
+not by SfxEngine itself -- a fixed app-side gain on top of hardware attenuation gets swamped at low
+system volumes, so there's no separate volume control here.
 
 ### Mixing (consistent with SoundEngine)
 - `void setPolyphonicGateEnabled(bool)` - Soft gate when multiple voices clip (default: on)
