@@ -2,6 +2,7 @@
 
 #include <TactilityCpp/App.h>
 #include <lvgl.h>
+#include <tactility/device.h>
 #include <tactility/drivers/bluetooth.h>
 #include <tactility/drivers/bluetooth_hid_device.h>
 #include <tt_app.h>
@@ -23,9 +24,10 @@ class MediaKeys final : public App {
     struct Device* _hidDevice = nullptr;
 
     // State - accessed from both LVGL thread and BT callback thread
-    std::atomic<bool> _isEnabled    {false};
-    std::atomic<bool> _radioEnabling{false}; // true while waiting for radio to come ON
-    std::atomic<bool> _radioWasOff  {false}; // true if MediaKeys turned the radio on (so we turn it off)
+    std::atomic<bool> _isEnabled       {false};
+    std::atomic<bool> _radioEnabling   {false}; // true while waiting for radio to come ON
+    std::atomic<bool> _radioWasOff     {false}; // true if we turned the radio on (restore on exit)
+    std::atomic<bool> _deviceWasStarted{false}; // true if we called device_start (restore on exit)
 
     // Static event callbacks
     static void onSwitchToggled(lv_event_t* e);
@@ -36,6 +38,7 @@ class MediaKeys final : public App {
     static void sendKeyTask(void* param);
 
     // Instance methods called by static callbacks
+    void teardownBt(); // remove callback + stop HID + restore radio/device state
     void handleSwitchToggle(bool enabled);
     void handleButtonPress(uint32_t buttonId);
     void startHid(); // called once radio is confirmed ON

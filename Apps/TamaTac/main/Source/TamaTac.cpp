@@ -57,7 +57,6 @@ void TamaTac::onShow(AppHandle context, lv_obj_t* parent) {
     if (sfxEngine == nullptr) {
         sfxEngine = new SfxEngine();
         sfxEngine->start();
-        sfxEngine->applyVolumePreset(SfxEngine::VolumePreset::Normal);
 
         // Load settings
         bool soundEnabled;

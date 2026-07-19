@@ -211,17 +211,47 @@ void MediaKeys::startHid() {
     if (tt_lvgl_hardware_keyboard_is_available()) enterKeyMode();
 }
 
+void MediaKeys::teardownBt() {
+    // Remove callback FIRST - stops any in-flight BT events from firing against
+    // our (possibly already freed) UI widget pointers after this returns.
+    if (_btDevice) bluetooth_remove_event_callback(_btDevice, btEventCallback);
+    // Do NOT call bluetooth_hid_device_stop here: it calls ble_gatts_reset() /
+    // ble_gatts_start() which corrupts NimBLE heap while the host task is still
+    // running. HID device is a persistent kernel device; hid_device_start() cleans
+    // up stale context on next use. Explicit stop is handled by handleSwitchToggle.
+    // Restore the radio/device to the state we found them in.
+    if (_btDevice && _radioWasOff) bluetooth_set_radio_enabled(_btDevice, false);
+    if (_btDevice && _deviceWasStarted) device_stop(_btDevice);
+    _btDevice = nullptr;
+    _hidDevice = nullptr;
+    _radioWasOff = false;
+    _deviceWasStarted = false;
+}
+
 void MediaKeys::handleSwitchToggle(bool enabled) {
     LOG_I(TAG, "Switch: %s", enabled ? "ON" : "OFF");
     _isEnabled = enabled;
 
     if (enabled) {
-        _btDevice = bluetooth_find_first_ready_device();
+        _btDevice = device_find_first_by_type(&BLUETOOTH_TYPE);
         if (!_btDevice) {
             LOG_E(TAG, "No Bluetooth device found");
             _isEnabled = false;
             if (_switchWidget) lv_obj_remove_state(_switchWidget, LV_STATE_CHECKED);
             return;
+        }
+
+        // Device may not be started yet (BT disabled in DTS by default to save memory).
+        if (!device_is_ready(_btDevice)) {
+            LOG_I(TAG, "BT device not started, starting now");
+            if (device_start(_btDevice) != ERROR_NONE) {
+                LOG_E(TAG, "Failed to start BT device");
+                _btDevice = nullptr;
+                _isEnabled = false;
+                if (_switchWidget) lv_obj_remove_state(_switchWidget, LV_STATE_CHECKED);
+                return;
+            }
+            _deviceWasStarted = true;
         }
 
         bluetooth_set_device_name(_btDevice, "Tactility Media Keys");
@@ -247,12 +277,10 @@ void MediaKeys::handleSwitchToggle(bool enabled) {
     } else {
         _radioEnabling = false;
         if (tt_lvgl_hardware_keyboard_is_available()) exitKeyMode();
+        // Explicit user toggle-off: stop HID cleanly (safe here since we're on the
+        // LVGL task and the user intentionally disabled, so no race with app teardown).
         if (_hidDevice) bluetooth_hid_device_stop(_hidDevice);
-        if (_btDevice) bluetooth_remove_event_callback(_btDevice, btEventCallback);
-        if (_btDevice && _radioWasOff) bluetooth_set_radio_enabled(_btDevice, false);
-        _radioWasOff = false;
-        _btDevice = nullptr;
-        _hidDevice = nullptr;
+        teardownBt();
         if (_mainWrapper) lv_obj_add_flag(_mainWrapper, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -321,19 +349,23 @@ void MediaKeys::onShow(AppHandle appHandle, lv_obj_t* parent) {
     }
 
     lv_obj_add_flag(_mainWrapper, LV_OBJ_FLAG_HIDDEN);
+
+    // Auto-enable if BT is already on (turned on via QuickPanel/Settings before opening app).
+    struct Device* btDev = device_find_first_by_type(&BLUETOOTH_TYPE);
+    if (btDev && device_is_ready(btDev)) {
+        enum BtRadioState radioState;
+        if (bluetooth_get_radio_state(btDev, &radioState) == ERROR_NONE && radioState == BT_RADIO_STATE_ON) {
+            lv_obj_add_state(_switchWidget, LV_STATE_CHECKED);
+            handleSwitchToggle(true);
+        }
+    }
 }
 
 void MediaKeys::onHide(AppHandle /*appHandle*/) {
-    if (_hidDevice) bluetooth_hid_device_stop(_hidDevice);
-    if (_btDevice) bluetooth_remove_event_callback(_btDevice, btEventCallback);
-    if (_btDevice && _radioWasOff) bluetooth_set_radio_enabled(_btDevice, false);
-    _btDevice = nullptr;
-    _hidDevice = nullptr;
-    _isEnabled = false;
     _radioEnabling = false;
-    _radioWasOff = false;
-
+    _isEnabled = false;
     if (tt_lvgl_hardware_keyboard_is_available()) exitKeyMode();
+    teardownBt();
     if (_keyHighlightTimer) {
         lv_timer_delete(_keyHighlightTimer);
         _keyHighlightTimer = nullptr;

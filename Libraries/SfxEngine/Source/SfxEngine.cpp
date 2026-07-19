@@ -9,7 +9,7 @@
 #include "SfxEngine.h"
 #include "SfxDefinitions.h"
 
-#include <tactility/drivers/i2s_controller.h>
+#include <tactility/drivers/audio_stream.h>
 #include <cmath>
 #include <cstring>
 #include "esp_log.h"
@@ -320,15 +320,17 @@ void SfxEngine::fillStereoBuffer(int16_t* buf, int samples) {
             // Apply polyphonic soft gate (proportional reduction when clipping threatened)
             mix = applyPolyphonicGate(mix, activeVoices);
 
-            // Apply master volume (exponential curve for perceptual linearity)
-            float volCurve = masterVolume_ * masterVolume_;
-            mix *= volCurve;
-
             // Apply auto-normalization (consistent volume across different SFX)
             mix = applyAutoNormalization(mix);
 
             // Brick-wall limiter (final safety net before soft clip)
             mix = applyBrickWallLimiter(mix);
+
+            // The shared system output volume (esp_codec_dev hardware attenuation, set via
+            // the Settings UI / audio_stream_set_volume) is the sole loudness control here --
+            // a fixed app-side gain multiplier stacked on top of it just gets swamped at low
+            // system-volume levels, making any such control feel like it does nothing.
+            mix *= systemVolumeMix_;
         }
 
         // Cubic soft clip
@@ -460,14 +462,28 @@ void SfxEngine::audioTaskFunc(void* param) {
             }
         }
 
+        // Periodically refresh the cached system output volume/enabled state (cheap pass-
+        // through to the shared kernel device; polled rather than read per-sample since it
+        // changes rarely and audio_stream_get_volume may take a lock).
+        if (self->systemVolumePollCounter_-- <= 0) {
+            self->systemVolumePollCounter_ = 32; // ~0.5s at 256 samples / 16kHz
+
+            float systemVolumePercent = 100.0f;
+            bool systemOutputEnabled = true;
+            audio_stream_get_volume(self->audioStreamDevice_, AUDIO_CODEC_DIR_OUTPUT, &systemVolumePercent);
+            audio_stream_get_enabled(self->audioStreamDevice_, AUDIO_CODEC_DIR_OUTPUT, &systemOutputEnabled);
+
+            self->systemVolumeMix_ = systemOutputEnabled ? (systemVolumePercent / 100.0f) : 0.0f;
+        }
+
         // Fill audio buffer (member buffer to avoid stack pressure)
         self->fillStereoBuffer(self->audioBuffer_, BUFFER_SAMPLES);
 
-        // Write to I2S
-        error_t error = i2s_controller_write(self->i2sDevice_, self->audioBuffer_,
-                                              sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(100));
+        // Write to the audio stream (resampled to the codec's native rate transparently)
+        error_t error = audio_stream_write(self->audioStreamHandle_, self->audioBuffer_,
+                                            sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(100));
         if (error != ERROR_NONE) {
-            ESP_LOGE(TAG, "I2S write error");
+            ESP_LOGE(TAG, "Audio stream write error");
             self->running_ = false;
             break;
         }
@@ -475,7 +491,7 @@ void SfxEngine::audioTaskFunc(void* param) {
 
     // Flush silence
     memset(self->audioBuffer_, 0, sizeof(self->audioBuffer_));
-    i2s_controller_write(self->i2sDevice_, self->audioBuffer_, sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(50));
+    audio_stream_write(self->audioStreamHandle_, self->audioBuffer_, sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(50));
 
     ESP_LOGI(TAG, "Audio task exiting");
 
@@ -494,33 +510,31 @@ void SfxEngine::audioTaskFunc(void* param) {
 bool SfxEngine::start() {
     if (running_) return true;
 
-    // Find I2S device
-    i2sDevice_ = nullptr;
-    device_for_each_of_type(&I2S_CONTROLLER_TYPE, &i2sDevice_, [](Device* device, void* context) {
+    // Find audio stream device
+    audioStreamDevice_ = nullptr;
+    device_for_each_of_type(&AUDIO_STREAM_TYPE, &audioStreamDevice_, [](Device* device, void* context) {
         if (!device_is_ready(device)) return true;
         Device** devicePtr = static_cast<Device**>(context);
         *devicePtr = device;
         return false;
     });
 
-    if (i2sDevice_ == nullptr) {
-        ESP_LOGW(TAG, "No I2S device found");
+    if (audioStreamDevice_ == nullptr) {
+        ESP_LOGW(TAG, "No audio stream device found");
         return false;
     }
 
-    // Configure I2S
-    I2sConfig config = {
-        .communication_format = I2S_FORMAT_STAND_I2S,
+    // Open output stream (the kernel resamples to the codec's native rate transparently)
+    AudioStreamConfig config = {
         .sample_rate = SAMPLE_RATE,
         .bits_per_sample = 16,
-        .channel_left = 0,
-        .channel_right = 0
+        .channels = 2
     };
 
-    error_t error = i2s_controller_set_config(i2sDevice_, &config);
+    error_t error = audio_stream_open_output(audioStreamDevice_, &config, &audioStreamHandle_);
     if (error != ERROR_NONE) {
-        ESP_LOGE(TAG, "Failed to configure I2S: %s", error_to_string(error));
-        i2sDevice_ = nullptr;
+        ESP_LOGE(TAG, "Failed to open audio output stream: %s", error_to_string(error));
+        audioStreamDevice_ = nullptr;
         return false;
     }
 
@@ -528,12 +542,14 @@ bool SfxEngine::start() {
     msgQueue_ = xQueueCreate(8, sizeof(QueueMsg));
     if (msgQueue_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create message queue");
-        i2s_controller_reset(i2sDevice_);
-        i2sDevice_ = nullptr;
+        audio_stream_close(audioStreamHandle_);
+        audioStreamHandle_ = nullptr;
+        audioStreamDevice_ = nullptr;
         return false;
     }
 
     // Start audio task
+    systemVolumePollCounter_ = 0; // poll the system volume immediately on the first iteration
     running_ = true;
     BaseType_t result = xTaskCreate(audioTaskFunc, "sfxeng", 4096, this, 5, &task_);
     if (result != pdPASS) {
@@ -541,8 +557,9 @@ bool SfxEngine::start() {
         running_ = false;
         vQueueDelete(msgQueue_);
         msgQueue_ = nullptr;
-        i2s_controller_reset(i2sDevice_);
-        i2sDevice_ = nullptr;
+        audio_stream_close(audioStreamHandle_);
+        audioStreamHandle_ = nullptr;
+        audioStreamDevice_ = nullptr;
         return false;
     }
 
@@ -551,19 +568,22 @@ bool SfxEngine::start() {
 }
 
 void SfxEngine::stop() {
-    if (!running_) return;
+    // Guard on msgQueue_ (the resource marker), not running_ - the audio task can clear
+    // running_ itself on a write error and self-delete before stop() is ever called, which
+    // would otherwise make this early-return and leak audioStreamHandle_/msgQueue_.
+    if (msgQueue_ == nullptr && audioStreamHandle_ == nullptr) return;
 
-    // Create semaphore for deterministic shutdown
-    stopSemaphore_ = xSemaphoreCreateBinary();
-    running_ = false;
+    if (running_) {
+        // Only wait on the semaphore if the task might still be alive to signal it - if
+        // running_ is already false, the task already exited (and self-deleted) on its own.
+        stopSemaphore_ = xSemaphoreCreateBinary();
+        running_ = false;
 
-    if (task_ != nullptr) {
-        // Wait for audio task to signal completion (up to 500ms)
-        if (stopSemaphore_ != nullptr) {
+        if (task_ != nullptr && stopSemaphore_ != nullptr) {
             xSemaphoreTake(stopSemaphore_, pdMS_TO_TICKS(500));
         }
-        task_ = nullptr;
     }
+    task_ = nullptr;
 
     if (stopSemaphore_ != nullptr) {
         vSemaphoreDelete(stopSemaphore_);
@@ -575,41 +595,13 @@ void SfxEngine::stop() {
         msgQueue_ = nullptr;
     }
 
-    if (i2sDevice_ != nullptr) {
-        i2s_controller_reset(i2sDevice_);
-        i2sDevice_ = nullptr;
+    if (audioStreamHandle_ != nullptr) {
+        audio_stream_close(audioStreamHandle_);
+        audioStreamHandle_ = nullptr;
     }
+    audioStreamDevice_ = nullptr;
 
     ESP_LOGI(TAG, "SfxEngine stopped");
-}
-
-void SfxEngine::applyVolumePreset(VolumePreset preset) {
-    switch (preset) {
-        case VolumePreset::Quiet:
-            masterVolume_ = 0.3f;
-            autoNormalize_ = true;
-            targetRms_ = 0.25f;
-            polyphonicGateEnabled_ = true;
-            softGateThreshold_ = 0.90f;
-            ESP_LOGI(TAG, "Applied Quiet preset");
-            break;
-        case VolumePreset::Normal:
-            masterVolume_ = 0.5f;
-            autoNormalize_ = true;
-            targetRms_ = 0.35f;
-            polyphonicGateEnabled_ = true;
-            softGateThreshold_ = 0.95f;
-            ESP_LOGI(TAG, "Applied Normal preset");
-            break;
-        case VolumePreset::Loud:
-            masterVolume_ = 0.75f;
-            autoNormalize_ = true;
-            targetRms_ = 0.45f;
-            polyphonicGateEnabled_ = true;
-            softGateThreshold_ = 0.98f;
-            ESP_LOGI(TAG, "Applied Loud preset");
-            break;
-    }
 }
 
 void SfxEngine::play(SfxId sound) {
