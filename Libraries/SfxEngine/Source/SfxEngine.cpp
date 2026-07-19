@@ -568,19 +568,22 @@ bool SfxEngine::start() {
 }
 
 void SfxEngine::stop() {
-    if (!running_) return;
+    // Guard on msgQueue_ (the resource marker), not running_ - the audio task can clear
+    // running_ itself on a write error and self-delete before stop() is ever called, which
+    // would otherwise make this early-return and leak audioStreamHandle_/msgQueue_.
+    if (msgQueue_ == nullptr && audioStreamHandle_ == nullptr) return;
 
-    // Create semaphore for deterministic shutdown
-    stopSemaphore_ = xSemaphoreCreateBinary();
-    running_ = false;
+    if (running_) {
+        // Only wait on the semaphore if the task might still be alive to signal it - if
+        // running_ is already false, the task already exited (and self-deleted) on its own.
+        stopSemaphore_ = xSemaphoreCreateBinary();
+        running_ = false;
 
-    if (task_ != nullptr) {
-        // Wait for audio task to signal completion (up to 500ms)
-        if (stopSemaphore_ != nullptr) {
+        if (task_ != nullptr && stopSemaphore_ != nullptr) {
             xSemaphoreTake(stopSemaphore_, pdMS_TO_TICKS(500));
         }
-        task_ = nullptr;
     }
+    task_ = nullptr;
 
     if (stopSemaphore_ != nullptr) {
         vSemaphoreDelete(stopSemaphore_);

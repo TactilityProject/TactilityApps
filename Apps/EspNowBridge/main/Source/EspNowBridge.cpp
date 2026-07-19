@@ -197,11 +197,28 @@ std::atomic<EspNowBridge*> EspNowBridge::liveInstance_{nullptr};
 
 void EspNowBridge::onCreate(AppHandle app) {
     appHandle_ = app;
+    taskDoneSemaphore_ = xSemaphoreCreateBinary();
     liveInstance_ = this;
 }
 
 void EspNowBridge::onDestroy(AppHandle /*app*/) {
+    // Clear liveInstance_ first so any task still running bails out at its next liveInstance_
+    // check instead of continuing to touch this instance's members.
     liveInstance_ = nullptr;
+
+    // Wait for any outstanding background task (OTA update, transport-wait) to actually finish -
+    // the app framework frees this instance shortly after onDestroy() returns, so a task that
+    // outlives it would dereference freed memory.
+    while (outstandingTasks_.load() > 0) {
+        if (taskDoneSemaphore_ != nullptr) {
+            xSemaphoreTake(taskDoneSemaphore_, pdMS_TO_TICKS(1000));
+        }
+    }
+
+    if (taskDoneSemaphore_ != nullptr) {
+        vSemaphoreDelete(taskDoneSemaphore_);
+        taskDoneSemaphore_ = nullptr;
+    }
 }
 
 void EspNowBridge::refreshCurrentVersion() {
@@ -272,6 +289,17 @@ void EspNowBridge::dispatchToUi(void (*work)(EspNowBridge&, void*), void* contex
     // esp_restart(), happened to land - everything else stayed stuck at "Waiting for
     // co-processor link...").
     bool locked = tt_lvgl_lock(TT_LVGL_DEFAULT_LOCK_TIME);
+    if (!locked) {
+        // Without the lock, lv_async_call() itself would be touching LVGL's internal timer list
+        // unguarded - and if it happened to still enqueue successfully, the callback below would
+        // later fire against `payload` after we've already freed it here. Drop the update instead.
+        if (freeContext != nullptr) {
+            freeContext(context);
+        }
+        delete payload;
+        return;
+    }
+
     lv_result_t result = lv_async_call([](void* userData) {
         auto* payload = static_cast<UiDispatchPayload*>(userData);
         if (EspNowBridge::liveInstance_.load() == payload->instance && payload->instance->isShown_.load()) {
@@ -282,10 +310,9 @@ void EspNowBridge::dispatchToUi(void (*work)(EspNowBridge&, void*), void* contex
         }
         delete payload;
     }, payload);
-    if (locked) {
-        tt_lvgl_unlock();
-    }
-    if (!locked || result != LV_RESULT_OK) {
+    tt_lvgl_unlock();
+
+    if (result != LV_RESULT_OK) {
         if (freeContext != nullptr) {
             freeContext(context);
         }
@@ -498,8 +525,12 @@ void EspNowBridge::performUpdate(const std::string& filePath) {
     // restarts itself immediately below, and there's no safe window to resume normal WiFi
     // activity before that.
     {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "Firmware %s activated - restarting...", versionStr.c_str());
+        char buf[80];
+        if (canActivate) {
+            snprintf(buf, sizeof(buf), "Firmware %s activated - restarting...", versionStr.c_str());
+        } else {
+            snprintf(buf, sizeof(buf), "Firmware %s pushed - restarting to apply...", versionStr.c_str());
+        }
         dispatchToUi(workSetStatus, new std::string(buf), freeString);
     }
 
@@ -513,6 +544,9 @@ void EspNowBridge::updateTaskEntry(void* arg) {
     auto* self = static_cast<EspNowBridge*>(arg);
     self->performUpdate(self->pendingUpdateFilePath_);
     self->updateTask_ = nullptr;
+    if (self->outstandingTasks_.fetch_sub(1) == 1 && self->taskDoneSemaphore_ != nullptr) {
+        xSemaphoreGive(self->taskDoneSemaphore_);
+    }
     vTaskDelete(nullptr);
 }
 
@@ -521,7 +555,10 @@ void EspNowBridge::startUpdateTask(const std::string& filePath) {
         return;
     }
     pendingUpdateFilePath_ = filePath;
-    xTaskCreate(updateTaskEntry, "espnow_bridge_ota", UPDATE_TASK_STACK_SIZE / sizeof(StackType_t), this, tskIDLE_PRIORITY + 1, &updateTask_);
+    outstandingTasks_.fetch_add(1);
+    if (xTaskCreate(updateTaskEntry, "espnow_bridge_ota", UPDATE_TASK_STACK_SIZE / sizeof(StackType_t), this, tskIDLE_PRIORITY + 1, &updateTask_) != pdPASS) {
+        outstandingTasks_.fetch_sub(1);
+    }
 }
 
 void EspNowBridge::onUpdateButtonClicked(lv_event_t* /*event*/) {
@@ -574,18 +611,28 @@ void EspNowBridge::onEnableWifiButtonClicked(lv_event_t* /*event*/) {
     // actually comes up (WifiEvent only covers radio/station state, not transport readiness), so
     // wait for it explicitly on a background task and refresh once it's ready.
     if (self->firmwareOps_ != nullptr) {
-        xTaskCreate(waitForTransportTaskEntry, "espnow_bridge_wait", 4096 / sizeof(StackType_t), self, tskIDLE_PRIORITY + 1, nullptr);
+        self->outstandingTasks_.fetch_add(1);
+        if (xTaskCreate(waitForTransportTaskEntry, "espnow_bridge_wait", 4096 / sizeof(StackType_t), self, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+            self->outstandingTasks_.fetch_sub(1);
+        }
     }
 }
 
 void EspNowBridge::waitForTransportTaskEntry(void* arg) {
     auto* self = static_cast<EspNowBridge*>(arg);
     constexpr uint32_t WAIT_TIMEOUT_MS = 10000;
-    if (self->firmwareOps_ != nullptr && self->firmwareOps_->wait_ready(self->firmwareCtx_, WAIT_TIMEOUT_MS)
+    // liveInstance_ must be checked before touching any member of self - if onDestroy() already
+    // ran, `self` may be freed, and dereferencing self->firmwareOps_ first would be a
+    // use-after-free even just to read the pointer.
+    if (liveInstance_.load() == self && self->firmwareOps_ != nullptr
+            && self->firmwareOps_->wait_ready(self->firmwareCtx_, WAIT_TIMEOUT_MS)
             && liveInstance_.load() == self) {
         self->dispatchToUi([](EspNowBridge& app, void*) {
             app.refreshCurrentVersion();
         }, nullptr, nullptr);
+    }
+    if (self->outstandingTasks_.fetch_sub(1) == 1 && self->taskDoneSemaphore_ != nullptr) {
+        xSemaphoreGive(self->taskDoneSemaphore_);
     }
     vTaskDelete(nullptr);
 }

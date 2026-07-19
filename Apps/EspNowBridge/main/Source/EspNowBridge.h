@@ -68,6 +68,13 @@ private:
 
     TaskHandle_t updateTask_ = nullptr;
 
+    // Number of background tasks (updateTaskEntry, waitForTransportTaskEntry) currently running
+    // against this instance's members. onDestroy() must wait for this to hit 0 before returning -
+    // the app framework frees this instance shortly after onDestroy() returns (see Loader.cpp),
+    // so any task still touching `this` past that point is a use-after-free.
+    std::atomic<int> outstandingTasks_{0};
+    SemaphoreHandle_t taskDoneSemaphore_ = nullptr;
+
     // Outlives performUpdate() deliberately, so auto-scan stays paused across the async gap
     // between performUpdate() returning and the automatic restart - see performUpdate().
     std::optional<AutoScanPauseGuard> heldAutoScanPauseGuard_;
