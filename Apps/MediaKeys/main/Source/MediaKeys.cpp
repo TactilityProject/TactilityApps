@@ -5,7 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <tactility/lvgl_fonts.h>
-#include <tt_lvgl.h>
+#include <tactility/lvgl_module.h>
 #include <tt_lvgl_toolbar.h>
 
 static const char* TAG = "MediaKeys";
@@ -154,24 +154,24 @@ void MediaKeys::btEventCallback(struct Device* /*device*/, void* context, struct
 
         if (event.radio_state == BT_RADIO_STATE_ON) {
             // Radio is now up - start HID (needs LVGL lock for UI update)
-            if (tt_lvgl_lock(1000)) {
+            if (lvgl_try_lock(1000)) {
                 // Re-check inside lock to avoid TOCTOU race with handleSwitchToggle(false)
                 if (self->_radioEnabling) {
                     self->startHid();
                 }
-                tt_lvgl_unlock();
+                lvgl_unlock();
             }
         } else if (event.radio_state == BT_RADIO_STATE_OFF && self->_isEnabled) {
             // Radio dropped while we were active - revert UI
             LOG_I(TAG, "BT radio turned off, disabling HID");
-            if (tt_lvgl_lock(1000)) {
+            if (lvgl_try_lock(1000)) {
                 if (tt_lvgl_hardware_keyboard_is_available()) self->exitKeyMode();
                 self->_hidDevice = nullptr;
                 self->_isEnabled = false;
                 self->_radioEnabling = false;
                 if (self->_switchWidget) lv_obj_remove_state(self->_switchWidget, LV_STATE_CHECKED);
                 if (self->_mainWrapper) lv_obj_add_flag(self->_mainWrapper, LV_OBJ_FLAG_HIDDEN);
-                tt_lvgl_unlock();
+                lvgl_unlock();
             }
         }
     } else if (event.type == BT_EVENT_PROFILE_STATE_CHANGED && event.profile_state.profile == BT_PROFILE_HID_DEVICE) {

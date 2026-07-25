@@ -2,7 +2,6 @@
 
 #include <Tactility/kernel/Kernel.h>
 
-#include <tt_lvgl.h>
 #include <tt_lvgl_toolbar.h>
 
 #include <tactility/lvgl_module.h>
@@ -20,7 +19,7 @@ void Gpio::updatePinStates() {
 }
 
 void Gpio::updatePinWidgets() {
-    tt_lvgl_lock(tt::kernel::MAX_TICKS);
+    lvgl_lock();
     for (int j = 0; j < pinStates.size(); ++j) {
         int level = pinStates[j];
         lv_obj_t* label = pinWidgets[j];
@@ -35,7 +34,7 @@ void Gpio::updatePinWidgets() {
             }
         }
     }
-    tt_lvgl_unlock();
+    lvgl_unlock();
 }
 
 lv_obj_t* Gpio::createGpioRowWrapper(lv_obj_t* parent) {

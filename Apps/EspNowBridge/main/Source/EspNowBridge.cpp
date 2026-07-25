@@ -9,7 +9,7 @@
 #include <tt_app_fileselection.h>
 #include <tt_bundle.h>
 #include <tt_lock.h>
-#include <tt_lvgl.h>
+#include <tactility/lvgl_module.h>
 #include <tt_lvgl_toolbar.h>
 
 #include <esp_app_desc.h>
@@ -283,12 +283,12 @@ struct UiDispatchPayload {
 void EspNowBridge::dispatchToUi(void (*work)(EspNowBridge&, void*), void* context, void (*freeContext)(void*)) {
     auto* payload = new UiDispatchPayload{this, work, context, freeContext};
     // lv_async_call() itself is an LVGL operation and must be lock-guarded when called from a
-    // non-LVGL task (see tt_lvgl_lock()'s doc comment) - the OTA worker task calls dispatchToUi()
+    // non-LVGL task (see lvgl_lock()'s doc comment) - the OTA worker task calls dispatchToUi()
     // repeatedly during the transfer, and without this lock most of those calls were silently
     // racing LVGL's own task and getting lost (only the very last status update, right before
     // esp_restart(), happened to land - everything else stayed stuck at "Waiting for
     // co-processor link...").
-    bool locked = tt_lvgl_lock(TT_LVGL_DEFAULT_LOCK_TIME);
+    bool locked = lvgl_try_lock(TT_LVGL_DEFAULT_LOCK_TIME);
     if (!locked) {
         // Without the lock, lv_async_call() itself would be touching LVGL's internal timer list
         // unguarded - and if it happened to still enqueue successfully, the callback below would
@@ -310,7 +310,7 @@ void EspNowBridge::dispatchToUi(void (*work)(EspNowBridge&, void*), void* contex
         }
         delete payload;
     }, payload);
-    tt_lvgl_unlock();
+    lvgl_unlock();
 
     if (result != LV_RESULT_OK) {
         if (freeContext != nullptr) {
