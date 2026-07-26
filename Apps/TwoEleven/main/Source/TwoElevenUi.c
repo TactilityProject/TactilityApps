@@ -3,7 +3,8 @@
 #include "TwoElevenHelpers.h"
 #include <stdlib.h>
 #include <string.h>
-#include <tt_lvgl_keyboard.h>
+#include <tactility/device.h>
+#include <tactility/drivers/keyboard.h>
 
 static void game_play_event(lv_event_t * e);
 static void btnm_event_cb(lv_event_t * e);
@@ -18,7 +19,7 @@ static void delete_event(lv_event_t * e)
     twoeleven_t * game_2048 = (twoeleven_t *)lv_obj_get_user_data(obj);
     if (game_2048) {
         // Restore edit mode and remove from group before cleanup
-        if (tt_lvgl_hardware_keyboard_is_available()) {
+        if (device_has_active_by_type(&KEYBOARD_TYPE)) {
             lv_group_t* group = lv_group_get_default();
             if (group) lv_group_set_editing(group, false);
             lv_group_remove_obj(game_2048->btnm);
@@ -140,7 +141,7 @@ lv_obj_t * twoeleven_create(lv_obj_t * parent, uint16_t matrix_size)
     lv_obj_add_event_cb(game_2048->btnm, btnm_event_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
     lv_obj_add_event_cb(obj, delete_event, LV_EVENT_DELETE, NULL);
 
-    if (tt_lvgl_hardware_keyboard_is_available()) {
+    if (device_has_active_by_type(&KEYBOARD_TYPE)) {
         lv_group_t* group = lv_group_get_default();
         if (group) {
             lv_group_add_obj(group, game_2048->btnm);

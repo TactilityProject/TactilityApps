@@ -10,7 +10,8 @@
 #include <tt_lvgl_toolbar.h>
 #include <tt_preferences.h>
 #include <esp_random.h>
-#include <tt_lvgl_keyboard.h>
+#include <tactility/device.h>
+#include <tactility/drivers/keyboard.h>
 
 #include <lvgl/lvgl.h>
 #include <lvgl/lvgl_fonts.h>
@@ -1329,7 +1330,7 @@ void Breakout::updateMessage() {
         case GameState::Ready: {
             char buf[64];
             const char* input_hint = "Touch";
-            if (tt_lvgl_hardware_keyboard_is_available()) {
+            if (device_has_active_by_type(&KEYBOARD_TYPE)) {
                 input_hint = "Space";
             }
             if (level > 1) {

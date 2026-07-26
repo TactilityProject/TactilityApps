@@ -7,7 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <tt_lvgl_keyboard.h>
+#include <tactility/device.h>
+#include <tactility/drivers/keyboard.h>
 
 // Forward declarations
 static void game_play_event(lv_event_t* e);
@@ -36,7 +37,7 @@ static void delete_event(lv_event_t* e) {
         }
 
         // Restore edit mode and remove from group before cleanup
-        if (tt_lvgl_hardware_keyboard_is_available()) {
+        if (device_has_active_by_type(&KEYBOARD_TYPE)) {
             lv_group_t* group = lv_group_get_default();
             if (group) lv_group_set_editing(group, false);
             lv_group_remove_obj(game->container);
@@ -397,7 +398,7 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
     lv_obj_add_event_cb(obj, delete_event, LV_EVENT_DELETE, NULL);
 
     // Set up keyboard focus if available
-    if (tt_lvgl_hardware_keyboard_is_available()) {
+    if (device_has_active_by_type(&KEYBOARD_TYPE)) {
         lv_group_t* group = lv_group_get_default();
         if (group) {
             lv_group_add_obj(group, game->container);

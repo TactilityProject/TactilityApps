@@ -1,6 +1,7 @@
 #include "Magic8Ball.h"
 #include <tt_lvgl_toolbar.h>
-#include <tt_lvgl_keyboard.h>
+#include <tactility/device.h>
+#include <tactility/drivers/keyboard.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -35,7 +36,7 @@ static const char* responses[] = {
 #define NUM_RESPONSES (sizeof(responses) / sizeof(responses[0]))
 
 static const char* getInputHint() {
-    if (tt_lvgl_hardware_keyboard_is_available()) {
+    if (device_has_active_by_type(&KEYBOARD_TYPE)) {
         return "Touch or Space to ask  Q to exit";
     }
     return "Touch the ball to ask";
@@ -141,7 +142,7 @@ void Magic8Ball::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_add_event_cb(ballObj, onBallClick, LV_EVENT_CLICKED, this);
 
     /* Keyboard support - no editing mode needed, just focus the ball */
-    if (tt_lvgl_hardware_keyboard_is_available()) {
+    if (device_has_active_by_type(&KEYBOARD_TYPE)) {
         lv_group_t* grp = lv_group_get_default();
         if (grp) {
             lv_group_add_obj(grp, ballObj);
@@ -152,7 +153,7 @@ void Magic8Ball::onShow(AppHandle app, lv_obj_t* parent) {
 }
 
 void Magic8Ball::onHide(AppHandle app) {
-    if (tt_lvgl_hardware_keyboard_is_available() && ballObj) {
+    if (device_has_active_by_type(&KEYBOARD_TYPE) && ballObj) {
         lv_group_remove_obj(ballObj);
     }
     answerLabel = nullptr;

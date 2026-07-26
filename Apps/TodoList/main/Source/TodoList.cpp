@@ -3,7 +3,6 @@
 #include <tactility/filesystem/file_mutex.h>
 #include <Tactility/kernel/Kernel.h>
 #include <tt_lvgl_toolbar.h>
-#include <tt_lvgl_keyboard.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/lvgl_fonts.h>
 #include <stdio.h>

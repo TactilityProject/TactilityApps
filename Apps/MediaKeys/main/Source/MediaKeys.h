@@ -5,8 +5,8 @@
 #include <tactility/device.h>
 #include <tactility/drivers/bluetooth.h>
 #include <tactility/drivers/bluetooth_hid_device.h>
+#include <tactility/drivers/keyboard.h>
 #include <tt_app.h>
-#include <tt_lvgl_keyboard.h>
 #include <atomic>
 
 class MediaKeys final : public App {
