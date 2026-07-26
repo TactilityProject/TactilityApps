@@ -10,31 +10,19 @@ UnitDualButton::~UnitDualButton() {
 bool UnitDualButton::begin(Device* controller, gpio_pin_t pinA, gpio_pin_t pinB) {
     if (!controller) return false;
 
-    descA_ = gpio_descriptor_acquire(controller, pinA, GPIO_OWNER_GPIO);
+    gpio_flags_t flags = GPIO_FLAG_DIRECTION_INPUT | GPIO_FLAG_PULL_UP;
+
+    descA_ = gpio_descriptor_acquire(controller, pinA, flags, GPIO_OWNER_GPIO);
     if (!descA_) {
         ESP_LOGW(TAG, "Failed to acquire pin %d", (int)pinA);
         return false;
     }
 
-    descB_ = gpio_descriptor_acquire(controller, pinB, GPIO_OWNER_GPIO);
+    descB_ = gpio_descriptor_acquire(controller, pinB, flags, GPIO_OWNER_GPIO);
     if (!descB_) {
         ESP_LOGW(TAG, "Failed to acquire pin %d", (int)pinB);
         gpio_descriptor_release(descA_);
         descA_ = nullptr;
-        return false;
-    }
-
-    gpio_flags_t flags = GPIO_FLAG_DIRECTION_INPUT | GPIO_FLAG_PULL_UP;
-    if (gpio_descriptor_set_flags(descA_, flags) != ERROR_NONE) {
-        ESP_LOGW(TAG, "Failed to configure pin %d flags", (int)pinA);
-        gpio_descriptor_release(descA_); gpio_descriptor_release(descB_);
-        descA_ = descB_ = nullptr;
-        return false;
-    }
-    if (gpio_descriptor_set_flags(descB_, flags) != ERROR_NONE) {
-        ESP_LOGW(TAG, "Failed to configure pin %d flags", (int)pinB);
-        gpio_descriptor_release(descA_); gpio_descriptor_release(descB_);
-        descA_ = descB_ = nullptr;
         return false;
     }
 
