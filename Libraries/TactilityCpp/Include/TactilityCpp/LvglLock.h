@@ -7,11 +7,9 @@ class LvglLock final : public tt::Lock {
 
 public:
 
-    void lock() const override {
-        lvgl_lock();
-    }
+    using tt::Lock::lock;
 
-    bool try_lock(TickType_t timeout) const override {
+    bool lock(TickType_t timeout) const override {
         return lvgl_try_lock(timeout);
     }
 

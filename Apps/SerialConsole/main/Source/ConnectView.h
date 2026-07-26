@@ -13,6 +13,8 @@
 #include <tactility/device.h>
 #include <tactility/drivers/uart_controller.h>
 
+constexpr TickType_t LVGL_DEFAULT_LOCK_TIME = 500; // 500 ticks = 500 ms
+
 class ConnectView final : public View {
 
 public:
@@ -44,7 +46,7 @@ private:
 
     void onConnect() {
         auto lock = lvglLock.asScopedLock();
-        if (!lock.lock(TT_LVGL_DEFAULT_LOCK_TIME)) {
+        if (!lock.lock(LVGL_DEFAULT_LOCK_TIME)) {
             return;
         }
 

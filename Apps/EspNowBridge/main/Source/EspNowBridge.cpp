@@ -18,6 +18,8 @@
 
 #include <tactility/log.h>
 
+constexpr TickType_t LVGL_DEFAULT_LOCK_TIME = 500; // 500 ticks = 500 ms
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -288,7 +290,7 @@ void EspNowBridge::dispatchToUi(void (*work)(EspNowBridge&, void*), void* contex
     // racing LVGL's own task and getting lost (only the very last status update, right before
     // esp_restart(), happened to land - everything else stayed stuck at "Waiting for
     // co-processor link...").
-    bool locked = lvgl_try_lock(TT_LVGL_DEFAULT_LOCK_TIME);
+    bool locked = lvgl_try_lock(LVGL_DEFAULT_LOCK_TIME);
     if (!locked) {
         // Without the lock, lv_async_call() itself would be touching LVGL's internal timer list
         // unguarded - and if it happened to still enqueue successfully, the callback below would
