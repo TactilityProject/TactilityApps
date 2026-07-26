@@ -1,49 +1,47 @@
 #pragma once
 
-#include <cassert>
-#include <tt_hal_display.h>
+#include <tactility/device.h>
+#include <tactility/drivers/display.h>
 #include <Tactility/kernel/Kernel.h>
 
 /**
- * Wrapper for tt_hal_display_driver_*
+ * Wrapper for display_* device driver functions
  */
 class DisplayDriver {
 
-    DisplayDriverHandle handle = nullptr;
+    struct Device* device;
 
 public:
 
-    explicit DisplayDriver(DeviceId id) {
-        assert(tt_hal_display_driver_supported(id));
-        handle = tt_hal_display_driver_alloc(id);
-        assert(handle != nullptr);
+    explicit DisplayDriver(struct Device* device) : device(device) {
+        device_get(device);
     }
 
     ~DisplayDriver() {
-        tt_hal_display_driver_free(handle);
+        device_put(device);
     }
 
     bool lock(TickType_t timeout = tt::kernel::MAX_TICKS) const {
-        return tt_hal_display_driver_lock(handle, timeout);
+        return device_try_lock(device, timeout);
     }
 
     void unlock() const {
-        tt_hal_display_driver_unlock(handle);
+        device_unlock(device);
     }
 
     uint16_t getWidth() const {
-        return tt_hal_display_driver_get_pixel_width(handle);
+        return display_get_resolution_x(device);
     }
 
     uint16_t getHeight() const {
-        return tt_hal_display_driver_get_pixel_height(handle);
+        return display_get_resolution_y(device);
     }
 
-    ColorFormat getColorFormat() const {
-        return tt_hal_display_driver_get_colorformat(handle);
+    enum DisplayColorFormat getColorFormat() const {
+        return display_get_color_format(device);
     }
 
     void drawBitmap(int xStart, int yStart, int xEnd, int yEnd, const void* pixelData) const {
-        tt_hal_display_driver_draw_bitmap(handle, xStart, yStart, xEnd, yEnd, pixelData);
+        display_draw_bitmap(device, xStart, yStart, xEnd, yEnd, pixelData);
     }
 };

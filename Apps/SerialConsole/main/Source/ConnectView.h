@@ -8,7 +8,6 @@
 #include <functional>
 
 #include <tt_app_alertdialog.h>
-#include <tt_lvgl.h>
 #include <TactilityCpp/LvglLock.h>
 #include <TactilityCpp/Preferences.h>
 #include <tactility/device.h>

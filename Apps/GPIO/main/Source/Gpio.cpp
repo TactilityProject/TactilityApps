@@ -4,7 +4,7 @@
 
 #include <tt_lvgl_toolbar.h>
 
-#include <tactility/lvgl_module.h>
+#include <lvgl/lvgl.h>
 
 #include <esp_log.h>
 #include <driver/gpio.h>

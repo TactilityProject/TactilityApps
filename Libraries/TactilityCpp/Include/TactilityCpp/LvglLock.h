@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Tactility/Lock.h>
-#include <tactility/lvgl_module.h>
+#include <lvgl/lvgl.h>
 
 class LvglLock final : public tt::Lock {
 

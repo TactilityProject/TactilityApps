@@ -1,28 +1,28 @@
 #pragma once
 
-#include <cassert>
-#include <tt_hal_touch.h>
+#include <tactility/device.h>
+#include <tactility/drivers/pointer.h>
 
 /**
- * Wrapper for tt_hal_touch_driver_*
+ * Wrapper for pointer_* device driver functions
  */
 class TouchDriver {
 
-    TouchDriverHandle handle = nullptr;
+    struct Device* device;
 
 public:
 
-    explicit TouchDriver(DeviceId id) {
-        assert(tt_hal_touch_driver_supported(id));
-        handle = tt_hal_touch_driver_alloc(id);
-        assert(handle != nullptr);
+    explicit TouchDriver(struct Device* device) : device(device) {
+        device_get(device);
     }
 
     ~TouchDriver() {
-        tt_hal_touch_driver_free(handle);
+        device_put(device);
     }
 
     bool getTouchedPoints(uint16_t* x, uint16_t* y, uint16_t* strength, uint8_t* count, uint8_t maxCount) const {
-        return tt_hal_touch_driver_get_touched_points(handle, x, y, strength, count, maxCount);
+        // Poll without blocking: perform one read attempt, then report whatever is cached.
+        pointer_read_data(device, 0);
+        return pointer_get_touched_points(device, x, y, strength, count, maxCount);
     }
 };

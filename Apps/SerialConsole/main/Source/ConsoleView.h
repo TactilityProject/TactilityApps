@@ -7,8 +7,6 @@
 #include <sstream>
 #include <lvgl.h>
 
-#include <tt_lvgl.h>
-
 #include <Tactility/RecursiveMutex.h>
 #include <Tactility/Thread.h>
 #include <TactilityCpp/LvglLock.h>

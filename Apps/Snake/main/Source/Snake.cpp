@@ -12,7 +12,7 @@
 
 #include <TactilityCpp/LvglLock.h>
 
-#include <tactility/lvgl_module.h>
+#include <lvgl/lvgl.h>
 #include <tactility/lvgl_fonts.h>
 
 constexpr auto* TAG = "Snake";

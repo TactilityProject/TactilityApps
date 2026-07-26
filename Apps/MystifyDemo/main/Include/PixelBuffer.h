@@ -4,17 +4,17 @@
 #include "drivers/Colors.h"
 
 #include <cstring>
-#include <tt_hal_display.h>
+#include <tactility/drivers/display.h>
 
 class PixelBuffer {
     uint16_t pixelWidth;
     uint16_t pixelHeight;
-    ColorFormat colorFormat;
+    enum DisplayColorFormat colorFormat;
     uint8_t* data;
 
 public:
 
-    PixelBuffer(uint16_t pixelWidth, uint16_t pixelHeight, ColorFormat colorFormat) :
+    PixelBuffer(uint16_t pixelWidth, uint16_t pixelHeight, enum DisplayColorFormat colorFormat) :
         pixelWidth(pixelWidth),
         pixelHeight(pixelHeight),
         colorFormat(colorFormat)
@@ -35,7 +35,7 @@ public:
         return pixelHeight;
     }
 
-    ColorFormat getColorFormat() const {
+    enum DisplayColorFormat getColorFormat() const {
         return colorFormat;
     }
 
@@ -58,14 +58,14 @@ public:
 
     uint8_t getPixelSize() const {
         switch (colorFormat) {
-            case COLOR_FORMAT_MONOCHROME:
+            case DISPLAY_COLOR_FORMAT_MONOCHROME:
                 return 1;
-            case COLOR_FORMAT_BGR565:
-            case COLOR_FORMAT_BGR565_SWAPPED:
-            case COLOR_FORMAT_RGB565:
-            case COLOR_FORMAT_RGB565_SWAPPED:
+            case DISPLAY_COLOR_FORMAT_BGR565:
+            case DISPLAY_COLOR_FORMAT_BGR565_SWAPPED:
+            case DISPLAY_COLOR_FORMAT_RGB565:
+            case DISPLAY_COLOR_FORMAT_RGB565_SWAPPED:
                 return 2;
-            case COLOR_FORMAT_RGB888:
+            case DISPLAY_COLOR_FORMAT_RGB888:
                 return 3;
             default:
                 // TODO: Crash with error
@@ -82,13 +82,13 @@ public:
     void setPixel(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b) const {
         auto address = getPixelAddress(x, y);
         switch (colorFormat) {
-            case COLOR_FORMAT_MONOCHROME:
+            case DISPLAY_COLOR_FORMAT_MONOCHROME:
                 *address = (uint8_t)((uint16_t)r + (uint16_t)g + (uint16_t)b / 3);
                 break;
-            case COLOR_FORMAT_BGR565:
+            case DISPLAY_COLOR_FORMAT_BGR565:
                 Colors::rgb888ToBgr565(r, g, b, reinterpret_cast<uint16_t*>(address));
                 break;
-            case COLOR_FORMAT_BGR565_SWAPPED: {
+            case DISPLAY_COLOR_FORMAT_BGR565_SWAPPED: {
                 // TODO: Make proper conversion function
                 Colors::rgb888ToBgr565(r, g, b, reinterpret_cast<uint16_t*>(address));
                 uint8_t temp = *address;
@@ -96,11 +96,11 @@ public:
                 *(address + 1) = temp;
                 break;
             }
-            case COLOR_FORMAT_RGB565: {
+            case DISPLAY_COLOR_FORMAT_RGB565: {
                 Colors::rgb888ToRgb565(r, g, b, reinterpret_cast<uint16_t*>(address));
                 break;
             }
-            case COLOR_FORMAT_RGB565_SWAPPED: {
+            case DISPLAY_COLOR_FORMAT_RGB565_SWAPPED: {
                 // TODO: Make proper conversion function
                 Colors::rgb888ToRgb565(r, g, b, reinterpret_cast<uint16_t*>(address));
                 uint8_t temp = *address;
@@ -108,7 +108,7 @@ public:
                 *(address + 1) = temp;
                 break;
             }
-            case COLOR_FORMAT_RGB888: {
+            case DISPLAY_COLOR_FORMAT_RGB888: {
                 uint8_t pixel[3] = { r, g, b };
                 memcpy(address, pixel, 3);
                 break;

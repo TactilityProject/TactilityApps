@@ -4,7 +4,7 @@
 #include <Tactility/kernel/Kernel.h>
 #include <tt_lvgl_toolbar.h>
 #include <tt_lvgl_keyboard.h>
-#include <tactility/lvgl_module.h>
+#include <lvgl/lvgl.h>
 #include <tactility/lvgl_fonts.h>
 #include <stdio.h>
 #include <stdlib.h>
