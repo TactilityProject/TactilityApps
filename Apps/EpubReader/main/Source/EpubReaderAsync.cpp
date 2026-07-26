@@ -1,6 +1,6 @@
 #include "EpubReader.h"
 #include <tt_lvgl_toolbar.h>
-#include <tt_lock.h>
+#include <tactility/filesystem/file_mutex.h>
 #include <tactility/log.h>
 #include <Tactility/kernel/Kernel.h>
 #include <freertos/FreeRTOS.h>
@@ -115,14 +115,9 @@ void EpubReader::backgroundOpenTask(void* data) {
 
     // Acquire the filesystem lock before any SD card I/O - prevents concurrent
     // SDMMC access from the background and LVGL tasks (bus errors 0x107/0x108).
-    auto lock = tt_lock_alloc_for_path(a->filePath.c_str());
-    if (!tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
-        LOG_E(TAG, "FS lock timed out, skipping open: %s", a->filePath.c_str());
-        tt_lock_free(lock);
-        lv_async_call(asyncOpenComplete, a);
-        vTaskDelete(nullptr);
-        return;
-    }
+    struct FileMutex mutex;
+    file_mutex_get(&mutex, a->filePath.c_str());
+    file_mutex_lock(&mutex);
 
     if (isTextFile(a->filePath)) {
         // Read the entire text file here (under the lock) so asyncOpenComplete
@@ -146,8 +141,7 @@ void EpubReader::backgroundOpenTask(void* data) {
         a->epub = EpubService::open(a->filePath);
     }
 
-    tt_lock_release(lock);
-    tt_lock_free(lock);
+    file_mutex_unlock(&mutex);
 
     // Signal the LVGL task that the work is done
     lv_async_call(asyncOpenComplete, a);

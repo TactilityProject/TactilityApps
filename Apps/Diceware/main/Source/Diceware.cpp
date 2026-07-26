@@ -1,7 +1,7 @@
 #include "Diceware.h"
 
 #include <tt_app_alertdialog.h>
-#include <tt_lock.h>
+#include <tactility/filesystem/file_mutex.h>
 #include <lvgl/lvgl.h>
 #include <tt_lvgl_toolbar.h>
 
@@ -39,18 +39,17 @@ static std::string readWordAtLine(const AppHandle handle, const int lineIndex) {
         return "";
     }
 
-    auto lock = tt_lock_alloc_for_path(path);
+    struct FileMutex mutex;
+    file_mutex_get(&mutex, path);
     std::string word;
-    if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
-        FILE* file = fopen(path, "r");
-        if (file != nullptr) {
-            skipNewlines(file, lineIndex);
-            word = readWord(file);
-            fclose(file);
-        } else { ESP_LOGE(TAG, "Failed to open %s", path); }
-        tt_lock_release(lock);
-    } else { ESP_LOGE(TAG, "Failed to acquire lock for %s", path); }
-    tt_lock_free(lock);
+    file_mutex_lock(&mutex);
+    FILE* file = fopen(path, "r");
+    if (file != nullptr) {
+        skipNewlines(file, lineIndex);
+        word = readWord(file);
+        fclose(file);
+    } else { ESP_LOGE(TAG, "Failed to open %s", path); }
+    file_mutex_unlock(&mutex);
     return word;
 }
 

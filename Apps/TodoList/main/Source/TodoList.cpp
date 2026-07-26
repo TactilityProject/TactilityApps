@@ -1,6 +1,6 @@
 #include "TodoList.h"
 #include <tt_app.h>
-#include <tt_lock.h>
+#include <tactility/filesystem/file_mutex.h>
 #include <Tactility/kernel/Kernel.h>
 #include <tt_lvgl_toolbar.h>
 #include <tt_lvgl_keyboard.h>
@@ -60,52 +60,48 @@ void TodoList::saveTodos() {
     char savePath[256];
     if (!getSaveFilePath(savePath, sizeof(savePath))) return;
 
-    auto lock = tt_lock_alloc_for_path(savePath);
-    if (!lock) return;
-    if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
-        FILE* f = fopen(savePath, "w");
-        if (f) {
-            for (int i = 0; i < count; i++) {
-                fprintf(f, "%c %s\n", items[i].done ? '+' : '-', items[i].text);
-            }
-            fclose(f);
+    struct FileMutex mutex;
+    file_mutex_get(&mutex, savePath);
+    file_mutex_lock(&mutex);
+    FILE* f = fopen(savePath, "w");
+    if (f) {
+        for (int i = 0; i < count; i++) {
+            fprintf(f, "%c %s\n", items[i].done ? '+' : '-', items[i].text);
         }
-        tt_lock_release(lock);
+        fclose(f);
     }
-    tt_lock_free(lock);
+    file_mutex_unlock(&mutex);
 }
 
 void TodoList::loadTodos() {
     char savePath[256];
     if (!getSaveFilePath(savePath, sizeof(savePath))) return;
 
-    auto lock = tt_lock_alloc_for_path(savePath);
-    if (!lock) return;
+    struct FileMutex mutex;
+    file_mutex_get(&mutex, savePath);
 
-    if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
-        count = 0;
-        FILE* f = fopen(savePath, "r");
-        if (f) {
-            char line[MAX_TEXT_LEN + 4];
-            while (count < MAX_TODOS && fgets(line, sizeof(line), f)) {
-                size_t len = strlen(line);
-                while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-                    line[--len] = '\0';
-                }
-
-                if (len < 3 || line[1] != ' ') continue;
-
-                TodoItem* item = &items[count];
-                item->done = (line[0] == '+');
-                strncpy(item->text, &line[2], MAX_TEXT_LEN - 1);
-                item->text[MAX_TEXT_LEN - 1] = '\0';
-                count++;
+    file_mutex_lock(&mutex);
+    count = 0;
+    FILE* f = fopen(savePath, "r");
+    if (f) {
+        char line[MAX_TEXT_LEN + 4];
+        while (count < MAX_TODOS && fgets(line, sizeof(line), f)) {
+            size_t len = strlen(line);
+            while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+                line[--len] = '\0';
             }
-            fclose(f);
+
+            if (len < 3 || line[1] != ' ') continue;
+
+            TodoItem* item = &items[count];
+            item->done = (line[0] == '+');
+            strncpy(item->text, &line[2], MAX_TEXT_LEN - 1);
+            item->text[MAX_TEXT_LEN - 1] = '\0';
+            count++;
         }
-        tt_lock_release(lock);
+        fclose(f);
     }
-    tt_lock_free(lock);
+    file_mutex_unlock(&mutex);
 }
 
 /* ── UI Helpers ───────────────────────────────────────────────────── */

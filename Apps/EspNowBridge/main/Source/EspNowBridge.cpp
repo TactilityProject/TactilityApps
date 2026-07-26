@@ -8,7 +8,6 @@
 #include <tt_app.h>
 #include <tt_app_fileselection.h>
 #include <tt_bundle.h>
-#include <tt_lock.h>
 #include <lvgl/lvgl.h>
 #include <tt_lvgl_toolbar.h>
 
