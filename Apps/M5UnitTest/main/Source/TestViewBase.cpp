@@ -2,7 +2,7 @@
 #include "M5UnitTest.h"
 #include "UiScale.h"
 #include <tt_lvgl_toolbar.h>
-#include <tactility/lvgl_fonts.h>
+#include <lvgl/lvgl_fonts.h>
 
 lv_obj_t* TestViewBase::createToolbar(lv_obj_t* parent, AppHandle handle, const char* title) {
     lv_obj_t* toolbar = tt_lvgl_toolbar_create_for_app(parent, handle);

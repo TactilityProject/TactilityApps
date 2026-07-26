@@ -1,6 +1,6 @@
 #pragma once
 #include <lvgl.h>
-#include <tactility/lvgl_fonts.h>
+#include <lvgl/lvgl_fonts.h>
 
 // Device screen widths in default (portrait) orientation:
 //   tiny   < 200  : small OLEDs, custom breadboard devices

@@ -1,7 +1,7 @@
 #include "TestUnitDualButton.h"
 #include "UiScale.h"
 #include <tactility/device.h>
-#include <tactility/lvgl_fonts.h>
+#include <lvgl/lvgl_fonts.h>
 
 static constexpr gpio_pin_t PIN_MIN = 0;
 static constexpr gpio_pin_t PIN_MAX = 57;

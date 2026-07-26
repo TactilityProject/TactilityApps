@@ -2,7 +2,7 @@
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
-#include <tactility/lvgl_fonts.h>
+#include <lvgl/lvgl_fonts.h>
 
 void TestUnitMidi::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
     app_ = app;

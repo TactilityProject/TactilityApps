@@ -3,7 +3,7 @@
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/drivers/uart_controller.h>
-#include <tactility/lvgl_fonts.h>
+#include <lvgl/lvgl_fonts.h>
 #include <cstring>
 
 // ---------------------------------------------------------------------------
