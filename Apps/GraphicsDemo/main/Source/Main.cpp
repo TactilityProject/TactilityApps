@@ -6,65 +6,44 @@
 
 #include <tt_app.h>
 #include <tt_app_alertdialog.h>
-#include <tt_lvgl.h>
+
+#include <tactility/device.h>
+#include <tactility/drivers/display.h>
+#include <tactility/drivers/pointer.h>
+#include <lvgl/lvgl.h>
+#include <lvgl/module.h>
+#include <tactility/module.h>
 
 constexpr auto TAG = "Main";
 
-/** Find a DisplayDevice that supports the DisplayDriver interface */
-static bool findUsableDisplay(DeviceId& deviceId) {
-    uint16_t display_count = 0;
-    if (!tt_hal_device_find(DEVICE_TYPE_DISPLAY, &deviceId, &display_count, 1)) {
-        ESP_LOGE(TAG, "No display device found");
-        return false;
-    }
-
-    if (!tt_hal_display_driver_supported(deviceId)) {
-        ESP_LOGE(TAG, "Display doesn't support driver mode");
-        return false;
-    }
-
-    return true;
-}
-
-/** Find a TouchDevice that supports the TouchDriver interface */
-static bool findUsableTouch(DeviceId& deviceId) {
-    uint16_t touch_count = 0;
-    if (!tt_hal_device_find(DEVICE_TYPE_TOUCH, &deviceId, &touch_count, 1)) {
-        ESP_LOGE(TAG, "No touch device found");
-        return false;
-    }
-
-    if (!tt_hal_touch_driver_supported(deviceId)) {
-        ESP_LOGE(TAG, "Touch doesn't support driver mode");
-        return false;
-    }
-
-    return true;
-}
-
 static void onCreate(AppHandle appHandle, void* data) {
-    DeviceId display_id;
-    if (!findUsableDisplay(display_id)) {
+    struct Device* display_device;
+    if (device_get_first_active_by_type(&DISPLAY_TYPE, &display_device) != ERROR_NONE) {
+        ESP_LOGE(TAG, "No display device found");
         tt_app_stop();
-        tt_app_alertdialog_start("Error", "The display doesn't support the required features.", nullptr, 0);
+        tt_app_alertdialog_start("Error", "No display device was found.", nullptr, 0);
         return;
     }
 
-    DeviceId touch_id;
-    if (!findUsableTouch(touch_id)) {
+    struct Device* touch_device;
+    if (device_get_first_active_by_type(&POINTER_TYPE, &touch_device) != ERROR_NONE) {
+        ESP_LOGE(TAG, "No touch device found");
+        device_put(display_device);
         tt_app_stop();
-        tt_app_alertdialog_start("Error", "The touch driver doesn't support the required features.", nullptr, 0);
+        tt_app_alertdialog_start("Error", "No touch device was found.", nullptr, 0);
         return;
     }
 
     // Stop LVGL first (because it's currently using the drivers we want to use)
-    tt_lvgl_stop();
+    module_stop(&lvgl_module);
 
     ESP_LOGI(TAG, "Creating display driver");
-    auto display = new DisplayDriver(display_id);
+    auto display = new DisplayDriver(display_device);
+    device_put(display_device);
 
     ESP_LOGI(TAG, "Creating touch driver");
-    auto touch = new TouchDriver(touch_id);
+    auto touch = new TouchDriver(touch_device);
+    device_put(touch_device);
 
     // Run the main logic
     ESP_LOGI(TAG, "Running application");
@@ -82,9 +61,9 @@ static void onCreate(AppHandle appHandle, void* data) {
 
 static void onDestroy(AppHandle appHandle, void* data) {
     // Restart LVGL to resume rendering of regular apps
-    if (!tt_lvgl_is_started()) {
+    if (!module_is_started(&lvgl_module)) {
         ESP_LOGI(TAG, "Restarting LVGL");
-        tt_lvgl_start();
+        module_start(&lvgl_module);
     }
 }
 
