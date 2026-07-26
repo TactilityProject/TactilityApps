@@ -1,5 +1,5 @@
 #include "Magic8Ball.h"
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <tactility/device.h>
 #include <tactility/drivers/keyboard.h>
 #include <stdlib.h>
@@ -93,7 +93,7 @@ void Magic8Ball::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     /* Toolbar */
-    lv_obj_t* toolbar = tt_lvgl_toolbar_create_for_app(parent, app);
+    lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Magic 8-Ball");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
     /* Main container */

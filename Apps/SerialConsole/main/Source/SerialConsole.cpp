@@ -1,5 +1,5 @@
 #include "SerialConsole.h"
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 
 constexpr auto* TAG = "SerialMonitor";
 
@@ -43,9 +43,9 @@ void SerialConsole::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
 
-    auto* toolbar = tt_lvgl_toolbar_create_for_app(parent, appHandle);
+    auto* toolbar = lvgl_toolbar_create(parent, "Serial Console");
 
-    disconnectButton = tt_lvgl_toolbar_add_image_button_action(toolbar, LV_SYMBOL_POWER, onDisconnectPressed, this);
+    disconnectButton = lvgl_toolbar_add_image_button_action(toolbar, LV_SYMBOL_POWER, onDisconnectPressed, this);
     lv_obj_add_flag(disconnectButton, LV_OBJ_FLAG_HIDDEN);
 
     wrapperWidget = lv_obj_create(parent);

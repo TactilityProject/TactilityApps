@@ -14,7 +14,6 @@
 #include "TestUnitLcdGfx.h"
 
 #include <tactility/device.h>
-#include <tt_lvgl_toolbar.h>
 #include <esp_log.h>
 
 constexpr auto* TAG = "M5UnitTest";

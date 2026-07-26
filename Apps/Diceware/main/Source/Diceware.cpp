@@ -3,7 +3,7 @@
 #include <tt_app_alertdialog.h>
 #include <tactility/filesystem/file_mutex.h>
 #include <lvgl/lvgl.h>
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 
 #include <esp_random.h>
 #include <esp_log.h>
@@ -122,8 +122,8 @@ void Diceware::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
 
-    auto* toolbar = tt_lvgl_toolbar_create_for_app(parent, appHandle);
-    tt_lvgl_toolbar_add_text_button_action(toolbar, "?", onHelpClicked, nullptr);
+    auto* toolbar = lvgl_toolbar_create(parent, "Diceware");
+    lvgl_toolbar_add_text_button_action(toolbar, "?", onHelpClicked, nullptr);
 
     auto* wrapper = lv_obj_create(parent);
     lv_obj_set_style_border_width(wrapper, 0, LV_STATE_DEFAULT);

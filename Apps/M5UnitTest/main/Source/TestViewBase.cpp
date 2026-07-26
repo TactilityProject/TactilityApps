@@ -1,13 +1,12 @@
 #include "TestViewBase.h"
 #include "M5UnitTest.h"
 #include "UiScale.h"
-#include <tt_lvgl_toolbar.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/widgets/toolbar.h>
+#include <lvgl/fonts.h>
 
 lv_obj_t* TestViewBase::createToolbar(lv_obj_t* parent, AppHandle handle, const char* title) {
-    lv_obj_t* toolbar = tt_lvgl_toolbar_create_for_app(parent, handle);
-    tt_lvgl_toolbar_set_title(toolbar, title);
-    tt_lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LEFT, onBackClicked, this);
+    lv_obj_t* toolbar = lvgl_toolbar_create(parent, title);
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LEFT, onBackClicked, this);
     return toolbar;
 }
 

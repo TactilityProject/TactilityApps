@@ -2,7 +2,7 @@
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/fonts.h>
 #include <algorithm>
 #include <cmath>
 

@@ -1,13 +1,13 @@
 #include "TestListView.h"
 #include "M5UnitTest.h"
 #include "UiScale.h"
-#include <tt_lvgl_toolbar.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/widgets/toolbar.h>
+#include <lvgl/fonts.h>
 
 void TestListView::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
     app_ = app;
 
-    tt_lvgl_toolbar_create_for_app(parent, handle);
+    lvgl_toolbar_create(parent, "M5 Unit Test");
 
     list_ = lv_list_create(parent);
     lv_obj_set_width(list_, LV_PCT(100));

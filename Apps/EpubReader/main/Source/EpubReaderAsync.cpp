@@ -1,5 +1,5 @@
 #include "EpubReader.h"
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <tactility/filesystem/file_mutex.h>
 #include <tactility/log.h>
 #include <Tactility/kernel/Kernel.h>
@@ -43,7 +43,7 @@ void EpubReader::spawnOpenTask(EpubReader* self, bool restore) {
 
     // Show a brief placeholder so old content doesn't linger during the open
     lv_obj_clean(self->wrapperWidget_);
-    tt_lvgl_toolbar_clear_actions(self->toolbar_);
+    lvgl_toolbar_clear_actions(self->toolbar_);
     lv_obj_t* lbl = lv_label_create(self->wrapperWidget_);
     lv_obj_set_style_pad_all(lbl, 8, 0);
     lv_label_set_text(lbl, restore ? "Loading..." : "Opening...");

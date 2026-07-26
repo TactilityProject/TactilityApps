@@ -5,7 +5,7 @@
 
 #include "TamaTac.h"
 #include "SpriteData.h"
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <tt_app_alertdialog.h>
 #include <Tactility/kernel/Kernel.h>
 #include <freertos/FreeRTOS.h>
@@ -86,11 +86,11 @@ void TamaTac::onShow(AppHandle context, lv_obj_t* parent) {
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_pad_row(parent, 0, 0);
 
-    toolbar = tt_lvgl_toolbar_create_for_app(parent, context);
+    toolbar = lvgl_toolbar_create(parent, "TamaTac");
 
-    menuButton = tt_lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onMenuClicked, this);
-    tt_lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onCleanClicked, this);
-    tt_lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_REFRESH, onResetClicked, this);
+    menuButton = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onMenuClicked, this);
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onCleanClicked, this);
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_REFRESH, onResetClicked, this);
 
     wrapperWidget = lv_obj_create(parent);
     lv_obj_set_width(wrapperWidget, LV_PCT(100));

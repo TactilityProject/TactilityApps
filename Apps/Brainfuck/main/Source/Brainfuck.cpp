@@ -1,6 +1,6 @@
 #include "Brainfuck.h"
 #include <tt_app.h>
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -399,11 +399,11 @@ void Brainfuck::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
-    lv_obj_t* toolbar = tt_lvgl_toolbar_create_for_app(parent, app);
+    lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Brainfuck interpreter");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
-    clrBtn = tt_lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearClicked, nullptr);
+    clrBtn = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearClicked, nullptr);
     lv_obj_add_flag(clrBtn, LV_OBJ_FLAG_HIDDEN);
-    tt_lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onExamplesClicked, nullptr);
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onExamplesClicked, nullptr);
 
     lv_obj_t* cont = lv_obj_create(parent);
     lv_obj_set_width(cont, LV_PCT(100));

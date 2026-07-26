@@ -2,7 +2,7 @@
 
 #include <array>
 #include <lvgl.h>
-#include <lvgl/lvgl_icon_shared.h>
+#include <lvgl/icons/shared.h>
 #include <tt_app.h>
 
 class M5UnitTest;

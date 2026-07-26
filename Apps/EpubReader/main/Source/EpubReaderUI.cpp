@@ -1,5 +1,5 @@
 #include "EpubReader.h"
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <tactility/log.h>
 #include <esp_heap_caps.h>
 #include <dirent.h>
@@ -37,20 +37,20 @@ static void setListBtnLongMode(lv_obj_t* btn, lv_label_long_mode_t mode) {
 // ---------------------------------------------------------------------------
 
 void EpubReader::setReaderToolbarButtons() {
-    tt_lvgl_toolbar_clear_actions(toolbar_);
-    tt_lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_PREV, onPrevPressed, this);
+    lvgl_toolbar_clear_actions(toolbar_);
+    lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_PREV, onPrevPressed, this);
     if (!textMode_) {
-        tt_lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_LIST, onTocPressed, this);
+        lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_LIST, onTocPressed, this);
     }
-    tt_lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_NEXT, onNextPressed, this);
-    tt_lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_DIRECTORY, onBrowsePressed, this);
+    lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_NEXT, onNextPressed, this);
+    lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_DIRECTORY, onBrowsePressed, this);
 }
 
 void EpubReader::setBrowserToolbarButtons() {
-    tt_lvgl_toolbar_clear_actions(toolbar_);
+    lvgl_toolbar_clear_actions(toolbar_);
     // Show "Use Folder" button when the current browse path isn't already the saved books folder
     if (browsePath_ != booksPath_) {
-        tt_lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_DIRECTORY, onSetBooksFolder, this);
+        lvgl_toolbar_add_text_button_action(toolbar_, LV_SYMBOL_DIRECTORY, onSetBooksFolder, this);
     }
 }
 

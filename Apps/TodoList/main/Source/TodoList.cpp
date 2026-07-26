@@ -2,9 +2,9 @@
 #include <tt_app.h>
 #include <tactility/filesystem/file_mutex.h>
 #include <Tactility/kernel/Kernel.h>
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <lvgl/lvgl.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/fonts.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -272,7 +272,7 @@ void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     /* Toolbar */
-    lv_obj_t* toolbar = tt_lvgl_toolbar_create_for_app(parent, app);
+    lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Todo List");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
     lv_obj_t* countWrapper = lv_obj_create(toolbar);

@@ -3,7 +3,7 @@
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <tactility/drivers/i2c_controller.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/fonts.h>
 
 void TestUnitPaHub::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
     app_ = app;

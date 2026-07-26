@@ -1,7 +1,7 @@
 #include "EpubReader.h"
 #include "HtmlStrip.h"              // stripHtmlToText
 #include <tt_bundle.h>
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <tt_app_alertdialog.h>
 #include <tt_app_selectiondialog.h>
 #include <tactility/log.h>
@@ -239,7 +239,7 @@ void EpubReader::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
 
-    toolbar_ = tt_lvgl_toolbar_create_for_app(parent, app);
+    toolbar_ = lvgl_toolbar_create(parent, "Epub Reader");
 
     wrapperWidget_ = lv_obj_create(parent);
     lv_obj_set_width(wrapperWidget_, LV_PCT(100));

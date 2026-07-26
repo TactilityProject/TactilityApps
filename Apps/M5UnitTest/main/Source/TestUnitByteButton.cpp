@@ -2,7 +2,7 @@
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/fonts.h>
 #include <cstring>
 
 void TestUnitByteButton::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {

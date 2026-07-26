@@ -9,7 +9,7 @@
 #include <tt_app_fileselection.h>
 #include <tt_bundle.h>
 #include <lvgl/lvgl.h>
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 
 #include <esp_app_desc.h>
 #include <esp_app_format.h>
@@ -655,7 +655,7 @@ void EspNowBridge::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
-    lv_obj_t* toolbar = tt_lvgl_toolbar_create_for_app(parent, app);
+    lv_obj_t* toolbar = lvgl_toolbar_create(parent, "ESP-NOW Bridge");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
     auto* wrapper = lv_obj_create(parent);

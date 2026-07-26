@@ -5,12 +5,12 @@
 #include "TwoEleven.h"
 
 #include <inttypes.h>
-#include <tt_lvgl_toolbar.h>
+#include <lvgl/widgets/toolbar.h>
 #include <tt_app_alertdialog.h>
 #include <tt_app_selectiondialog.h>
 #include <tt_preferences.h>
 #include <lvgl/lvgl.h>
-#include <lvgl/lvgl_fonts.h>
+#include <lvgl/fonts.h>
 #include <TactilityCpp/LvglLock.h>
 
 constexpr auto* TAG = "TwoEleven";
@@ -257,7 +257,7 @@ void TwoEleven::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     // Create toolbar
-    toolbar = tt_lvgl_toolbar_create_for_app(parent, appHandle);
+    toolbar = lvgl_toolbar_create(parent, "2048");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
     // Create main wrapper
