@@ -21,7 +21,7 @@ public:
         device_put(device);
     }
 
-    bool lock(TickType_t timeout = tt::kernel::MAX_TICKS) const {
+    bool lock(TickType_t timeout = tt::kernel::FREERTOS_MAX_TICKS) const {
         return device_try_lock(device, timeout);
     }
 

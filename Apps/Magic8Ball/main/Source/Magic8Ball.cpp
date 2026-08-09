@@ -5,9 +5,11 @@
 #include <stdlib.h>
 #include <time.h>
 
+namespace {
+
 /* ── Responses ─────────────────────────────────────────────────────── */
 
-static const char* responses[] = {
+const char* responses[] = {
     /* Affirmative (10) */
     "It is certain.",
     "It is decidedly so.",
@@ -35,43 +37,43 @@ static const char* responses[] = {
 
 #define NUM_RESPONSES (sizeof(responses) / sizeof(responses[0]))
 
-static const char* getInputHint() {
+const char* getInputHint() {
     if (device_has_active_by_type(&KEYBOARD_TYPE)) {
         return "Touch or Space to ask  Q to exit";
     }
     return "Touch the ball to ask";
 }
 
-/* ── Methods ──────────────────────────────────────────────────────── */
+/* ── Behavior ─────────────────────────────────────────────────────── */
 
-void Magic8Ball::revealAnswer() {
-    if (!seeded) {
+void revealAnswer(Context* ctx) {
+    if (!ctx->seeded) {
         srand((unsigned)time(NULL));
-        seeded = true;
+        ctx->seeded = true;
     }
 
     int idx;
     do {
         idx = rand() % NUM_RESPONSES;
-    } while (idx == lastIdx && NUM_RESPONSES > 1);
-    lastIdx = idx;
+    } while (idx == ctx->lastIdx && NUM_RESPONSES > 1);
+    ctx->lastIdx = idx;
 
-    lv_label_set_text(answerLabel, responses[idx]);
-    lv_label_set_text(hintLabel, getInputHint());
+    lv_label_set_text(ctx->answerLabel, responses[idx]);
+    lv_label_set_text(ctx->hintLabel, getInputHint());
 }
 
-void Magic8Ball::onBallClick(lv_event_t* e) {
-    auto* self = (Magic8Ball*)lv_event_get_user_data(e);
-    self->revealAnswer();
+void onBallClick(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    revealAnswer(ctx);
 }
 
-void Magic8Ball::onKey(lv_event_t* e) {
-    auto* self = (Magic8Ball*)lv_event_get_user_data(e);
+void onKey(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     uint32_t key = lv_event_get_key(e);
     switch (key) {
         case LV_KEY_ENTER:
         case ' ':
-            self->revealAnswer();
+            revealAnswer(ctx);
             break;
         case LV_KEY_ESC:
         case 'q':
@@ -86,9 +88,13 @@ void Magic8Ball::onKey(lv_event_t* e) {
     }
 }
 
+} // namespace
+
 /* ── Lifecycle ────────────────────────────────────────────────────── */
 
-void Magic8Ball::onShow(AppHandle app, lv_obj_t* parent) {
+void magic8BallCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
@@ -111,52 +117,53 @@ void Magic8Ball::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_style_radius(cont, 0, 0);
 
     /* "8" ball circle */
-    ballObj = lv_obj_create(cont);
-    lv_obj_set_size(ballObj, 120, 120);
-    lv_obj_set_style_radius(ballObj, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(ballObj, lv_color_make(0x10, 0x10, 0x30), 0);
-    lv_obj_set_style_bg_opa(ballObj, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(ballObj, lv_color_make(0x40, 0x40, 0x80), 0);
-    lv_obj_set_style_border_width(ballObj, 3, 0);
-    lv_obj_remove_flag(ballObj, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(ballObj, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(ballObj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    ctx->ballObj = lv_obj_create(cont);
+    lv_obj_set_size(ctx->ballObj, 120, 120);
+    lv_obj_set_style_radius(ctx->ballObj, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(ctx->ballObj, lv_color_make(0x10, 0x10, 0x30), 0);
+    lv_obj_set_style_bg_opa(ctx->ballObj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(ctx->ballObj, lv_color_make(0x40, 0x40, 0x80), 0);
+    lv_obj_set_style_border_width(ctx->ballObj, 3, 0);
+    lv_obj_remove_flag(ctx->ballObj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(ctx->ballObj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(ctx->ballObj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     /* Answer text inside the ball */
-    answerLabel = lv_label_create(ballObj);
-    lv_label_set_text(answerLabel, "8");
-    lv_obj_set_style_text_color(answerLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(answerLabel, lv_font_get_default(), 0);
-    lv_obj_set_style_text_align(answerLabel, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(answerLabel, 100);
-    lv_label_set_long_mode(answerLabel, LV_LABEL_LONG_WRAP);
+    ctx->answerLabel = lv_label_create(ctx->ballObj);
+    lv_label_set_text(ctx->answerLabel, "8");
+    lv_obj_set_style_text_color(ctx->answerLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(ctx->answerLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_align(ctx->answerLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(ctx->answerLabel, 100);
+    lv_label_set_long_mode(ctx->answerLabel, LV_LABEL_LONG_WRAP);
 
     /* Hint text below the ball */
-    hintLabel = lv_label_create(cont);
-    lv_label_set_text(hintLabel, getInputHint());
-    lv_obj_set_style_text_color(hintLabel, lv_color_make(0x88, 0x88, 0x88), 0);
-    lv_obj_set_style_text_font(hintLabel, lv_font_get_default(), 0);
+    ctx->hintLabel = lv_label_create(cont);
+    lv_label_set_text(ctx->hintLabel, getInputHint());
+    lv_obj_set_style_text_color(ctx->hintLabel, lv_color_make(0x88, 0x88, 0x88), 0);
+    lv_obj_set_style_text_font(ctx->hintLabel, lv_font_get_default(), 0);
 
     /* Make the ball tappable / also space */
-    lv_obj_add_flag(ballObj, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(ballObj, onBallClick, LV_EVENT_CLICKED, this);
+    lv_obj_add_flag(ctx->ballObj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(ctx->ballObj, onBallClick, LV_EVENT_CLICKED, ctx);
 
     /* Keyboard support - no editing mode needed, just focus the ball */
     if (device_has_active_by_type(&KEYBOARD_TYPE)) {
         lv_group_t* grp = lv_group_get_default();
         if (grp) {
-            lv_group_add_obj(grp, ballObj);
-            lv_group_focus_obj(ballObj);
+            lv_group_add_obj(grp, ctx->ballObj);
+            lv_group_focus_obj(ctx->ballObj);
         }
-        lv_obj_add_event_cb(ballObj, onKey, LV_EVENT_KEY, this);
+        lv_obj_add_event_cb(ctx->ballObj, onKey, LV_EVENT_KEY, ctx);
     }
 }
 
-void Magic8Ball::onHide(AppHandle app) {
-    if (device_has_active_by_type(&KEYBOARD_TYPE) && ballObj) {
-        lv_group_remove_obj(ballObj);
-    }
-    answerLabel = nullptr;
-    hintLabel = nullptr;
-    ballObj = nullptr;
+void magic8BallTeardown(Context* ctx) {
+    // Don't touch ctx->ballObj here: by the time this runs, window_manager_remove() has already
+    // deleted the widget tree, and LVGL detaches a deleted object from its group automatically
+    // as part of that deletion (see lvgl-module keyboard.cpp's comment on obj_delete_core()'s
+    // ordering) - calling lv_group_remove_obj() on it here would be a use-after-free.
+    ctx->answerLabel = nullptr;
+    ctx->hintLabel = nullptr;
+    ctx->ballObj = nullptr;
 }

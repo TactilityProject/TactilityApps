@@ -5,69 +5,112 @@
 
 #include "CemeteryView.h"
 #include "TamaTac.h"
-#include <TactilityCpp/Preferences.h>
+#include <tactility/paths.h>
+#include <tactility/preferences.h>
 #include <cstdio>
+#include <string>
 
-static constexpr const char* PREF_NS = "TamaTacCem";
+namespace {
 
-void CemeteryView::loadRecords(PetRecord records[MAX_RECORDS]) {
-    Preferences prefs(PREF_NS);
-
-    for (int i = 0; i < MAX_RECORDS; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "valid%d", i);
-        records[i].valid = prefs.getBool(key, false);
-
-        if (records[i].valid) {
-            snprintf(key, sizeof(key), "pers%d", i);
-            records[i].personality = static_cast<Personality>(prefs.getInt32(key, 0));
-
-            snprintf(key, sizeof(key), "stage%d", i);
-            records[i].stageReached = static_cast<LifeStage>(prefs.getInt32(key, 0));
-
-            snprintf(key, sizeof(key), "age%d", i);
-            records[i].ageHours = static_cast<uint16_t>(prefs.getInt32(key, 0));
-        }
+bool getPreferencesPath(std::string& outPath) {
+    char root[128];
+    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+        return false;
     }
+    outPath = std::string(root) + "/tamatac_cemetery.properties";
+    return true;
 }
 
-void CemeteryView::recordDeath(Personality personality, LifeStage stage, uint16_t ageHours) {
-    Preferences prefs(PREF_NS);
+} // namespace
+
+void cemeteryViewLoadRecords(PetRecord records[CEMETERY_MAX_RECORDS]) {
+    std::string path;
+    if (!getPreferencesPath(path)) return;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return;
+
+    for (int i = 0; i < CEMETERY_MAX_RECORDS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "valid%d", i);
+        bool valid = false;
+        preferences_opt_bool(prefs, key, &valid);
+        records[i].valid = valid;
+
+        if (records[i].valid) {
+            int32_t value;
+
+            snprintf(key, sizeof(key), "pers%d", i);
+            value = 0;
+            preferences_opt_int32(prefs, key, &value);
+            records[i].personality = static_cast<Personality>(value);
+
+            snprintf(key, sizeof(key), "stage%d", i);
+            value = 0;
+            preferences_opt_int32(prefs, key, &value);
+            records[i].stageReached = static_cast<LifeStage>(value);
+
+            snprintf(key, sizeof(key), "age%d", i);
+            value = 0;
+            preferences_opt_int32(prefs, key, &value);
+            records[i].ageHours = static_cast<uint16_t>(value);
+        }
+    }
+
+    preferences_close(prefs);
+}
+
+void cemeteryViewRecordDeath(Personality personality, LifeStage stage, uint16_t ageHours) {
+    std::string path;
+    if (!getPreferencesPath(path)) return;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return;
+
+    auto getBool = [&](const char* key, bool defaultValue) {
+        bool value = defaultValue;
+        preferences_opt_bool(prefs, key, &value);
+        return value;
+    };
+    auto getInt32 = [&](const char* key, int32_t defaultValue) {
+        int32_t value = defaultValue;
+        preferences_opt_int32(prefs, key, &value);
+        return value;
+    };
 
     // Shift existing records down (newest at index 0)
-    for (int i = MAX_RECORDS - 1; i > 0; i--) {
+    for (int i = CEMETERY_MAX_RECORDS - 1; i > 0; i--) {
         char srcKey[16], dstKey[16];
 
         snprintf(srcKey, sizeof(srcKey), "valid%d", i - 1);
         snprintf(dstKey, sizeof(dstKey), "valid%d", i);
-        bool srcValid = prefs.getBool(srcKey, false);
-        prefs.putBool(dstKey, srcValid);
+        bool srcValid = getBool(srcKey, false);
+        preferences_put_bool(prefs, dstKey, srcValid);
 
         if (srcValid) {
             snprintf(srcKey, sizeof(srcKey), "pers%d", i - 1);
             snprintf(dstKey, sizeof(dstKey), "pers%d", i);
-            prefs.putInt32(dstKey, prefs.getInt32(srcKey, 0));
+            preferences_put_int32(prefs, dstKey, getInt32(srcKey, 0));
 
             snprintf(srcKey, sizeof(srcKey), "stage%d", i - 1);
             snprintf(dstKey, sizeof(dstKey), "stage%d", i);
-            prefs.putInt32(dstKey, prefs.getInt32(srcKey, 0));
+            preferences_put_int32(prefs, dstKey, getInt32(srcKey, 0));
 
             snprintf(srcKey, sizeof(srcKey), "age%d", i - 1);
             snprintf(dstKey, sizeof(dstKey), "age%d", i);
-            prefs.putInt32(dstKey, prefs.getInt32(srcKey, 0));
+            preferences_put_int32(prefs, dstKey, getInt32(srcKey, 0));
         }
     }
 
     // Write new record at index 0
-    prefs.putBool("valid0", true);
-    prefs.putInt32("pers0", static_cast<int32_t>(personality));
-    prefs.putInt32("stage0", static_cast<int32_t>(stage));
-    prefs.putInt32("age0", static_cast<int32_t>(ageHours));
+    preferences_put_bool(prefs, "valid0", true);
+    preferences_put_int32(prefs, "pers0", static_cast<int32_t>(personality));
+    preferences_put_int32(prefs, "stage0", static_cast<int32_t>(stage));
+    preferences_put_int32(prefs, "age0", static_cast<int32_t>(ageHours));
+
+    preferences_close(prefs);
 }
 
-void CemeteryView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
-    parent = parentWidget;
-    app = appInstance;
+void cemeteryViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
+    CemeteryViewState* state = &ctx->cemeteryView;
 
     lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
     lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
@@ -77,30 +120,30 @@ void CemeteryView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
     int padAll = isSmall ? 4 : (isXLarge ? 16 : 8);
     int padRow = isSmall ? 4 : (isXLarge ? 12 : 6);
 
-    mainWrapper = lv_obj_create(parent);
-    lv_obj_set_size(mainWrapper, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_pad_all(mainWrapper, padAll, 0);
-    lv_obj_set_style_pad_row(mainWrapper, padRow, 0);
-    lv_obj_set_style_bg_opa(mainWrapper, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(mainWrapper, 0, 0);
-    lv_obj_set_flex_flow(mainWrapper, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    state->mainWrapper = lv_obj_create(parentWidget);
+    lv_obj_set_size(state->mainWrapper, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(state->mainWrapper, padAll, 0);
+    lv_obj_set_style_pad_row(state->mainWrapper, padRow, 0);
+    lv_obj_set_style_bg_opa(state->mainWrapper, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(state->mainWrapper, 0, 0);
+    lv_obj_set_flex_flow(state->mainWrapper, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(state->mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     // Title
-    lv_obj_t* title = lv_label_create(mainWrapper);
+    lv_obj_t* title = lv_label_create(state->mainWrapper);
     lv_label_set_text(title, "Pet Cemetery");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
 
     // Load records
-    PetRecord records[MAX_RECORDS];
-    loadRecords(records);
+    PetRecord records[CEMETERY_MAX_RECORDS];
+    cemeteryViewLoadRecords(records);
 
     bool anyRecords = false;
-    for (int i = 0; i < MAX_RECORDS; i++) {
+    for (int i = 0; i < CEMETERY_MAX_RECORDS; i++) {
         if (!records[i].valid) continue;
         anyRecords = true;
 
-        lv_obj_t* row = lv_obj_create(mainWrapper);
+        lv_obj_t* row = lv_obj_create(state->mainWrapper);
         lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
         lv_obj_set_style_pad_all(row, isSmall ? 4 : (isXLarge ? 12 : 6), 0);
         lv_obj_set_style_bg_color(row, lv_color_hex(0x2a2a4e), 0);
@@ -122,14 +165,12 @@ void CemeteryView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
     }
 
     if (!anyRecords) {
-        lv_obj_t* emptyLabel = lv_label_create(mainWrapper);
+        lv_obj_t* emptyLabel = lv_label_create(state->mainWrapper);
         lv_label_set_text(emptyLabel, "No records yet.");
         lv_obj_set_style_text_color(emptyLabel, lv_palette_lighten(LV_PALETTE_GREY, 3), 0);
     }
 }
 
-void CemeteryView::onStop() {
-    mainWrapper = nullptr;
-    parent = nullptr;
-    app = nullptr;
+void cemeteryViewStop(Context* ctx) {
+    ctx->cemeteryView.mainWrapper = nullptr;
 }

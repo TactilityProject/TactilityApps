@@ -4,11 +4,13 @@
  */
 #pragma once
 
-#include <TactilityCpp/App.h>
-#include <tt_app.h>
+#include <app/instance.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <lvgl.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/timers.h>
+
 #include "PetLogic.h"
 #include "Sprites.h"
 #include "MainView.h"
@@ -25,106 +27,87 @@
 extern lv_color_t TamaTac_canvasBuffer[72 * 72];
 extern lv_color_t TamaTac_iconBuffers[12][16 * 16];
 
-class TamaTac final : public App {
-public:
-    // Active view type (scoped to TamaTac class)
-    enum class ViewType {
-        None,
-        Main,
-        Menu,
-        Stats,
-        Settings,
-        PatternGameView,
-        ReactionGameView,
-        CemeteryViewType,
-        AchievementsViewType
-    };
+// Active view type
+enum class ViewType {
+    None,
+    Main,
+    Menu,
+    Stats,
+    Settings,
+    PatternGameView,
+    ReactionGameView,
+    CemeteryViewType,
+    AchievementsViewType
+};
 
-private:
+struct Context {
+    AppInstanceId appInstanceId = 0;
+    WindowId window = 0;
+
     // UI elements
     lv_obj_t* toolbar = nullptr;
     lv_obj_t* wrapperWidget = nullptr;
     lv_obj_t* menuButton = nullptr;
 
     // Views
-    MainView mainView;
-    StatsView statsView;
-    MenuView menuView;
-    SettingsView settingsView;
-    PatternGame patternGame;
-    ReactionGame reactionGame;
-    CemeteryView cemeteryView;
-    AchievementsView achievementsView;
+    MainViewState mainView;
+    StatsViewState statsView;
+    MenuViewState menuView;
+    SettingsViewState settingsView;
+    PatternGameState patternGame;
+    ReactionGameState reactionGame;
+    CemeteryViewState cemeteryView;
+    AchievementsViewState achievementsView;
     ViewType activeView = ViewType::None;
 
-    // Static data (singleton — only one TamaTac instance exists at a time)
-    static PetLogic* petLogic;
-    static TimerHandle_t updateTimer;
-    static SemaphoreHandle_t timerMutex;
-    static AppHandle currentApp;
-    static AppLaunchId resetDialogId;
-    static LifeStage lastKnownStage;
-    static SfxEngine* sfxEngine;
-    static DecaySpeed decaySpeed;
-    static uint32_t lastPetTime;
-    static bool pendingResetUI;
+    // Pet simulation - session-scoped: survives widget rebuilds (window burial/resurface)
+    PetLogic petLogic;
+    LifeStage lastKnownStage = LifeStage::Egg;
+    DecaySpeed decaySpeed = DecaySpeed::Normal;
+    uint32_t lastPetTime = 0;
+    bool pendingResetUI = false;  // Set by main.cpp's AlertDialog result handler, consumed by MainView's anim timer
 
-public:
-    void onCreate(AppHandle app) override;
-    void onShow(AppHandle context, lv_obj_t* parent) override;
-    void onHide(AppHandle context) override;
-    void onDestroy(AppHandle app) override;
-    void onResult(AppHandle app, void* data, AppLaunchId launchId, AppResult result, BundleHandle resultData) override;
+    // Session-scoped resources - created once in tamaTacInit(), released in tamaTacTeardown()
+    SfxEngine* sfxEngine = nullptr;
+    TimerHandle_t updateTimer = nullptr;
+    SemaphoreHandle_t timerMutex = nullptr;
 
-    // Action handlers (called by MainView)
-    void handleFeedAction();
-    void handlePlayAction();
-    void handleMedicineAction();
-    void handleSleepAction();
-    void handlePetTap();
-
-    // Mini-game callbacks
-    void onPatternGameComplete(int roundsCompleted, bool won);
-    void onReactionGameComplete(int score, bool won);
-
-    // Settings handlers (called by SettingsView)
-    void setSoundEnabled(bool enabled);
-    void setDecaySpeed(DecaySpeed speed);
-
-    // View navigation (called by MenuView)
-    void showMainView();
-    void showStatsView();
-    void showSettingsView();
-    void showCemeteryView();
-    void showAchievementsView();
-
-    // Getters (note: getSfxEngine() may return nullptr before onCreate() or after onDestroy())
-    static DecaySpeed getDecaySpeed() { return decaySpeed; }
-    static SfxEngine* getSfxEngine() { return sfxEngine; }
-
-private:
-    // View management
-    void stopActiveView();
-    void showMenuView();
-
-    // Timer callback (called every 30 seconds)
-    static void onTimerUpdate(TimerHandle_t timer);
-
-    // Event handlers
-    static void onCleanClicked(lv_event_t* e);
-    static void onMenuClicked(lv_event_t* e);
-    static void onResetClicked(lv_event_t* e);
-
-    // View navigation (internal)
-    void showPatternGame();
-    void showReactionGame();
-
-    friend class MainView;
-    friend class StatsView;
-    friend class MenuView;
-    friend class SettingsView;
-    friend class PatternGame;
-    friend class ReactionGame;
-    friend class CemeteryView;
-    friend class AchievementsView;
+    // Dialog launch id for tracking the reset-confirmation AlertDialog
+    uint32_t resetDialogId = 0;
 };
+
+/** Sets up state that must exist for the whole app instance lifetime: loads pet state, starts
+ *  the SFX engine, and starts the 30s pet-update timer. Call once, before window_manager_create(). */
+void tamaTacInit(Context* ctx);
+
+/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+void tamaTacCreateWidgets(lv_obj_t* parent, void* userData);
+
+/** Stops the update timer and SFX engine, saves pet state. Call once, after the window has been
+ *  torn down. */
+void tamaTacTeardown(Context* ctx);
+
+// Action handlers (called by MainView)
+void tamaTacHandleFeedAction(Context* ctx);
+void tamaTacHandlePlayAction(Context* ctx);
+void tamaTacHandleMedicineAction(Context* ctx);
+void tamaTacHandleSleepAction(Context* ctx);
+void tamaTacHandlePetTap(Context* ctx);
+
+// Mini-game callbacks
+void tamaTacOnPatternGameComplete(Context* ctx, int roundsCompleted, bool won);
+void tamaTacOnReactionGameComplete(Context* ctx, int score, bool won);
+
+// Settings handlers (called by SettingsView)
+void tamaTacSetSoundEnabled(Context* ctx, bool enabled);
+void tamaTacSetDecaySpeed(Context* ctx, DecaySpeed speed);
+
+// View navigation (called by MenuView, MainView, and internally)
+void showMainView(Context* ctx);
+void showMenuView(Context* ctx);
+void showStatsView(Context* ctx);
+void showSettingsView(Context* ctx);
+void showCemeteryView(Context* ctx);
+void showAchievementsView(Context* ctx);
+void showPatternGame(Context* ctx);
+void showReactionGame(Context* ctx);

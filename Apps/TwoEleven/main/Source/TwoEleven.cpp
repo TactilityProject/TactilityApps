@@ -6,41 +6,32 @@
 
 #include <inttypes.h>
 #include <lvgl/widgets/toolbar.h>
-#include <tt_app_alertdialog.h>
-#include <tt_app_selectiondialog.h>
-#include <tt_preferences.h>
+#include <lvgl_window_manager/window_manager.h>
+#include <app/event.h>
+#include <app/manager.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
-#include <TactilityCpp/LvglLock.h>
+#include <tactility/paths.h>
+#include <tactility/preferences.h>
+#include <string>
 
-constexpr auto* TAG = "TwoEleven";
+namespace {
 
-// Preferences keys for high scores (one per grid size)
-static constexpr const char* PREF_NAMESPACE = "TwoEleven";
-static constexpr const char* PREF_HIGH_3X3 = "high_3x3";
-static constexpr const char* PREF_HIGH_4X4 = "high_4x4";
-static constexpr const char* PREF_HIGH_5X5 = "high_5x5";
-static constexpr const char* PREF_HIGH_6X6 = "high_6x6";
-
-// High scores for each grid size (loaded from preferences)
-static int32_t highScore3x3 = 0;
-static int32_t highScore4x4 = 0;
-static int32_t highScore5x5 = 0;
-static int32_t highScore6x6 = 0;
-
-static constexpr size_t SIZE_COUNT = 4;
-
-// Selection dialog indices (0 = How to Play, 1-4 = grid sizes)
-static constexpr int32_t SELECTION_HOW_TO_PLAY = 0;
-static constexpr int32_t SELECTION_3X3 = 1;
-static constexpr int32_t SELECTION_4X4 = 2;
-static constexpr int32_t SELECTION_5X5 = 3;
-static constexpr int32_t SELECTION_6X6 = 4;
+constexpr size_t SIZE_COUNT = 4;
 
 // Grid size options (index matches selection - 1)
-static const uint16_t gridSizes[SIZE_COUNT] = { 3, 4, 5, 6 };
+constexpr uint16_t gridSizes[SIZE_COUNT] = { 3, 4, 5, 6 };
 
-static uint32_t getToolbarHeight(UiDensity uiDensity) {
+bool getPreferencesPath(std::string& outPath) {
+    char root[128];
+    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+        return false;
+    }
+    outPath = std::string(root) + "/two_eleven.properties";
+    return true;
+}
+
+uint32_t getToolbarHeight(UiDensity uiDensity) {
     if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
         return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
     } else {
@@ -48,208 +39,208 @@ static uint32_t getToolbarHeight(UiDensity uiDensity) {
     }
 }
 
-static uint32_t getActionIconPadding(UiDensity uiDensity) {
+uint32_t getActionIconPadding(UiDensity uiDensity) {
     auto toolbar_height = getToolbarHeight(uiDensity);
     return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
 }
 
-static void loadHighScores() {
-    PreferencesHandle prefs = tt_preferences_alloc(PREF_NAMESPACE);
-    if (prefs) {
-        tt_preferences_opt_int32(prefs, PREF_HIGH_3X3, &highScore3x3);
-        tt_preferences_opt_int32(prefs, PREF_HIGH_4X4, &highScore4x4);
-        tt_preferences_opt_int32(prefs, PREF_HIGH_5X5, &highScore5x5);
-        tt_preferences_opt_int32(prefs, PREF_HIGH_6X6, &highScore6x6);
-        tt_preferences_free(prefs);
-    }
+void loadHighScores(Context* ctx) {
+    std::string path;
+    if (!getPreferencesPath(path)) return;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return;
+    preferences_opt_int32(prefs, "high_3x3", &ctx->highScore3x3);
+    preferences_opt_int32(prefs, "high_4x4", &ctx->highScore4x4);
+    preferences_opt_int32(prefs, "high_5x5", &ctx->highScore5x5);
+    preferences_opt_int32(prefs, "high_6x6", &ctx->highScore6x6);
+    preferences_close(prefs);
 }
 
-static void saveHighScore(int32_t gridSize, int32_t score) {
-    PreferencesHandle prefs = tt_preferences_alloc(PREF_NAMESPACE);
-    if (prefs) {
-        switch (gridSize) {
-            case SELECTION_3X3:
-                highScore3x3 = score;
-                tt_preferences_put_int32(prefs, PREF_HIGH_3X3, score);
-                break;
-            case SELECTION_4X4:
-                highScore4x4 = score;
-                tt_preferences_put_int32(prefs, PREF_HIGH_4X4, score);
-                break;
-            case SELECTION_5X5:
-                highScore5x5 = score;
-                tt_preferences_put_int32(prefs, PREF_HIGH_5X5, score);
-                break;
-            case SELECTION_6X6:
-                highScore6x6 = score;
-                tt_preferences_put_int32(prefs, PREF_HIGH_6X6, score);
-                break;
-        }
-        tt_preferences_free(prefs);
-    }
-}
-
-static int32_t getHighScore(int32_t gridSize) {
+void saveHighScore(Context* ctx, int32_t gridSize, int32_t score) {
+    std::string path;
+    if (!getPreferencesPath(path)) return;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return;
     switch (gridSize) {
-        case SELECTION_3X3: return highScore3x3;
-        case SELECTION_4X4: return highScore4x4;
-        case SELECTION_5X5: return highScore5x5;
-        case SELECTION_6X6: return highScore6x6;
+        case TWOELEVEN_SELECTION_3X3:
+            ctx->highScore3x3 = score;
+            preferences_put_int32(prefs, "high_3x3", score);
+            break;
+        case TWOELEVEN_SELECTION_4X4:
+            ctx->highScore4x4 = score;
+            preferences_put_int32(prefs, "high_4x4", score);
+            break;
+        case TWOELEVEN_SELECTION_5X5:
+            ctx->highScore5x5 = score;
+            preferences_put_int32(prefs, "high_5x5", score);
+            break;
+        case TWOELEVEN_SELECTION_6X6:
+            ctx->highScore6x6 = score;
+            preferences_put_int32(prefs, "high_6x6", score);
+            break;
+    }
+    preferences_close(prefs);
+}
+
+int32_t getHighScore(Context* ctx, int32_t gridSize) {
+    switch (gridSize) {
+        case TWOELEVEN_SELECTION_3X3: return ctx->highScore3x3;
+        case TWOELEVEN_SELECTION_4X4: return ctx->highScore4x4;
+        case TWOELEVEN_SELECTION_5X5: return ctx->highScore5x5;
+        case TWOELEVEN_SELECTION_6X6: return ctx->highScore6x6;
         default: return 0;
     }
 }
 
-void TwoEleven::showSelectionDialog() {
-    const char* items[] = { "How to Play", "3x3", "4x4", "5x5", "6x6" };
-    selectionDialogId = tt_app_selectiondialog_start("2048", 5, items);
-}
-
-void TwoEleven::showHelpDialog() {
-    const char* buttons[] = { "OK" };
-    helpDialogId = tt_app_alertdialog_start(
+void showHelpDialog(Context* ctx) {
+    const char* argv[] = {
         "How to Play",
         "Swipe or use arrow keys to move tiles.\n"
         "Tiles with the same number merge.\n"
         "Reach 2048 to win!",
-        buttons, 1);
+        "OK",
+    };
+    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
 }
 
-void TwoEleven::twoElevenEventCb(lv_event_t* e) {
-    TwoEleven* self = (TwoEleven*)lv_event_get_user_data(e);
-    if (self == nullptr) {
-        return;
-    }
+void showSelectionDialog(Context* ctx) {
+    const char* argv[] = { "2048", "How to Play", "3x3", "4x4", "5x5", "6x6" };
+    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+}
+
+void twoElevenEventCb(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx == nullptr) return;
     lv_event_code_t code = lv_event_get_code(e);
 
     if (code == LV_EVENT_VALUE_CHANGED) {
-        int32_t score = twoeleven_get_score(self->gameObject);
+        int32_t score = twoeleven_get_score(ctx->gameObject);
 
-        if (self->gameOverDialogId == 0 && twoeleven_get_best_tile(self->gameObject) >= 2048) {
-            int32_t prevHighScore = getHighScore(self->currentGridSize);
+        if (ctx->gameOverDialogId == 0 && twoeleven_get_best_tile(ctx->gameObject) >= 2048) {
+            int32_t prevHighScore = getHighScore(ctx, ctx->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
             // Save high score if it's a new record
             if (isNewHighScore) {
-                saveHighScore(self->currentGridSize, score);
+                saveHighScore(ctx, ctx->currentGridSize, score);
             }
 
-            const char* alertDialogLabels[] = { "OK" };
             char message[100];
+            const char* title = "YOU WIN!";
             if (isNewHighScore) {
                 snprintf(message, sizeof(message), "NEW HIGH SCORE!\n\nSCORE: %" PRId32, score);
-                self->gameOverDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
             } else {
-                snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(self->currentGridSize));
-                self->gameOverDialogId = tt_app_alertdialog_start("YOU WIN!", message, alertDialogLabels, 1);
+                snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
-        } else if (self->gameOverDialogId == 0 && twoeleven_get_status(self->gameObject)) {
-            int32_t prevHighScore = getHighScore(self->currentGridSize);
+            const char* argv[] = { title, message, "OK" };
+            app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
+        } else if (ctx->gameOverDialogId == 0 && twoeleven_get_status(ctx->gameObject)) {
+            int32_t prevHighScore = getHighScore(ctx, ctx->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
             // Save high score if it's a new record
             if (isNewHighScore) {
-                saveHighScore(self->currentGridSize, score);
+                saveHighScore(ctx, ctx->currentGridSize, score);
             }
 
-            const char* alertDialogLabels[] = { "OK" };
             char message[100];
+            const char* title;
             if (isNewHighScore && score > 0) {
+                title = "NEW HIGH SCORE!";
                 snprintf(message, sizeof(message), "NEW HIGH SCORE!\n\nSCORE: %" PRId32, score);
-                self->gameOverDialogId = tt_app_alertdialog_start("NEW HIGH SCORE!", message, alertDialogLabels, 1);
             } else {
-                snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(self->currentGridSize));
-                self->gameOverDialogId = tt_app_alertdialog_start("GAME OVER!", message, alertDialogLabels, 1);
+                title = "GAME OVER!";
+                snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
+            const char* argv[] = { title, message, "OK" };
+            app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
         } else {
             // Update score display
-            lv_label_set_text_fmt(self->scoreLabel, "SCORE: %" PRId32, score);
+            lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %" PRId32, score);
         }
     }
 }
 
-void TwoEleven::newGameBtnEvent(lv_event_t* e) {
-    TwoEleven* self = (TwoEleven*)lv_event_get_user_data(e);
-    if (self == nullptr) {
-        return;
-    }
-    twoeleven_set_new_game(self->gameObject);
+void newGameBtnEvent(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx == nullptr) return;
+    twoeleven_set_new_game(ctx->gameObject);
     // Update score label
-    if (self->scoreLabel) {
-        lv_label_set_text_fmt(self->scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(self->gameObject));
+    if (ctx->scoreLabel) {
+        lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(ctx->gameObject));
     }
 }
 
-void TwoEleven::createGame(lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
+void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     // Create game widget
-    gameObject = twoeleven_create(parent, size);
-    lv_obj_set_style_text_font(gameObject, lv_font_get_default(), 0);
-    lv_obj_set_size(gameObject, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_flex_grow(gameObject, 1);
+    ctx->gameObject = twoeleven_create(parent, size);
+    lv_obj_set_style_text_font(ctx->gameObject, lv_font_get_default(), 0);
+    lv_obj_set_size(ctx->gameObject, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->gameObject, 1);
 
     // Create score wrapper in toolbar
-    scoreWrapper = lv_obj_create(tb);
-    lv_obj_set_size(scoreWrapper, LV_SIZE_CONTENT, LV_PCT(100));
-    lv_obj_set_style_pad_top(scoreWrapper, 4, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_bottom(scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_left(scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_right(scoreWrapper, 10, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_row(scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_column(scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(scoreWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    ctx->scoreWrapper = lv_obj_create(tb);
+    lv_obj_set_size(ctx->scoreWrapper, LV_SIZE_CONTENT, LV_PCT(100));
+    lv_obj_set_style_pad_top(ctx->scoreWrapper, 4, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_bottom(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(ctx->scoreWrapper, 10, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_row(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_column(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_remove_flag(ctx->scoreWrapper, LV_OBJ_FLAG_SCROLLABLE);
 
     // Create score label
-    scoreLabel = lv_label_create(scoreWrapper);
-    lv_label_set_text_fmt(scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(gameObject));
-    lv_obj_set_style_text_align(scoreLabel, LV_TEXT_ALIGN_LEFT, LV_STATE_DEFAULT);
-    lv_obj_align(scoreLabel, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_size(scoreLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(scoreLabel, lv_font_get_default(), 0);
-    lv_obj_set_style_text_color(scoreLabel, lv_palette_main(LV_PALETTE_AMBER), LV_PART_MAIN);
-    lv_obj_add_event_cb(gameObject, twoElevenEventCb, LV_EVENT_VALUE_CHANGED, this);
+    ctx->scoreLabel = lv_label_create(ctx->scoreWrapper);
+    lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %" PRId32, twoeleven_get_score(ctx->gameObject));
+    lv_obj_set_style_text_align(ctx->scoreLabel, LV_TEXT_ALIGN_LEFT, LV_STATE_DEFAULT);
+    lv_obj_align(ctx->scoreLabel, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_size(ctx->scoreLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_font(ctx->scoreLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_color(ctx->scoreLabel, lv_palette_main(LV_PALETTE_AMBER), LV_PART_MAIN);
+    lv_obj_add_event_cb(ctx->gameObject, twoElevenEventCb, LV_EVENT_VALUE_CHANGED, ctx);
 
     auto ui_density = lvgl_get_ui_density();
     auto toolbar_height = getToolbarHeight(ui_density);
     auto icon_padding = getActionIconPadding(ui_density);
 
     // Create new game button wrapper
-    newGameWrapper = lv_obj_create(tb);
-    lv_obj_set_width(newGameWrapper, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(newGameWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(newGameWrapper, icon_padding / 2, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(newGameWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(newGameWrapper, 0, LV_STATE_DEFAULT);
+    ctx->newGameWrapper = lv_obj_create(tb);
+    lv_obj_set_width(ctx->newGameWrapper, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ctx->newGameWrapper, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(ctx->newGameWrapper, icon_padding / 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ctx->newGameWrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ctx->newGameWrapper, 0, LV_STATE_DEFAULT);
 
     // Create new game button
-    lv_obj_t* newGameBtn = lv_btn_create(newGameWrapper);
+    lv_obj_t* newGameBtn = lv_btn_create(ctx->newGameWrapper);
     lv_obj_set_size(newGameBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(newGameBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(newGameBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, ctx);
 
     lv_obj_t* btnIcon = lv_image_create(newGameBtn);
     lv_image_set_src(btnIcon, LV_SYMBOL_REFRESH);
     lv_obj_align(btnIcon, LV_ALIGN_CENTER, 0, 0);
 }
 
-void TwoEleven::onHide(AppHandle appHandle) {
-    scoreLabel = nullptr;
-    scoreWrapper = nullptr;
-    toolbar = nullptr;
-    mainWrapper = nullptr;
-    newGameWrapper = nullptr;
-    gameObject = nullptr;
-}
+} // namespace
 
-void TwoEleven::onShow(AppHandle appHandle, lv_obj_t* parent) {
-    // Check if we should exit (user closed selection dialog)
-    if (shouldExit) {
-        shouldExit = false;
-        tt_app_stop();
+void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+
+    // Closed the selection dialog without picking anything - close self. Emit our own close
+    // event rather than calling app_manager_finish()/window_manager APIs directly from inside
+    // this callback (window_manager's own docs warn against that - it would deadlock); the main
+    // loop picks this up and does the actual finish.
+    if (ctx->shouldExit) {
+        ctx->shouldExit = false;
+        AppEvent event { .type = APP_EVENT_CLOSE, .timestamp = 0, .result = {} };
+        app_event_emit(ctx->appInstanceId, &event);
         return;
     }
 
@@ -257,81 +248,56 @@ void TwoEleven::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     // Create toolbar
-    toolbar = lvgl_toolbar_create(parent, "2048");
-    lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
+    ctx->toolbar = lvgl_toolbar_create(parent, "2048");
+    lv_obj_align(ctx->toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
     // Create main wrapper
-    mainWrapper = lv_obj_create(parent);
-    lv_obj_set_width(mainWrapper, LV_PCT(100));
-    lv_obj_set_flex_grow(mainWrapper, 1);
-    lv_obj_set_style_pad_all(mainWrapper, 2, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(mainWrapper, 2, LV_PART_MAIN);
-    lv_obj_set_style_pad_column(mainWrapper, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_width(mainWrapper, 0, LV_PART_MAIN);
-    lv_obj_remove_flag(mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    ctx->mainWrapper = lv_obj_create(parent);
+    lv_obj_set_width(ctx->mainWrapper, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->mainWrapper, 1);
+    lv_obj_set_style_pad_all(ctx->mainWrapper, 2, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(ctx->mainWrapper, 2, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(ctx->mainWrapper, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ctx->mainWrapper, 0, LV_PART_MAIN);
+    lv_obj_remove_flag(ctx->mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Load high scores on first show
-    if (!highScoresLoaded) {
-        loadHighScores();
-        highScoresLoaded = true;
+    // Load high scores on first build
+    if (!ctx->highScoresLoaded) {
+        loadHighScores(ctx);
+        ctx->highScoresLoaded = true;
     }
 
-    // Check if we need to show the help dialog
-    if (showHelpOnShow) {
-        showHelpOnShow = false;
-        showHelpDialog();
-    // Check if we have a pending size selection from onResult
-    } else if (pendingSelection >= SELECTION_3X3 && pendingSelection <= SELECTION_6X6) {
-        // Force layout update before creating game so dimensions are computed
+    if (ctx->showHelpOnShow) {
+        // A dialog we opened just closed, telling us to show help next.
+        ctx->showHelpOnShow = false;
+        showHelpDialog(ctx);
+    } else if (ctx->pendingSelection >= TWOELEVEN_SELECTION_3X3 && ctx->pendingSelection <= TWOELEVEN_SELECTION_6X6) {
+        // A dialog we opened just closed, telling us to start a game at this grid size.
         lv_obj_update_layout(parent);
-        // Track which grid size we're playing for high score saving
-        currentGridSize = pendingSelection;
-        // Start game with selected size (convert selection index to size index)
-        int32_t sizeIndex = pendingSelection - SELECTION_3X3;
-        createGame(mainWrapper, gridSizes[sizeIndex], toolbar);
-        pendingSelection = -1;
+        ctx->currentGridSize = ctx->pendingSelection;
+        int32_t sizeIndex = ctx->pendingSelection - TWOELEVEN_SELECTION_3X3;
+        createGame(ctx, ctx->mainWrapper, gridSizes[sizeIndex], ctx->toolbar);
+        ctx->pendingSelection = -1;
+    } else if (ctx->currentGridSize >= TWOELEVEN_SELECTION_3X3 && ctx->currentGridSize <= TWOELEVEN_SELECTION_6X6) {
+        // Resurfacing while a game was already active, but not because one of our own dialogs
+        // closed (e.g. another app was briefly switched to and this window got buried, which
+        // destroys its whole widget tree). twoeleven_create() owns all game state internally
+        // and that's gone now too, so there's no cheap way to resume the exact position - start
+        // a fresh game at the same grid size instead of dropping back to the selection dialog.
+        lv_obj_update_layout(parent);
+        int32_t sizeIndex = ctx->currentGridSize - TWOELEVEN_SELECTION_3X3;
+        createGame(ctx, ctx->mainWrapper, gridSizes[sizeIndex], ctx->toolbar);
     } else {
-        // Show selection dialog
-        showSelectionDialog();
+        // First creation - show selection dialog
+        showSelectionDialog(ctx);
     }
 }
 
-void TwoEleven::onResult(AppHandle appHandle, void* _Nullable data, AppLaunchId launchId, AppResult result, BundleHandle resultData) {
-    // Don't manipulate LVGL objects here - they may be invalid
-    // Just store state for onShow to handle
-
-    if (launchId == selectionDialogId && selectionDialogId != 0) {
-        selectionDialogId = 0;
-
-        int32_t selection = -1;
-        if (resultData != nullptr) {
-            selection = tt_app_selectiondialog_get_result_index(resultData);
-        }
-
-        if (selection == SELECTION_HOW_TO_PLAY) {
-            // Mark to show help dialog in onShow
-            showHelpOnShow = true;
-        } else if (selection >= SELECTION_3X3 && selection <= SELECTION_6X6) {
-            // Store selection for onShow to handle
-            pendingSelection = selection;
-        } else {
-            // User closed dialog without selecting - mark for exit
-            shouldExit = true;
-        }
-
-    } else if (launchId == helpDialogId && helpDialogId != 0) {
-        helpDialogId = 0;
-        // Return to selection dialog
-        pendingSelection = -1;
-
-    } else if (launchId == gameOverDialogId && gameOverDialogId != 0) {
-        gameOverDialogId = 0;
-        // Mark to show selection dialog in onShow
-        pendingSelection = -1;
-
-    } else if (launchId == winDialogId && winDialogId != 0) {
-        winDialogId = 0;
-        // Mark to show selection dialog in onShow
-        pendingSelection = -1;
-    }
+void twoElevenTeardown(Context* ctx) {
+    ctx->scoreLabel = nullptr;
+    ctx->scoreWrapper = nullptr;
+    ctx->toolbar = nullptr;
+    ctx->mainWrapper = nullptr;
+    ctx->newGameWrapper = nullptr;
+    ctx->gameObject = nullptr;
 }

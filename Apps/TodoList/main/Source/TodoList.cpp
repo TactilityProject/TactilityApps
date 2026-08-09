@@ -1,5 +1,6 @@
 #include "TodoList.h"
-#include <tt_app.h>
+#include <app/paths.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <tactility/filesystem/file_mutex.h>
 #include <Tactility/kernel/Kernel.h>
 #include <lvgl/widgets/toolbar.h>
@@ -11,27 +12,29 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static constexpr const char* SAVE_FILENAME = "todos.txt";
+namespace {
 
-/* File-scope instance pointer for index-based callbacks */
-static TodoList* g_instance = nullptr;
-static AppHandle s_appHandle = nullptr;
+constexpr const char* SAVE_FILENAME = "todos.txt";
+/** Must match manifest.properties' app.id */
+constexpr const char* APP_ID = "one.tactility.todolist";
+
+// Attached to each list row / delete button so the click handlers know both which Context and
+// which item index they belong to (mirrors AlertDialog/SelectionDialog's ButtonContext/
+// ItemContext idiom). Freed via LV_EVENT_DELETE when rebuildList() cleans the list.
+struct ItemContext {
+    Context* ctx;
+    int index;
+};
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
-static bool getSaveFilePath(char* buf, size_t bufSize) {
-    if (!s_appHandle) return false;
-    size_t size = bufSize;
-    tt_app_get_user_data_child_path(s_appHandle, SAVE_FILENAME, buf, &size);
-    return size > 0;
+bool getSaveFilePath(char* buf, size_t bufSize) {
+    return app_paths_get_user_data_path(APP_ID, SAVE_FILENAME, buf, bufSize) == ERROR_NONE;
 }
 
-static bool ensureDir() {
-    if (!s_appHandle) return false;
+bool ensureDir() {
     char dir[256];
-    size_t size = sizeof(dir);
-    tt_app_get_user_data_path(s_appHandle, dir, &size);
-    if (size == 0) return false;
+    if (app_paths_get_user_data_directory(APP_ID, dir, sizeof(dir)) != ERROR_NONE) return false;
     for (char* p = dir + 1; *p; ++p) {
         if (*p == '/') { *p = '\0'; mkdir(dir, 0755); *p = '/'; }
     }
@@ -39,7 +42,7 @@ static bool ensureDir() {
     return true;
 }
 
-static uint32_t getToolbarHeight(UiDensity uiDensity) {
+uint32_t getToolbarHeight(UiDensity uiDensity) {
     if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
         return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
     } else {
@@ -47,14 +50,14 @@ static uint32_t getToolbarHeight(UiDensity uiDensity) {
     }
 }
 
-static uint32_t getActionIconPadding(UiDensity uiDensity) {
+uint32_t getActionIconPadding(UiDensity uiDensity) {
     auto toolbar_height = getToolbarHeight(uiDensity);
     return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
 }
 
 /* ── Persistence ──────────────────────────────────────────────────── */
 
-void TodoList::saveTodos() {
+void saveTodos(Context* ctx) {
     if (!ensureDir()) return;
     char savePath[256];
     if (!getSaveFilePath(savePath, sizeof(savePath))) return;
@@ -64,15 +67,15 @@ void TodoList::saveTodos() {
     file_mutex_lock(&mutex);
     FILE* f = fopen(savePath, "w");
     if (f) {
-        for (int i = 0; i < count; i++) {
-            fprintf(f, "%c %s\n", items[i].done ? '+' : '-', items[i].text);
+        for (int i = 0; i < ctx->count; i++) {
+            fprintf(f, "%c %s\n", ctx->items[i].done ? '+' : '-', ctx->items[i].text);
         }
         fclose(f);
     }
     file_mutex_unlock(&mutex);
 }
 
-void TodoList::loadTodos() {
+void loadTodos(Context* ctx) {
     char savePath[256];
     if (!getSaveFilePath(savePath, sizeof(savePath))) return;
 
@@ -80,11 +83,11 @@ void TodoList::loadTodos() {
     file_mutex_get(&mutex, savePath);
 
     file_mutex_lock(&mutex);
-    count = 0;
+    ctx->count = 0;
     FILE* f = fopen(savePath, "r");
     if (f) {
-        char line[MAX_TEXT_LEN + 4];
-        while (count < MAX_TODOS && fgets(line, sizeof(line), f)) {
+        char line[Context::MAX_TEXT_LEN + 4];
+        while (ctx->count < Context::MAX_TODOS && fgets(line, sizeof(line), f)) {
             size_t len = strlen(line);
             while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
                 line[--len] = '\0';
@@ -92,11 +95,11 @@ void TodoList::loadTodos() {
 
             if (len < 3 || line[1] != ' ') continue;
 
-            TodoItem* item = &items[count];
+            Context::TodoItem* item = &ctx->items[ctx->count];
             item->done = (line[0] == '+');
-            strncpy(item->text, &line[2], MAX_TEXT_LEN - 1);
-            item->text[MAX_TEXT_LEN - 1] = '\0';
-            count++;
+            strncpy(item->text, &line[2], Context::MAX_TEXT_LEN - 1);
+            item->text[Context::MAX_TEXT_LEN - 1] = '\0';
+            ctx->count++;
         }
         fclose(f);
     }
@@ -105,89 +108,56 @@ void TodoList::loadTodos() {
 
 /* ── UI Helpers ───────────────────────────────────────────────────── */
 
-void TodoList::updateCountLabel() {
-    if (!countLabel) return;
+void updateCountLabel(Context* ctx) {
+    if (!ctx->countLabel) return;
     int pending = 0;
-    for (int i = 0; i < count; i++) {
-        if (!items[i].done) pending++;
+    for (int i = 0; i < ctx->count; i++) {
+        if (!ctx->items[i].done) pending++;
     }
     if (pending > 0) {
-        lv_label_set_text_fmt(countLabel, "%d left", pending);
-    } else if (count > 0) {
-        lv_label_set_text(countLabel, "All done!");
+        lv_label_set_text_fmt(ctx->countLabel, "%d left", pending);
+    } else if (ctx->count > 0) {
+        lv_label_set_text(ctx->countLabel, "All done!");
     } else {
-        lv_label_set_text(countLabel, "No tasks");
+        lv_label_set_text(ctx->countLabel, "No tasks");
     }
 }
 
-void TodoList::addItem(const char* text) {
-    if (!text || !text[0]) return;
-    if (count >= MAX_TODOS) return;
+void onItemClicked(lv_event_t* e);
+void onDeleteClicked(lv_event_t* e);
 
-    while (*text == ' ') text++;
-    if (!*text) return;
-
-    TodoItem* item = &items[count];
-    item->done = false;
-    strncpy(item->text, text, MAX_TEXT_LEN - 1);
-    item->text[MAX_TEXT_LEN - 1] = '\0';
-
-    size_t len = strlen(item->text);
-    while (len > 0 && item->text[len - 1] == ' ') {
-        item->text[--len] = '\0';
-    }
-
-    count++;
-    saveTodos();
-    rebuildList();
+void onItemContextDeleted(lv_event_t* e) {
+    delete static_cast<ItemContext*>(lv_event_get_user_data(e));
 }
 
-void TodoList::scheduleRebuild() {
-    if (rebuildPending) return;
-    rebuildPending = true;
-    rebuildTimer = lv_timer_create(onDeferredRebuild, 0, this);
-    if (!rebuildTimer) {
-        rebuildPending = false;
-        return;
-    }
-    lv_timer_set_repeat_count(rebuildTimer, 1);
-}
+void rebuildList(Context* ctx) {
+    if (!ctx->list) return;
 
-void TodoList::onDeferredRebuild(lv_timer_t* timer) {
-    TodoList* self = static_cast<TodoList*>(lv_timer_get_user_data(timer));
-    if (self) {
-        self->rebuildTimer = nullptr;
-        self->rebuildPending = false;
-        self->rebuildList();
-    }
-}
-
-void TodoList::rebuildList() {
-    if (!list) return;
-
-    lv_obj_clean(list);
+    lv_obj_clean(ctx->list);
 
     auto ui_density = lvgl_get_ui_density();
     auto toolbar_height = getToolbarHeight(ui_density);
     auto icon_padding = getActionIconPadding(ui_density);
 
-    if (count == 0) {
-        lv_list_add_text(list, "No tasks yet. Add one below!");
+    if (ctx->count == 0) {
+        lv_list_add_text(ctx->list, "No tasks yet. Add one below!");
     }
 
-    for (int i = 0; i < count; i++) {
-        TodoItem* item = &items[i];
+    for (int i = 0; i < ctx->count; i++) {
+        Context::TodoItem* item = &ctx->items[i];
 
-        char display[MAX_TEXT_LEN + 8];
+        char display[Context::MAX_TEXT_LEN + 8];
         snprintf(display, sizeof(display), "%s %s", item->done ? LV_SYMBOL_OK : LV_SYMBOL_DUMMY, item->text);
 
-        lv_obj_t* btn = lv_list_add_button(list, NULL, display);
+        lv_obj_t* btn = lv_list_add_button(ctx->list, NULL, display);
 
         if (item->done) {
             lv_obj_set_style_text_opa(btn, LV_OPA_50, LV_PART_MAIN);
         }
 
-        lv_obj_add_event_cb(btn, onItemClicked, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)i);
+        auto* itemCtx = new ItemContext { ctx, i };
+        lv_obj_add_event_cb(btn, onItemClicked, LV_EVENT_SHORT_CLICKED, itemCtx);
+        lv_obj_add_event_cb(btn, onItemContextDeleted, LV_EVENT_DELETE, itemCtx);
 
         lv_obj_t* delBtn = lv_button_create(btn);
         lv_obj_set_size(delBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
@@ -200,73 +170,123 @@ void TodoList::rebuildList() {
         lv_label_set_text(delIcon, LV_SYMBOL_CLOSE);
         lv_obj_center(delIcon);
 
-        lv_obj_add_event_cb(delBtn, onDeleteClicked, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+        auto* delItemCtx = new ItemContext { ctx, i };
+        lv_obj_add_event_cb(delBtn, onDeleteClicked, LV_EVENT_CLICKED, delItemCtx);
+        lv_obj_add_event_cb(delBtn, onItemContextDeleted, LV_EVENT_DELETE, delItemCtx);
     }
 
-    updateCountLabel();
+    updateCountLabel(ctx);
+}
+
+void onDeferredRebuild(lv_timer_t* timer) {
+    auto* ctx = static_cast<Context*>(lv_timer_get_user_data(timer));
+    ctx->rebuildTimer = nullptr;
+    ctx->rebuildPending = false;
+
+    // list only exists while this window is topmost - skip otherwise (window_manager deletes a
+    // buried window's widgets; same reasoning as GPIO.cpp's periodic status timer).
+    if (window_manager_get_state(ctx->window) != WINDOW_STATE_GRANTED) return;
+
+    rebuildList(ctx);
+}
+
+void scheduleRebuild(Context* ctx) {
+    if (ctx->rebuildPending) return;
+    ctx->rebuildPending = true;
+    ctx->rebuildTimer = lv_timer_create(onDeferredRebuild, 0, ctx);
+    if (!ctx->rebuildTimer) {
+        ctx->rebuildPending = false;
+        return;
+    }
+    lv_timer_set_repeat_count(ctx->rebuildTimer, 1);
+}
+
+void addItem(Context* ctx, const char* text) {
+    if (!text || !text[0]) return;
+    if (ctx->count >= Context::MAX_TODOS) return;
+
+    while (*text == ' ') text++;
+    if (!*text) return;
+
+    Context::TodoItem* item = &ctx->items[ctx->count];
+    item->done = false;
+    strncpy(item->text, text, Context::MAX_TEXT_LEN - 1);
+    item->text[Context::MAX_TEXT_LEN - 1] = '\0';
+
+    size_t len = strlen(item->text);
+    while (len > 0 && item->text[len - 1] == ' ') {
+        item->text[--len] = '\0';
+    }
+
+    ctx->count++;
+    saveTodos(ctx);
+    rebuildList(ctx);
 }
 
 /* ── Callbacks ────────────────────────────────────────────────────── */
 
-void TodoList::onItemClicked(lv_event_t* e) {
-    if (!g_instance) return;
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= g_instance->count) return;
+void onItemClicked(lv_event_t* e) {
+    auto* itemCtx = static_cast<ItemContext*>(lv_event_get_user_data(e));
+    Context* ctx = itemCtx->ctx;
+    int idx = itemCtx->index;
+    if (idx < 0 || idx >= ctx->count) return;
 
-    g_instance->items[idx].done = !g_instance->items[idx].done;
-    g_instance->saveTodos();
-    g_instance->scheduleRebuild();
+    ctx->items[idx].done = !ctx->items[idx].done;
+    saveTodos(ctx);
+    scheduleRebuild(ctx);
 }
 
-void TodoList::onDeleteClicked(lv_event_t* e) {
-    if (!g_instance) return;
+void onDeleteClicked(lv_event_t* e) {
+    auto* itemCtx = static_cast<ItemContext*>(lv_event_get_user_data(e));
+    Context* ctx = itemCtx->ctx;
+    int idx = itemCtx->index;
+    if (idx < 0 || idx >= ctx->count) return;
 
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= g_instance->count) return;
-
-    for (int i = idx; i < g_instance->count - 1; i++) {
-        g_instance->items[i] = g_instance->items[i + 1];
+    for (int i = idx; i < ctx->count - 1; i++) {
+        ctx->items[i] = ctx->items[i + 1];
     }
-    g_instance->count--;
+    ctx->count--;
 
-    g_instance->saveTodos();
-    g_instance->scheduleRebuild();
+    saveTodos(ctx);
+    scheduleRebuild(ctx);
 }
 
-void TodoList::onAddClicked(lv_event_t* e) {
-    if (!g_instance || !g_instance->inputTa) return;
-    const char* text = lv_textarea_get_text(g_instance->inputTa);
-    g_instance->addItem(text);
-    lv_textarea_set_text(g_instance->inputTa, "");
+void onAddClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (!ctx->inputTa) return;
+    const char* text = lv_textarea_get_text(ctx->inputTa);
+    addItem(ctx, text);
+    lv_textarea_set_text(ctx->inputTa, "");
 }
 
-void TodoList::onInputReady(lv_event_t* e) {
+void onInputReady(lv_event_t* e) {
     onAddClicked(e);
 }
 
-void TodoList::onClearDoneClicked(lv_event_t* e) {
-    if (!g_instance) return;
+void onClearDoneClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     int write = 0;
-    for (int read = 0; read < g_instance->count; read++) {
-        if (!g_instance->items[read].done) {
+    for (int read = 0; read < ctx->count; read++) {
+        if (!ctx->items[read].done) {
             if (write != read) {
-                g_instance->items[write] = g_instance->items[read];
+                ctx->items[write] = ctx->items[read];
             }
             write++;
         }
     }
-    g_instance->count = write;
-    g_instance->saveTodos();
-    g_instance->scheduleRebuild();
+    ctx->count = write;
+    saveTodos(ctx);
+    scheduleRebuild(ctx);
 }
+
+} // namespace
 
 /* ── Lifecycle ────────────────────────────────────────────────────── */
 
-void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
-    g_instance = this;
-    s_appHandle = app;
+void todoListCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
 
-    loadTodos();
+    loadTodos(ctx);
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
@@ -287,12 +307,12 @@ void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_style_bg_opa(countWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_remove_flag(countWrapper, LV_OBJ_FLAG_SCROLLABLE);
 
-    countLabel = lv_label_create(countWrapper);
-    lv_obj_set_size(countLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_align(countLabel, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_text_align(countLabel, LV_TEXT_ALIGN_LEFT, LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(countLabel, lv_font_get_default(), 0);
-    lv_obj_set_style_text_color(countLabel, lv_palette_main(LV_PALETTE_CYAN), LV_PART_MAIN);
+    ctx->countLabel = lv_label_create(countWrapper);
+    lv_obj_set_size(ctx->countLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_align(ctx->countLabel, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_align(ctx->countLabel, LV_TEXT_ALIGN_LEFT, LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ctx->countLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_color(ctx->countLabel, lv_palette_main(LV_PALETTE_CYAN), LV_PART_MAIN);
 
     auto ui_density = lvgl_get_ui_density();
     auto toolbar_height = getToolbarHeight(ui_density);
@@ -310,7 +330,7 @@ void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_size(clearBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(clearBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(clearBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(clearBtn, onClearDoneClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(clearBtn, onClearDoneClicked, LV_EVENT_CLICKED, ctx);
 
     lv_obj_t* clearIcon = lv_label_create(clearBtn);
     lv_label_set_text(clearIcon, LV_SYMBOL_TRASH);
@@ -327,45 +347,43 @@ void TodoList::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_set_style_border_width(cont, 0, 0);
 
     /* Scrollable list */
-    list = lv_list_create(cont);
-    lv_obj_set_width(list, LV_PCT(100));
-    lv_obj_set_flex_grow(list, 1);
+    ctx->list = lv_list_create(cont);
+    lv_obj_set_width(ctx->list, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->list, 1);
 
     /* Input row */
-    inputRow = lv_obj_create(cont);
-    lv_obj_set_size(inputRow, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(inputRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(inputRow, 0, 0);
-    lv_obj_set_style_pad_gap(inputRow, 4, 0);
-    lv_obj_remove_flag(inputRow, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_border_width(inputRow, 0, 0);
+    ctx->inputRow = lv_obj_create(cont);
+    lv_obj_set_size(ctx->inputRow, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ctx->inputRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ctx->inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(ctx->inputRow, 0, 0);
+    lv_obj_set_style_pad_gap(ctx->inputRow, 4, 0);
+    lv_obj_remove_flag(ctx->inputRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_border_width(ctx->inputRow, 0, 0);
 
-    inputTa = lv_textarea_create(inputRow);
-    lv_textarea_set_placeholder_text(inputTa, "New task...");
-    lv_textarea_set_one_line(inputTa, true);
-    lv_obj_set_flex_grow(inputTa, 1);
-    lv_obj_set_style_text_font(inputTa, lv_font_get_default(), 0);
-    lv_obj_add_event_cb(inputTa, onInputReady, LV_EVENT_READY, nullptr);
+    ctx->inputTa = lv_textarea_create(ctx->inputRow);
+    lv_textarea_set_placeholder_text(ctx->inputTa, "New task...");
+    lv_textarea_set_one_line(ctx->inputTa, true);
+    lv_obj_set_flex_grow(ctx->inputTa, 1);
+    lv_obj_set_style_text_font(ctx->inputTa, lv_font_get_default(), 0);
+    lv_obj_add_event_cb(ctx->inputTa, onInputReady, LV_EVENT_READY, ctx);
 
-    lv_obj_t* addBtn = lv_button_create(inputRow);
+    lv_obj_t* addBtn = lv_button_create(ctx->inputRow);
     lv_obj_t* addLbl = lv_label_create(addBtn);
     lv_label_set_text(addLbl, LV_SYMBOL_PLUS);
-    lv_obj_add_event_cb(addBtn, onAddClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(addBtn, onAddClicked, LV_EVENT_CLICKED, ctx);
 
-    rebuildList();
+    rebuildList(ctx);
 }
 
-void TodoList::onHide(AppHandle app) {
-    if (rebuildTimer) {
-        lv_timer_delete(rebuildTimer);
-        rebuildTimer = nullptr;
+void todoListTeardown(Context* ctx) {
+    if (ctx->rebuildTimer) {
+        lv_timer_delete(ctx->rebuildTimer);
+        ctx->rebuildTimer = nullptr;
     }
-    rebuildPending = false;
-    list = nullptr;
-    inputRow = nullptr;
-    inputTa = nullptr;
-    countLabel = nullptr;
-    g_instance = nullptr;
-    s_appHandle = nullptr;
+    ctx->rebuildPending = false;
+    ctx->list = nullptr;
+    ctx->inputRow = nullptr;
+    ctx->inputTa = nullptr;
+    ctx->countLabel = nullptr;
 }

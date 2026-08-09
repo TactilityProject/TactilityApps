@@ -4,9 +4,24 @@
  */
 
 #include "PetLogic.h"
-#include <TactilityCpp/Preferences.h>
+#include <tactility/paths.h>
+#include <tactility/preferences.h>
 #include <cstdlib>
 #include <algorithm>
+#include <string>
+
+namespace {
+
+bool getPreferencesPath(std::string& outPath) {
+    char root[128];
+    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+        return false;
+    }
+    outPath = std::string(root) + "/tamatac_pet.properties";
+    return true;
+}
+
+} // namespace
 
 // Static member initialization (2 = normal 1x speed)
 uint8_t PetLogic::decayMultiplier = 2;
@@ -392,81 +407,101 @@ uint8_t PetLogic::clampStat(int16_t value) {
 }
 
 void PetLogic::saveState() {
-    Preferences prefs("TamaTac");
+    std::string path;
+    if (!getPreferencesPath(path)) return;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return;
 
-    prefs.putInt32("hunger", stats.hunger);
-    prefs.putInt32("happiness", stats.happiness);
-    prefs.putInt32("health", stats.health);
-    prefs.putInt32("energy", stats.energy);
+    preferences_put_int32(prefs, "hunger", stats.hunger);
+    preferences_put_int32(prefs, "happiness", stats.happiness);
+    preferences_put_int32(prefs, "health", stats.health);
+    preferences_put_int32(prefs, "energy", stats.energy);
 
-    prefs.putInt32("cleanliness", stats.cleanliness);
-    prefs.putInt32("poopCount", stats.poopCount);
+    preferences_put_int32(prefs, "cleanliness", stats.cleanliness);
+    preferences_put_int32(prefs, "poopCount", stats.poopCount);
 
-    prefs.putInt32("ageSeconds", stats.ageSeconds);
-    prefs.putInt32("ageHours", stats.ageHours);
-    prefs.putInt32("lifespan", stats.lifespan);
+    preferences_put_int32(prefs, "ageSeconds", static_cast<int32_t>(stats.ageSeconds));
+    preferences_put_int32(prefs, "ageHours", stats.ageHours);
+    preferences_put_int32(prefs, "lifespan", static_cast<int32_t>(stats.lifespan));
 
-    prefs.putBool("isSick", stats.isSick);
-    prefs.putBool("isAsleep", stats.isAsleep);
-    prefs.putBool("isDead", stats.isDead);
+    preferences_put_bool(prefs, "isSick", stats.isSick);
+    preferences_put_bool(prefs, "isAsleep", stats.isAsleep);
+    preferences_put_bool(prefs, "isDead", stats.isDead);
 
-    prefs.putInt32("stage", static_cast<int32_t>(stats.stage));
-    prefs.putInt32("currentAnim", static_cast<int32_t>(stats.currentAnim));
-    prefs.putInt32("personality", static_cast<int32_t>(stats.personality));
+    preferences_put_int32(prefs, "stage", static_cast<int32_t>(stats.stage));
+    preferences_put_int32(prefs, "currentAnim", static_cast<int32_t>(stats.currentAnim));
+    preferences_put_int32(prefs, "personality", static_cast<int32_t>(stats.personality));
 
     // Note: uint32_t millis stored as int32_t (Preferences API limitation).
     // Two's complement round-trips correctly; no unsigned API available.
-    prefs.putInt32("lastSaveTime", static_cast<int32_t>(tt::kernel::getMillis()));
+    preferences_put_int32(prefs, "lastSaveTime", static_cast<int32_t>(tt::kernel::getMillis()));
+
+    preferences_close(prefs);
 }
 
 bool PetLogic::loadState() {
-    Preferences prefs("TamaTac");
+    std::string path;
+    if (!getPreferencesPath(path)) return false;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return false;
+
+    auto getInt32 = [&](const char* key, int32_t defaultValue) {
+        int32_t value = defaultValue;
+        preferences_opt_int32(prefs, key, &value);
+        return value;
+    };
+    auto getBool = [&](const char* key, bool defaultValue) {
+        bool value = defaultValue;
+        preferences_opt_bool(prefs, key, &value);
+        return value;
+    };
 
     // Check if save data exists
-    int32_t savedHunger = prefs.getInt32("hunger", -1);
+    int32_t savedHunger = getInt32("hunger", -1);
     if (savedHunger == -1) {
+        preferences_close(prefs);
         return false;
     }
 
     // Clamp loaded values to valid ranges (guard against corrupted preferences)
     stats.hunger = clampStat(savedHunger);
-    stats.happiness = clampStat(prefs.getInt32("happiness", 70));
-    stats.health = clampStat(prefs.getInt32("health", 100));
-    stats.energy = clampStat(prefs.getInt32("energy", 90));
+    stats.happiness = clampStat(getInt32("happiness", 70));
+    stats.health = clampStat(getInt32("health", 100));
+    stats.energy = clampStat(getInt32("energy", 90));
 
-    stats.cleanliness = clampStat(prefs.getInt32("cleanliness", 100));
-    int32_t loadedPoopCount = prefs.getInt32("poopCount", 0);
+    stats.cleanliness = clampStat(getInt32("cleanliness", 100));
+    int32_t loadedPoopCount = getInt32("poopCount", 0);
     stats.poopCount = (loadedPoopCount < 0) ? 0 : (loadedPoopCount > 3) ? 3 : static_cast<uint8_t>(loadedPoopCount);
 
     // uint32_t fields stored as int32_t (Preferences API limitation); cast back explicitly
-    stats.ageSeconds = static_cast<uint32_t>(prefs.getInt32("ageSeconds", 0));
-    stats.ageHours = static_cast<uint16_t>(prefs.getInt32("ageHours", 0));
-    stats.lifespan = static_cast<uint32_t>(prefs.getInt32("lifespan", 0));
+    stats.ageSeconds = static_cast<uint32_t>(getInt32("ageSeconds", 0));
+    stats.ageHours = static_cast<uint16_t>(getInt32("ageHours", 0));
+    stats.lifespan = static_cast<uint32_t>(getInt32("lifespan", 0));
 
-    stats.isSick = prefs.getBool("isSick", false);
-    stats.isAsleep = prefs.getBool("isAsleep", false);
-    stats.isDead = prefs.getBool("isDead", false);
+    stats.isSick = getBool("isSick", false);
+    stats.isAsleep = getBool("isAsleep", false);
+    stats.isDead = getBool("isDead", false);
 
-    int32_t loadedStage = prefs.getInt32("stage", static_cast<int32_t>(LifeStage::Egg));
+    int32_t loadedStage = getInt32("stage", static_cast<int32_t>(LifeStage::Egg));
     if (loadedStage < 0 || loadedStage > static_cast<int32_t>(LifeStage::Ghost)) {
         loadedStage = static_cast<int32_t>(LifeStage::Egg);
     }
     stats.stage = static_cast<LifeStage>(loadedStage);
 
-    int32_t loadedAnim = prefs.getInt32("currentAnim", static_cast<int32_t>(AnimState::Idle));
+    int32_t loadedAnim = getInt32("currentAnim", static_cast<int32_t>(AnimState::Idle));
     if (loadedAnim < 0 || loadedAnim > static_cast<int32_t>(AnimState::Dead)) {
         loadedAnim = static_cast<int32_t>(AnimState::Idle);
     }
     stats.currentAnim = static_cast<AnimState>(loadedAnim);
 
-    int32_t loadedPersonality = prefs.getInt32("personality", 0);
+    int32_t loadedPersonality = getInt32("personality", 0);
     if (loadedPersonality < 0 || loadedPersonality > static_cast<int32_t>(Personality::Hardy)) {
         loadedPersonality = 0;
     }
     stats.personality = static_cast<Personality>(loadedPersonality);
 
     // Handle time elapsed since last save
-    uint32_t lastSaveTime = prefs.getInt32("lastSaveTime", 0);
+    uint32_t lastSaveTime = static_cast<uint32_t>(getInt32("lastSaveTime", 0));
     uint32_t currentTime = tt::kernel::getMillis();
 
     if (lastSaveTime > 0 && currentTime > lastSaveTime) {
@@ -486,6 +521,7 @@ bool PetLogic::loadState() {
 
     stats.lastUpdateTime = currentTime;
 
+    preferences_close(prefs);
     return true;
 }
 

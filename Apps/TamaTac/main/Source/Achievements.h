@@ -7,7 +7,7 @@
 #include <lvgl.h>
 #include <cstdint>
 
-class TamaTac;
+struct Context;
 
 // Achievement IDs (bit positions in uint16_t bitfield)
 enum class AchievementId : uint8_t {
@@ -31,29 +31,20 @@ struct AchievementInfo {
     const char* description;
 };
 
-class AchievementsView {
-private:
-    TamaTac* app = nullptr;
-    lv_obj_t* parent = nullptr;
+struct AchievementsViewState {
     lv_obj_t* mainWrapper = nullptr;
-
-public:
-    AchievementsView() = default;
-    ~AchievementsView() = default;
-    AchievementsView(const AchievementsView&) = delete;
-    AchievementsView& operator=(const AchievementsView&) = delete;
-
-    void onStart(lv_obj_t* parentWidget, TamaTac* appInstance);
-    void onStop();
-
-    // Bitfield operations
-    static uint16_t loadAchievements();
-    static void saveAchievements(uint16_t bits);
-    static bool hasAchievement(uint16_t bits, AchievementId id);
-    static void unlock(AchievementId id);
-    static int countUnlocked(uint16_t bits);
-    static uint16_t loadCleanCount();
-    static void incrementCleanCount();
-
-    static const AchievementInfo& getInfo(AchievementId id);
 };
+
+void achievementsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx);
+void achievementsViewStop(Context* ctx);
+
+// Bitfield operations
+uint16_t achievementsLoad();
+void achievementsSave(uint16_t bits);
+bool achievementsHas(uint16_t bits, AchievementId id);
+void achievementsUnlock(AchievementId id);
+int achievementsCountUnlocked(uint16_t bits);
+uint16_t achievementsLoadCleanCount();
+void achievementsIncrementCleanCount();
+
+const AchievementInfo& achievementsGetInfo(AchievementId id);

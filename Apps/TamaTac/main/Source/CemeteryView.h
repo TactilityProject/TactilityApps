@@ -8,7 +8,7 @@
 #include <cstdint>
 #include "PetStats.h"
 
-class TamaTac;
+struct Context;
 
 // Record of a deceased pet
 struct PetRecord {
@@ -18,23 +18,17 @@ struct PetRecord {
     bool valid = false;
 };
 
-class CemeteryView {
-public:
-    static constexpr int MAX_RECORDS = 5;
+constexpr int CEMETERY_MAX_RECORDS = 5;
 
-private:
-    TamaTac* app = nullptr;
-    lv_obj_t* parent = nullptr;
+struct CemeteryViewState {
     lv_obj_t* mainWrapper = nullptr;
-
-
-public:
-    void onStart(lv_obj_t* parentWidget, TamaTac* appInstance);
-    void onStop();
-
-    // Record a pet death (called from TamaTac when pet dies)
-    static void recordDeath(Personality personality, LifeStage stage, uint16_t ageHours);
-
-    // Load all records
-    static void loadRecords(PetRecord records[MAX_RECORDS]);
 };
+
+void cemeteryViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx);
+void cemeteryViewStop(Context* ctx);
+
+// Record a pet death (called from TamaTac when pet dies)
+void cemeteryViewRecordDeath(Personality personality, LifeStage stage, uint16_t ageHours);
+
+// Load all records
+void cemeteryViewLoadRecords(PetRecord records[CEMETERY_MAX_RECORDS]);

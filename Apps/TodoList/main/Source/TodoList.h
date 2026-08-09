@@ -1,12 +1,12 @@
 #pragma once
 
-#include <tt_app.h>
+#include <app/instance.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <lvgl.h>
-#include <TactilityCpp/App.h>
 
-class TodoList final : public App {
-
-private:
+struct Context {
+    AppInstanceId appInstanceId = 0;
+    WindowId window = 0;
 
     static constexpr int MAX_TODOS = 50;
     static constexpr int MAX_TEXT_LEN = 128;
@@ -16,7 +16,7 @@ private:
         bool done;
     };
 
-    // UI pointers (nulled in onHide)
+    // UI pointers (nulled in teardown)
     lv_obj_t* list = nullptr;
     lv_obj_t* inputRow = nullptr;
     lv_obj_t* inputTa = nullptr;
@@ -27,27 +27,10 @@ private:
     int count = 0;
     bool rebuildPending = false;
     lv_timer_t* rebuildTimer = nullptr;
-
-    // Persistence
-    void saveTodos();
-    void loadTodos();
-
-    // UI helpers
-    void updateCountLabel();
-    void rebuildList();
-    void scheduleRebuild();
-    void addItem(const char* text);
-
-    static void onDeferredRebuild(lv_timer_t* timer);
-
-    // Static callbacks
-    static void onItemClicked(lv_event_t* e);
-    static void onDeleteClicked(lv_event_t* e);
-    static void onAddClicked(lv_event_t* e);
-    static void onInputReady(lv_event_t* e);
-    static void onClearDoneClicked(lv_event_t* e);
-
-public:
-    void onShow(AppHandle context, lv_obj_t* parent) override;
-    void onHide(AppHandle context) override;
 };
+
+/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+void todoListCreateWidgets(lv_obj_t* parent, void* userData);
+
+/** Releases widget-tracking state. Call once, after the window has been torn down. */
+void todoListTeardown(Context* ctx);

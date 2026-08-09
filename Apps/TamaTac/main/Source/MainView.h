@@ -8,13 +8,9 @@
 #include "PetLogic.h"
 #include "Sprites.h"
 
-class TamaTac;
+struct Context;
 
-class MainView {
-private:
-    TamaTac* app = nullptr;
-    lv_obj_t* parent = nullptr;
-
+struct MainViewState {
     // UI elements
     lv_obj_t* mainWrapper = nullptr;
     lv_obj_t* statusLabel = nullptr;
@@ -48,29 +44,12 @@ private:
     // Scaling
     int spriteScale = 3;
     int petCanvasSize = 72;
-
-public:
-    void onStart(lv_obj_t* parentWidget, TamaTac* appInstance);
-    void onStop();
-
-    void updateUI(PetLogic* petLogic, LifeStage& lastKnownStage);
-    void updateStatBars(PetLogic* petLogic);
-    void updatePetDisplay(PetLogic* petLogic, LifeStage& lastKnownStage);
-    void setStatusText(const char* text);
-
-private:
-    void drawSprite(SpriteId spriteId, const PetStats* stats = nullptr);
-    void drawOverlays(SpriteId spriteId, const PetStats* stats);
-    void drawIcon(lv_obj_t* canvas, IconId iconId);
-    void drawIconWithBg(lv_obj_t* canvas, IconId iconId, lv_color_t bgColor, lv_color_t fgColor);
-    SpriteId getSpriteForCurrentState(const PetStats& stats) const;
-
-    // Static event handlers
-    static void onFeedClicked(lv_event_t* e);
-    static void onPlayClicked(lv_event_t* e);
-    static void onMedicineClicked(lv_event_t* e);
-    static void onSleepClicked(lv_event_t* e);
-    static void onPetTapped(lv_event_t* e);
-    static void onRefreshTimer(lv_timer_t* timer);
-    static void onAnimTimer(lv_timer_t* timer);
 };
+
+void mainViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx);
+void mainViewStop(Context* ctx);
+
+void mainViewUpdateUI(Context* ctx);
+void mainViewUpdateStatBars(Context* ctx);
+void mainViewUpdatePetDisplay(Context* ctx);
+void mainViewSetStatusText(Context* ctx, const char* text);

@@ -5,9 +5,22 @@
 
 #include "SettingsView.h"
 #include "TamaTac.h"
-#include <TactilityCpp/Preferences.h>
+#include <tactility/paths.h>
+#include <tactility/preferences.h>
+#include <string>
 
-lv_obj_t* SettingsView::createSettingRow(lv_obj_t* parentContainer, const char* labelText, bool isSmall, bool isXLarge) {
+namespace {
+
+bool getPreferencesPath(std::string& outPath) {
+    char root[128];
+    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+        return false;
+    }
+    outPath = std::string(root) + "/tamatac_settings.properties";
+    return true;
+}
+
+lv_obj_t* createSettingRow(lv_obj_t* parentContainer, const char* labelText, bool isSmall, bool isXLarge) {
     lv_obj_t* row = lv_obj_create(parentContainer);
     lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -29,9 +42,43 @@ lv_obj_t* SettingsView::createSettingRow(lv_obj_t* parentContainer, const char* 
     return row;
 }
 
-void SettingsView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
-    parent = parentWidget;
-    app = appInstance;
+void onSoundToggled(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    SettingsViewState* state = &ctx->settingsView;
+    if (state->soundSwitch == nullptr || state->decayDropdown == nullptr) return;
+
+    bool isChecked = lv_obj_has_state(state->soundSwitch, LV_STATE_CHECKED);
+
+    tamaTacSetSoundEnabled(ctx, isChecked);
+
+    // Read decay speed from UI widget instead of redundant preferences load
+    DecaySpeed decaySpeed = static_cast<DecaySpeed>(lv_dropdown_get_selected(state->decayDropdown));
+    settingsViewSaveSettings(isChecked, decaySpeed);
+}
+
+void onDecayChanged(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    SettingsViewState* state = &ctx->settingsView;
+    if (state->decayDropdown == nullptr || state->soundSwitch == nullptr) return;
+
+    uint16_t selected = lv_dropdown_get_selected(state->decayDropdown);
+
+    if (selected > 2) {
+        selected = 1;
+    }
+    DecaySpeed newSpeed = static_cast<DecaySpeed>(selected);
+
+    tamaTacSetDecaySpeed(ctx, newSpeed);
+
+    // Read sound state from UI widget instead of redundant preferences load
+    bool soundEnabled = lv_obj_has_state(state->soundSwitch, LV_STATE_CHECKED);
+    settingsViewSaveSettings(soundEnabled, newSpeed);
+}
+
+} // namespace
+
+void settingsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
+    SettingsViewState* state = &ctx->settingsView;
 
     // Detect screen size for responsive layout
     // Use display resolution for reliable sizing (parent may not be laid out yet on first load)
@@ -43,99 +90,78 @@ void SettingsView::onStart(lv_obj_t* parentWidget, TamaTac* appInstance) {
     // Load current settings
     bool soundEnabled = true;
     DecaySpeed decaySpeed = DecaySpeed::Normal;
-    loadSettings(&soundEnabled, &decaySpeed);
+    settingsViewLoadSettings(&soundEnabled, &decaySpeed);
 
     // Scaled dimensions
     int padAll = isSmall ? 4 : (isXLarge ? 16 : 8);
     int padRowVal = isSmall ? 4 : (isXLarge ? 16 : 8);
 
     // Main wrapper
-    mainWrapper = lv_obj_create(parent);
-    lv_obj_set_size(mainWrapper, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_pad_all(mainWrapper, padAll, 0);
-    lv_obj_set_style_pad_row(mainWrapper, padRowVal, 0);
-    lv_obj_set_style_bg_opa(mainWrapper, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(mainWrapper, 0, 0);
-    lv_obj_set_flex_flow(mainWrapper, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    state->mainWrapper = lv_obj_create(parentWidget);
+    lv_obj_set_size(state->mainWrapper, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(state->mainWrapper, padAll, 0);
+    lv_obj_set_style_pad_row(state->mainWrapper, padRowVal, 0);
+    lv_obj_set_style_bg_opa(state->mainWrapper, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(state->mainWrapper, 0, 0);
+    lv_obj_set_flex_flow(state->mainWrapper, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(state->mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(state->mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
 
     // Sound setting row
-    lv_obj_t* soundRow = createSettingRow(mainWrapper, "Sound", isSmall, isXLarge);
+    lv_obj_t* soundRow = createSettingRow(state->mainWrapper, "Sound", isSmall, isXLarge);
 
-    soundSwitch = lv_switch_create(soundRow);
-    lv_obj_set_style_bg_color(soundSwitch, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(soundSwitch, lv_color_hex(0x00AA00), LV_PART_INDICATOR);
+    state->soundSwitch = lv_switch_create(soundRow);
+    lv_obj_set_style_bg_color(state->soundSwitch, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(state->soundSwitch, lv_color_hex(0x00AA00), LV_PART_INDICATOR);
     if (soundEnabled) {
-        lv_obj_add_state(soundSwitch, LV_STATE_CHECKED);
+        lv_obj_add_state(state->soundSwitch, LV_STATE_CHECKED);
     }
-    lv_obj_add_event_cb(soundSwitch, onSoundToggled, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(state->soundSwitch, onSoundToggled, LV_EVENT_VALUE_CHANGED, ctx);
 
     // Decay speed row
-    lv_obj_t* decayRow = createSettingRow(mainWrapper, "Speed", isSmall, isXLarge);
+    lv_obj_t* decayRow = createSettingRow(state->mainWrapper, "Speed", isSmall, isXLarge);
 
-    decayDropdown = lv_dropdown_create(decayRow);
-    lv_dropdown_set_options(decayDropdown, "Slow\nNormal\nFast");
-    lv_dropdown_set_selected(decayDropdown, static_cast<uint16_t>(decaySpeed));
-    lv_obj_set_width(decayDropdown, isSmall ? 80 : (isXLarge ? 140 : 100));
-    lv_obj_set_style_bg_color(decayDropdown, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_text_color(decayDropdown, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_add_event_cb(decayDropdown, onDecayChanged, LV_EVENT_VALUE_CHANGED, this);
+    state->decayDropdown = lv_dropdown_create(decayRow);
+    lv_dropdown_set_options(state->decayDropdown, "Slow\nNormal\nFast");
+    lv_dropdown_set_selected(state->decayDropdown, static_cast<uint16_t>(decaySpeed));
+    lv_obj_set_width(state->decayDropdown, isSmall ? 80 : (isXLarge ? 140 : 100));
+    lv_obj_set_style_bg_color(state->decayDropdown, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_text_color(state->decayDropdown, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_add_event_cb(state->decayDropdown, onDecayChanged, LV_EVENT_VALUE_CHANGED, ctx);
 }
 
-void SettingsView::onStop() {
-    mainWrapper = nullptr;
-    soundSwitch = nullptr;
-    decayDropdown = nullptr;
-    parent = nullptr;
-    app = nullptr;
+void settingsViewStop(Context* ctx) {
+    SettingsViewState* state = &ctx->settingsView;
+    state->mainWrapper = nullptr;
+    state->soundSwitch = nullptr;
+    state->decayDropdown = nullptr;
 }
 
-void SettingsView::loadSettings(bool* soundEnabled, DecaySpeed* decaySpeed) {
-    Preferences prefs("TamaTacSet");
+void settingsViewLoadSettings(bool* soundEnabled, DecaySpeed* decaySpeed) {
+    *soundEnabled = true;
+    int32_t speed = static_cast<int32_t>(DecaySpeed::Normal);
 
-    *soundEnabled = prefs.getBool("soundOn", true);
+    std::string path;
+    if (getPreferencesPath(path)) {
+        if (Preferences* prefs = preferences_open(path.c_str())) {
+            preferences_opt_bool(prefs, "soundOn", soundEnabled);
+            preferences_opt_int32(prefs, "decaySpd", &speed);
+            preferences_close(prefs);
+        }
+    }
 
-    int32_t speed = prefs.getInt32("decaySpd", static_cast<int32_t>(DecaySpeed::Normal));
     if (speed < 0 || speed > 2) {
         speed = static_cast<int32_t>(DecaySpeed::Normal);
     }
     *decaySpeed = static_cast<DecaySpeed>(speed);
 }
 
-void SettingsView::saveSettings(bool soundEnabled, DecaySpeed decaySpeed) {
-    Preferences prefs("TamaTacSet");
-    prefs.putBool("soundOn", soundEnabled);
-    prefs.putInt32("decaySpd", static_cast<int32_t>(decaySpeed));
-}
-
-void SettingsView::onSoundToggled(lv_event_t* e) {
-    SettingsView* view = static_cast<SettingsView*>(lv_event_get_user_data(e));
-    if (view == nullptr || view->soundSwitch == nullptr || view->decayDropdown == nullptr || view->app == nullptr) return;
-
-    bool isChecked = lv_obj_has_state(view->soundSwitch, LV_STATE_CHECKED);
-
-    view->app->setSoundEnabled(isChecked);
-
-    // Read decay speed from UI widget instead of redundant preferences load
-    DecaySpeed decaySpeed = static_cast<DecaySpeed>(lv_dropdown_get_selected(view->decayDropdown));
-    view->saveSettings(isChecked, decaySpeed);
-}
-
-void SettingsView::onDecayChanged(lv_event_t* e) {
-    SettingsView* view = static_cast<SettingsView*>(lv_event_get_user_data(e));
-    if (view == nullptr || view->decayDropdown == nullptr || view->soundSwitch == nullptr || view->app == nullptr) return;
-
-    uint16_t selected = lv_dropdown_get_selected(view->decayDropdown);
-
-    if (selected > 2) {
-        selected = 1;
-    }
-    DecaySpeed newSpeed = static_cast<DecaySpeed>(selected);
-
-    view->app->setDecaySpeed(newSpeed);
-
-    // Read sound state from UI widget instead of redundant preferences load
-    bool soundEnabled = lv_obj_has_state(view->soundSwitch, LV_STATE_CHECKED);
-    view->saveSettings(soundEnabled, newSpeed);
+void settingsViewSaveSettings(bool soundEnabled, DecaySpeed decaySpeed) {
+    std::string path;
+    if (!getPreferencesPath(path)) return;
+    Preferences* prefs = preferences_open(path.c_str());
+    if (!prefs) return;
+    preferences_put_bool(prefs, "soundOn", soundEnabled);
+    preferences_put_int32(prefs, "decaySpd", static_cast<int32_t>(decaySpeed));
+    preferences_close(prefs);
 }

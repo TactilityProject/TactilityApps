@@ -6,7 +6,8 @@
 #include "TamaTac.h"
 #include "SpriteData.h"
 #include <lvgl/widgets/toolbar.h>
-#include <tt_app_alertdialog.h>
+#include <lvgl_window_manager/window_manager.h>
+#include <app/manager.h>
 #include <Tactility/kernel/Kernel.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
@@ -14,255 +15,347 @@
 #include <cstdlib>
 #include <algorithm>
 
-// Static member initialization
-PetLogic* TamaTac::petLogic = nullptr;
-TimerHandle_t TamaTac::updateTimer = nullptr;
-SemaphoreHandle_t TamaTac::timerMutex = nullptr;
-AppHandle TamaTac::currentApp = nullptr;
-AppLaunchId TamaTac::resetDialogId = 0;
-LifeStage TamaTac::lastKnownStage = LifeStage::Egg;
-SfxEngine* TamaTac::sfxEngine = nullptr;
-DecaySpeed TamaTac::decaySpeed = DecaySpeed::Normal;
-uint32_t TamaTac::lastPetTime = 0;
-bool TamaTac::pendingResetUI = false;
+namespace {
+
+constexpr auto* TAG = "TamaTac";
+
+void onCleanClicked(lv_event_t* e);
+void onMenuClicked(lv_event_t* e);
+void onResetClicked(lv_event_t* e);
+void onTimerUpdate(TimerHandle_t timer);
+
+// Cleans up whatever view is currently active and, if requested, clears the wrapper widget.
+// @a cleanWrapperWidget must be false when called after window_manager_remove() has already
+// destroyed the widget tree (ctx->wrapperWidget is a dangling pointer at that point) - true
+// otherwise (ctx->wrapperWidget was just freshly recreated by the caller). Each view's onStop()
+// only deletes its own independent lv_timer_t objects and nulls its own widget pointers - it
+// never dereferences them - so calling it is always safe regardless of window state.
+void stopActiveView(Context* ctx, bool cleanWrapperWidget) {
+    switch (ctx->activeView) {
+        case ViewType::Main:
+            mainViewStop(ctx);
+            break;
+        case ViewType::Menu:
+            menuViewStop(ctx);
+            break;
+        case ViewType::Stats:
+            statsViewStop(ctx);
+            break;
+        case ViewType::Settings:
+            settingsViewStop(ctx);
+            break;
+        case ViewType::PatternGameView:
+            patternGameStop(ctx);
+            break;
+        case ViewType::ReactionGameView:
+            reactionGameStop(ctx);
+            break;
+        case ViewType::CemeteryViewType:
+            cemeteryViewStop(ctx);
+            break;
+        case ViewType::AchievementsViewType:
+            achievementsViewStop(ctx);
+            break;
+        case ViewType::None:
+            break;
+    }
+
+    if (cleanWrapperWidget && ctx->wrapperWidget) {
+        lv_obj_clean(ctx->wrapperWidget);
+    }
+
+    ctx->activeView = ViewType::None;
+}
+
+void onCleanClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx == nullptr) return;
+
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
+
+    if (ctx->activeView == ViewType::Main) {
+        int poopCount = ctx->petLogic.getStats().poopCount;
+        if (poopCount > 0) {
+            ctx->petLogic.performAction(PetAction::Clean);
+            ctx->petLogic.saveState();
+            mainViewUpdateUI(ctx);
+
+            if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Clean);
+            achievementsIncrementCleanCount();
+
+            mainViewSetStatusText(ctx, "All clean!");
+        } else {
+            mainViewSetStatusText(ctx, "Nothing to clean!");
+        }
+    }
+
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
+}
+
+void onMenuClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx == nullptr) return;
+
+    if (ctx->activeView == ViewType::Main) {
+        showMenuView(ctx);
+    } else {
+        showMainView(ctx);
+    }
+}
+
+void onResetClicked([[maybe_unused]] lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx == nullptr) return;
+
+    const char* argv[] = {
+        "Reset Pet?",
+        "This will start over with a new pet. Your current pet will be lost forever!",
+        "Reset",
+        "Cancel",
+    };
+    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 4, argv, &ctx->resetDialogId);
+}
+
+void onTimerUpdate(TimerHandle_t timer) {
+    auto* ctx = static_cast<Context*>(pvTimerGetTimerID(timer));
+
+    // Hold mutex for entire callback so tamaTacTeardown() can block until we finish
+    if (ctx->timerMutex == nullptr || xSemaphoreTake(ctx->timerMutex, 0) != pdTRUE) return;
+
+    bool wasAlive = !ctx->petLogic.isDead();
+    // Capture stage before update() - checkHealth() sets stage to Ghost on death
+    LifeStage stageBeforeDeath = ctx->petLogic.getStats().stage;
+
+    uint32_t now = tt::kernel::getMillis();
+    ctx->petLogic.update(now);
+    ctx->petLogic.saveState();
+
+    // Check achievements
+    const PetStats& stats = ctx->petLogic.getStats();
+
+    // Evolution achievements
+    switch (stats.stage) {
+        case LifeStage::Baby:  achievementsUnlock(AchievementId::ReachBaby); break;
+        case LifeStage::Teen:  achievementsUnlock(AchievementId::ReachTeen); break;
+        case LifeStage::Adult: achievementsUnlock(AchievementId::ReachAdult); break;
+        case LifeStage::Elder: achievementsUnlock(AchievementId::ReachElder); break;
+        default: break;
+    }
+
+    // Survival achievement
+    if (stats.ageHours >= 24 && !stats.isDead) {
+        achievementsUnlock(AchievementId::Survivor24h);
+    }
+
+    // Full stats achievement
+    if (stats.hunger >= 90 && stats.happiness >= 90 && stats.health >= 90 && stats.energy >= 90) {
+        achievementsUnlock(AchievementId::FullStats);
+    }
+
+    // Record death in cemetery (use pre-death stage, not Ghost)
+    if (wasAlive && ctx->petLogic.isDead()) {
+        cemeteryViewRecordDeath(stats.personality, stageBeforeDeath, stats.ageHours);
+    }
+
+    xSemaphoreGive(ctx->timerMutex);
+}
+
+} // namespace
 
 // Canvas buffer definitions (shared by views via extern)
 // 72x72 supports 24x24 sprites at 3x scale (medium/large/xlarge screens)
 lv_color_t TamaTac_canvasBuffer[72 * 72];
 lv_color_t TamaTac_iconBuffers[12][16 * 16];
 
-void TamaTac::onCreate(AppHandle app) {
-    currentApp = app;
-
+void tamaTacInit(Context* ctx) {
     // Seed RNG once so rand() produces different sequences each run
     srand(tt::kernel::getMillis());
 
-    if (petLogic == nullptr) {
-        petLogic = new PetLogic();
-
-        if (!petLogic->loadState()) {
-            // No save data - pet starts fresh
-        }
-
-        lastKnownStage = petLogic->getStats().stage;
+    if (!ctx->petLogic.loadState()) {
+        // No save data - pet starts fresh
     }
+    ctx->lastKnownStage = ctx->petLogic.getStats().stage;
 
-    if (timerMutex == nullptr) {
-        timerMutex = xSemaphoreCreateMutex();
+    ctx->timerMutex = xSemaphoreCreateMutex();
+
+    ctx->sfxEngine = new SfxEngine();
+    ctx->sfxEngine->start();
+
+    bool soundEnabled;
+    settingsViewLoadSettings(&soundEnabled, &ctx->decaySpeed);
+    ctx->sfxEngine->setEnabled(soundEnabled);
+    PetLogic::setDecaySpeed(static_cast<uint8_t>(ctx->decaySpeed));
+
+    ctx->updateTimer = xTimerCreate(
+        "PetUpdate",
+        pdMS_TO_TICKS(30000),
+        pdTRUE,
+        ctx,
+        onTimerUpdate
+    );
+    if (ctx->updateTimer != nullptr) {
+        xTimerStart(ctx->updateTimer, 0);
     }
 }
 
-void TamaTac::onShow(AppHandle context, lv_obj_t* parent) {
-    // Initialize SfxEngine
-    if (sfxEngine == nullptr) {
-        sfxEngine = new SfxEngine();
-        sfxEngine->start();
-
-        // Load settings
-        bool soundEnabled;
-        SettingsView::loadSettings(&soundEnabled, &decaySpeed);
-        sfxEngine->setEnabled(soundEnabled);
-        PetLogic::setDecaySpeed(static_cast<uint8_t>(decaySpeed));
-    }
-
-    if (updateTimer == nullptr) {
-        updateTimer = xTimerCreate(
-            "PetUpdate",
-            pdMS_TO_TICKS(30000),
-            pdTRUE,
-            nullptr,
-            onTimerUpdate
-        );
-
-        if (updateTimer != nullptr) {
-            xTimerStart(updateTimer, 0);
-        }
-    }
-
-    currentApp = context;
+void tamaTacCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_pad_row(parent, 0, 0);
 
-    toolbar = lvgl_toolbar_create(parent, "TamaTac");
+    ctx->toolbar = lvgl_toolbar_create(parent, "TamaTac");
 
-    menuButton = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onMenuClicked, this);
-    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onCleanClicked, this);
-    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_REFRESH, onResetClicked, this);
+    ctx->menuButton = lvgl_toolbar_add_text_button_action(ctx->toolbar, LV_SYMBOL_LIST, onMenuClicked, ctx);
+    lvgl_toolbar_add_text_button_action(ctx->toolbar, LV_SYMBOL_TRASH, onCleanClicked, ctx);
+    lvgl_toolbar_add_text_button_action(ctx->toolbar, LV_SYMBOL_REFRESH, onResetClicked, ctx);
 
-    wrapperWidget = lv_obj_create(parent);
-    lv_obj_set_width(wrapperWidget, LV_PCT(100));
-    lv_obj_set_flex_grow(wrapperWidget, 1);
-    lv_obj_set_style_pad_all(wrapperWidget, 0, 0);
-    lv_obj_set_style_border_width(wrapperWidget, 0, 0);
-    lv_obj_set_style_bg_opa(wrapperWidget, LV_OPA_TRANSP, 0);
-    lv_obj_remove_flag(wrapperWidget, LV_OBJ_FLAG_SCROLLABLE);
+    ctx->wrapperWidget = lv_obj_create(parent);
+    lv_obj_set_width(ctx->wrapperWidget, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->wrapperWidget, 1);
+    lv_obj_set_style_pad_all(ctx->wrapperWidget, 0, 0);
+    lv_obj_set_style_border_width(ctx->wrapperWidget, 0, 0);
+    lv_obj_set_style_bg_opa(ctx->wrapperWidget, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(ctx->wrapperWidget, LV_OBJ_FLAG_SCROLLABLE);
 
-    showMainView();
+    // Rebuild whichever view was active. On first creation this is None (-> Main). On a
+    // resurface after this window was buried (e.g. by the reset AlertDialog, or by an unrelated
+    // app switching to briefly), it's whatever the user had open - pet state, achievements, and
+    // game-round counters all live in Context/PetLogic and survive burial fine (only the widget
+    // tree was destroyed), so rebuilding the same view here just picks up where things left off
+    // (mini-games are the one exception: their onStart() always resets round/pattern state, so a
+    // burial mid-game restarts that game rather than resuming it - acceptable, not a crash).
+    switch (ctx->activeView) {
+        case ViewType::Menu:                showMenuView(ctx); break;
+        case ViewType::Stats:                showStatsView(ctx); break;
+        case ViewType::Settings:              showSettingsView(ctx); break;
+        case ViewType::PatternGameView:       showPatternGame(ctx); break;
+        case ViewType::ReactionGameView:      showReactionGame(ctx); break;
+        case ViewType::CemeteryViewType:      showCemeteryView(ctx); break;
+        case ViewType::AchievementsViewType:  showAchievementsView(ctx); break;
+        case ViewType::Main:
+        case ViewType::None:
+        default:
+            showMainView(ctx);
+            break;
+    }
 }
 
-void TamaTac::onHide(AppHandle context) {
-    if (updateTimer != nullptr) {
-        xTimerStop(updateTimer, portMAX_DELAY);
-        xTimerDelete(updateTimer, portMAX_DELAY);
-        updateTimer = nullptr;
+void tamaTacTeardown(Context* ctx) {
+    if (ctx->updateTimer != nullptr) {
+        xTimerStop(ctx->updateTimer, portMAX_DELAY);
+        xTimerDelete(ctx->updateTimer, portMAX_DELAY);
+        ctx->updateTimer = nullptr;
     }
 
-    if (sfxEngine) {
-        sfxEngine->stop();
-        delete sfxEngine;
-        sfxEngine = nullptr;
+    // Acquire mutex to guarantee any in-flight timer callback has completed. The callback holds
+    // this mutex for its entire duration, so taking it here blocks until the callback is done -
+    // no arbitrary delay needed. (Belt-and-suspenders: updateTimer is already stopped/deleted
+    // above, but xTimerDelete only guarantees no *new* callback starts, not that one already
+    // running has finished.)
+    if (ctx->timerMutex != nullptr) {
+        xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
     }
 
-    stopActiveView();
+    ctx->petLogic.saveState();
 
-    wrapperWidget = nullptr;
-    toolbar = nullptr;
-    menuButton = nullptr;
-}
-
-void TamaTac::onDestroy(AppHandle app) {
-    // Acquire mutex to guarantee any in-flight timer callback has completed.
-    // The callback holds this mutex for its entire duration, so taking it
-    // here blocks until the callback is done — no arbitrary delay needed.
-    if (timerMutex != nullptr) {
-        xSemaphoreTake(timerMutex, portMAX_DELAY);
+    if (ctx->timerMutex != nullptr) {
+        xSemaphoreGive(ctx->timerMutex);
+        vSemaphoreDelete(ctx->timerMutex);
+        ctx->timerMutex = nullptr;
     }
 
-    if (petLogic) {
-        petLogic->saveState();
-        delete petLogic;
-        petLogic = nullptr;
+    if (ctx->sfxEngine) {
+        ctx->sfxEngine->stop();
+        delete ctx->sfxEngine;
+        ctx->sfxEngine = nullptr;
     }
 
-    if (timerMutex != nullptr) {
-        xSemaphoreGive(timerMutex);
-        vSemaphoreDelete(timerMutex);
-        timerMutex = nullptr;
-    }
+    // Don't clean ctx->wrapperWidget here: window_manager_remove() already destroyed it (and
+    // everything under it) by the time this runs. stopActiveView(..., false) skips that step -
+    // it still runs each view's onStop() to delete any still-alive independent lv_timer_t
+    // objects, which is safe (see stopActiveView()'s comment).
+    stopActiveView(ctx, false);
 
-    currentApp = nullptr;
-}
-
-void TamaTac::onResult(AppHandle app, void* data, AppLaunchId launchId, AppResult result, BundleHandle resultData) {
-    if (launchId == resetDialogId) {
-        int32_t buttonIndex = tt_app_alertdialog_get_result_index(resultData);
-        if (buttonIndex == 0) {
-            // User clicked "Reset" (first button)
-            if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
-
-            if (petLogic) {
-                petLogic->reset();
-                petLogic->saveState();
-                lastKnownStage = LifeStage::Egg;
-                pendingResetUI = true;  // Defer UI update to LVGL task
-            }
-
-            if (timerMutex) xSemaphoreGive(timerMutex);
-        }
-        resetDialogId = 0;
-    }
+    ctx->wrapperWidget = nullptr;
+    ctx->toolbar = nullptr;
+    ctx->menuButton = nullptr;
 }
 
 //==============================================================================================
 // View Management
 //==============================================================================================
 
-void TamaTac::stopActiveView() {
-    switch (activeView) {
-        case ViewType::Main:
-            mainView.onStop();
-            break;
-        case ViewType::Menu:
-            menuView.onStop();
-            break;
-        case ViewType::Stats:
-            statsView.onStop();
-            break;
-        case ViewType::Settings:
-            settingsView.onStop();
-            break;
-        case ViewType::PatternGameView:
-            patternGame.onStop();
-            break;
-        case ViewType::ReactionGameView:
-            reactionGame.onStop();
-            break;
-        case ViewType::CemeteryViewType:
-            cemeteryView.onStop();
-            break;
-        case ViewType::AchievementsViewType:
-            achievementsView.onStop();
-            break;
-        case ViewType::None:
-            break;
-    }
+void showMainView(Context* ctx) {
+    stopActiveView(ctx, true);
 
-    if (wrapperWidget) {
-        lv_obj_clean(wrapperWidget);
-    }
-
-    activeView = ViewType::None;
+    ctx->activeView = ViewType::Main;
+    mainViewCreateWidgets(ctx->wrapperWidget, ctx);
+    mainViewUpdateUI(ctx);
 }
 
-void TamaTac::showMainView() {
-    stopActiveView();
+void showMenuView(Context* ctx) {
+    stopActiveView(ctx, true);
 
-    activeView = ViewType::Main;
-    mainView.onStart(wrapperWidget, this);
-    mainView.updateUI(petLogic, lastKnownStage);
+    ctx->activeView = ViewType::Menu;
+    menuViewCreateWidgets(ctx->wrapperWidget, ctx);
 }
 
-void TamaTac::showMenuView() {
-    stopActiveView();
+void showStatsView(Context* ctx) {
+    stopActiveView(ctx, true);
 
-    activeView = ViewType::Menu;
-    menuView.onStart(wrapperWidget, this);
+    ctx->activeView = ViewType::Stats;
+    statsViewCreateWidgets(ctx->wrapperWidget, ctx);
+    statsViewUpdateStats(ctx);
 }
 
-void TamaTac::showStatsView() {
-    stopActiveView();
+void showSettingsView(Context* ctx) {
+    stopActiveView(ctx, true);
 
-    activeView = ViewType::Stats;
-    statsView.onStart(wrapperWidget, this);
-    statsView.updateStats(petLogic);
+    ctx->activeView = ViewType::Settings;
+    settingsViewCreateWidgets(ctx->wrapperWidget, ctx);
 }
 
-void TamaTac::showSettingsView() {
-    stopActiveView();
+void showCemeteryView(Context* ctx) {
+    stopActiveView(ctx, true);
 
-    activeView = ViewType::Settings;
-    settingsView.onStart(wrapperWidget, this);
+    ctx->activeView = ViewType::CemeteryViewType;
+    cemeteryViewCreateWidgets(ctx->wrapperWidget, ctx);
 }
 
-void TamaTac::showCemeteryView() {
-    stopActiveView();
+void showAchievementsView(Context* ctx) {
+    stopActiveView(ctx, true);
 
-    activeView = ViewType::CemeteryViewType;
-    cemeteryView.onStart(wrapperWidget, this);
+    ctx->activeView = ViewType::AchievementsViewType;
+    achievementsViewCreateWidgets(ctx->wrapperWidget, ctx);
 }
 
-void TamaTac::showAchievementsView() {
-    stopActiveView();
+void showPatternGame(Context* ctx) {
+    stopActiveView(ctx, true);
+    ctx->activeView = ViewType::PatternGameView;
+    patternGameCreateWidgets(ctx->wrapperWidget, ctx);
+}
 
-    activeView = ViewType::AchievementsViewType;
-    achievementsView.onStart(wrapperWidget, this);
+void showReactionGame(Context* ctx) {
+    stopActiveView(ctx, true);
+    ctx->activeView = ViewType::ReactionGameView;
+    reactionGameCreateWidgets(ctx->wrapperWidget, ctx);
 }
 
 //==============================================================================================
 // Settings Handlers
 //==============================================================================================
 
-void TamaTac::setSoundEnabled(bool enabled) {
-    if (sfxEngine) {
-        sfxEngine->setEnabled(enabled);
+void tamaTacSetSoundEnabled(Context* ctx, bool enabled) {
+    if (ctx->sfxEngine) {
+        ctx->sfxEngine->setEnabled(enabled);
     }
 }
 
-void TamaTac::setDecaySpeed(DecaySpeed speed) {
-    decaySpeed = speed;
+void tamaTacSetDecaySpeed(Context* ctx, DecaySpeed speed) {
+    ctx->decaySpeed = speed;
     PetLogic::setDecaySpeed(static_cast<uint8_t>(speed));
 }
 
@@ -270,257 +363,134 @@ void TamaTac::setDecaySpeed(DecaySpeed speed) {
 // Action Handlers (called by MainView)
 //==============================================================================================
 
-void TamaTac::handleFeedAction() {
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+void tamaTacHandleFeedAction(Context* ctx) {
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
 
-    if (petLogic) {
-        petLogic->performAction(PetAction::Feed);
-        petLogic->saveState();
-        mainView.updateUI(petLogic, lastKnownStage);
+    ctx->petLogic.performAction(PetAction::Feed);
+    ctx->petLogic.saveState();
+    mainViewUpdateUI(ctx);
 
-        if (sfxEngine) sfxEngine->play(SfxId::Feed);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Feed);
 
-        AchievementsView::unlock(AchievementId::FirstFeed);
+    achievementsUnlock(AchievementId::FirstFeed);
 
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Fed! Hunger: %d%%", petLogic->getHunger());
-        mainView.setStatusText(msg);
-    }
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Fed! Hunger: %d%%", ctx->petLogic.getHunger());
+    mainViewSetStatusText(ctx, msg);
 
-    if (timerMutex) xSemaphoreGive(timerMutex);
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 }
 
-void TamaTac::handlePlayAction() {
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+void tamaTacHandlePlayAction(Context* ctx) {
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
 
-    bool canPlay = petLogic && !petLogic->isDead();
-    DayPhase phase = canPlay ? petLogic->getDayPhase() : DayPhase::Day;
+    bool canPlay = !ctx->petLogic.isDead();
+    DayPhase phase = canPlay ? ctx->petLogic.getDayPhase() : DayPhase::Day;
 
-    if (timerMutex) xSemaphoreGive(timerMutex);
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 
     if (canPlay) {
-        AchievementsView::unlock(AchievementId::FirstPlay);
+        achievementsUnlock(AchievementId::FirstPlay);
         if (phase == DayPhase::Night) {
-            AchievementsView::unlock(AchievementId::NightOwl);
+            achievementsUnlock(AchievementId::NightOwl);
         }
         if (rand() % 2 == 0) {
-            showPatternGame();
+            showPatternGame(ctx);
         } else {
-            showReactionGame();
+            showReactionGame(ctx);
         }
     }
 }
 
-void TamaTac::handlePetTap() {
-    if (activeView != ViewType::Main) return;
+void tamaTacHandlePetTap(Context* ctx) {
+    if (ctx->activeView != ViewType::Main) return;
 
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
 
-    if (!petLogic || petLogic->isDead()) {
-        if (timerMutex) xSemaphoreGive(timerMutex);
+    if (ctx->petLogic.isDead()) {
+        if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
         return;
     }
 
     // 3-second cooldown between pets
     uint32_t now = tt::kernel::getMillis();
-    if (now - lastPetTime < 3000) {
-        if (timerMutex) xSemaphoreGive(timerMutex);
+    if (now - ctx->lastPetTime < 3000) {
+        if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
         return;
     }
-    lastPetTime = now;
+    ctx->lastPetTime = now;
 
-    petLogic->performAction(PetAction::Pet);
-    petLogic->saveState();
-    mainView.updateUI(petLogic, lastKnownStage);
+    ctx->petLogic.performAction(PetAction::Pet);
+    ctx->petLogic.saveState();
+    mainViewUpdateUI(ctx);
 
-    if (timerMutex) xSemaphoreGive(timerMutex);
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 
-    if (sfxEngine) sfxEngine->play(SfxId::Chirp);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Chirp);
 }
 
-void TamaTac::showPatternGame() {
-    stopActiveView();
-    activeView = ViewType::PatternGameView;
-    patternGame.onStart(wrapperWidget, this);
+void tamaTacOnReactionGameComplete(Context* ctx, int score, bool won) {
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
+
+    int clampedScore = std::max(0, std::min(score, REACTION_GAME_MAX_ROUNDS));
+    ctx->petLogic.applyPlayResult(clampedScore, REACTION_GAME_MAX_ROUNDS);
+    ctx->petLogic.saveState();
+
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
+
+    if (won) achievementsUnlock(AchievementId::PerfectGame);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Play);
+
+    showMainView(ctx);
 }
 
-void TamaTac::showReactionGame() {
-    stopActiveView();
-    activeView = ViewType::ReactionGameView;
-    reactionGame.onStart(wrapperWidget, this);
+void tamaTacOnPatternGameComplete(Context* ctx, int score, bool won) {
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
+
+    int clampedScore = std::max(0, std::min(score, PATTERN_GAME_MAX_ROUNDS));
+    ctx->petLogic.applyPlayResult(clampedScore, PATTERN_GAME_MAX_ROUNDS);
+    ctx->petLogic.saveState();
+
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
+
+    if (won) achievementsUnlock(AchievementId::PerfectGame);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Play);
+
+    showMainView(ctx);
 }
 
-void TamaTac::onReactionGameComplete(int score, bool won) {
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
+void tamaTacHandleMedicineAction(Context* ctx) {
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
 
-    if (petLogic) {
-        int clampedScore = std::max(0, std::min(score, ReactionGame::MAX_ROUNDS));
-        petLogic->applyPlayResult(clampedScore, ReactionGame::MAX_ROUNDS);
-        petLogic->saveState();
-    }
+    bool wasSick = ctx->petLogic.isSick();
+    ctx->petLogic.performAction(PetAction::Medicine);
+    ctx->petLogic.saveState();
+    mainViewUpdateUI(ctx);
 
-    if (timerMutex) xSemaphoreGive(timerMutex);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Medicine);
 
-    if (won) AchievementsView::unlock(AchievementId::PerfectGame);
-    if (sfxEngine) sfxEngine->play(SfxId::Play);
-
-    showMainView();
-}
-
-void TamaTac::onPatternGameComplete(int score, bool won) {
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
-
-    if (petLogic) {
-        int clampedScore = std::max(0, std::min(score, PatternGame::MAX_ROUNDS));
-        petLogic->applyPlayResult(clampedScore, PatternGame::MAX_ROUNDS);
-        petLogic->saveState();
-    }
-
-    if (timerMutex) xSemaphoreGive(timerMutex);
-
-    if (won) AchievementsView::unlock(AchievementId::PerfectGame);
-    if (sfxEngine) sfxEngine->play(SfxId::Play);
-
-    showMainView();
-}
-
-void TamaTac::handleMedicineAction() {
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
-
-    if (petLogic) {
-        bool wasSick = petLogic->isSick();
-        petLogic->performAction(PetAction::Medicine);
-        petLogic->saveState();
-        mainView.updateUI(petLogic, lastKnownStage);
-
-        if (sfxEngine) sfxEngine->play(SfxId::Medicine);
-
-        if (wasSick && !petLogic->isSick()) {
-            AchievementsView::unlock(AchievementId::FirstCure);
-            mainView.setStatusText("Cured!");
-        } else {
-            mainView.setStatusText("Medicine given");
-        }
-    }
-
-    if (timerMutex) xSemaphoreGive(timerMutex);
-}
-
-void TamaTac::handleSleepAction() {
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
-
-    if (petLogic) {
-        petLogic->performAction(PetAction::Sleep);
-        petLogic->saveState();
-        mainView.updateUI(petLogic, lastKnownStage);
-
-        if (sfxEngine) sfxEngine->play(SfxId::Sleep);
-
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Sleeping... Energy: %d%%", petLogic->getEnergy());
-        mainView.setStatusText(msg);
-    }
-
-    if (timerMutex) xSemaphoreGive(timerMutex);
-}
-
-//==============================================================================================
-// Timer Callback
-//==============================================================================================
-
-void TamaTac::onTimerUpdate(TimerHandle_t timer) {
-    // Hold mutex for entire callback so onDestroy() can block until we finish
-    if (timerMutex == nullptr || xSemaphoreTake(timerMutex, 0) != pdTRUE) return;
-
-    if (petLogic == nullptr) {
-        xSemaphoreGive(timerMutex);
-        return;
-    }
-
-    bool wasAlive = !petLogic->isDead();
-    // Capture stage before update() — checkHealth() sets stage to Ghost on death
-    LifeStage stageBeforeDeath = petLogic->getStats().stage;
-
-    uint32_t now = tt::kernel::getMillis();
-    petLogic->update(now);
-    petLogic->saveState();
-
-    // Check achievements
-    const PetStats& stats = petLogic->getStats();
-
-    // Evolution achievements
-    switch (stats.stage) {
-        case LifeStage::Baby:  AchievementsView::unlock(AchievementId::ReachBaby); break;
-        case LifeStage::Teen:  AchievementsView::unlock(AchievementId::ReachTeen); break;
-        case LifeStage::Adult: AchievementsView::unlock(AchievementId::ReachAdult); break;
-        case LifeStage::Elder: AchievementsView::unlock(AchievementId::ReachElder); break;
-        default: break;
-    }
-
-    // Survival achievement
-    if (stats.ageHours >= 24 && !stats.isDead) {
-        AchievementsView::unlock(AchievementId::Survivor24h);
-    }
-
-    // Full stats achievement
-    if (stats.hunger >= 90 && stats.happiness >= 90 && stats.health >= 90 && stats.energy >= 90) {
-        AchievementsView::unlock(AchievementId::FullStats);
-    }
-
-    // Record death in cemetery (use pre-death stage, not Ghost)
-    if (wasAlive && petLogic->isDead()) {
-        CemeteryView::recordDeath(stats.personality, stageBeforeDeath, stats.ageHours);
-    }
-
-    xSemaphoreGive(timerMutex);
-}
-
-//==============================================================================================
-// Event Handlers
-//==============================================================================================
-
-void TamaTac::onCleanClicked(lv_event_t* e) {
-    TamaTac* app = static_cast<TamaTac*>(lv_event_get_user_data(e));
-    if (app == nullptr) return;
-
-    if (timerMutex) xSemaphoreTake(timerMutex, portMAX_DELAY);
-
-    if (petLogic && app->activeView == ViewType::Main) {
-        int poopCount = petLogic->getStats().poopCount;
-        if (poopCount > 0) {
-            petLogic->performAction(PetAction::Clean);
-            petLogic->saveState();
-            app->mainView.updateUI(petLogic, lastKnownStage);
-
-            if (sfxEngine) sfxEngine->play(SfxId::Clean);
-            AchievementsView::incrementCleanCount();
-
-            app->mainView.setStatusText("All clean!");
-        } else {
-            app->mainView.setStatusText("Nothing to clean!");
-        }
-    }
-
-    if (timerMutex) xSemaphoreGive(timerMutex);
-}
-
-void TamaTac::onMenuClicked(lv_event_t* e) {
-    TamaTac* app = static_cast<TamaTac*>(lv_event_get_user_data(e));
-    if (app == nullptr) return;
-
-    if (app->activeView == ViewType::Main) {
-        app->showMenuView();
+    if (wasSick && !ctx->petLogic.isSick()) {
+        achievementsUnlock(AchievementId::FirstCure);
+        mainViewSetStatusText(ctx, "Cured!");
     } else {
-        app->showMainView();
+        mainViewSetStatusText(ctx, "Medicine given");
     }
+
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 }
 
-void TamaTac::onResetClicked([[maybe_unused]] lv_event_t* e) {
-    const char* buttons[] = {"Reset", "Cancel"};
-    resetDialogId = tt_app_alertdialog_start(
-        "Reset Pet?",
-        "This will start over with a new pet. Your current pet will be lost forever!",
-        buttons,
-        2
-    );
+void tamaTacHandleSleepAction(Context* ctx) {
+    if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
+
+    ctx->petLogic.performAction(PetAction::Sleep);
+    ctx->petLogic.saveState();
+    mainViewUpdateUI(ctx);
+
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Sleep);
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Sleeping... Energy: %d%%", ctx->petLogic.getEnergy());
+    mainViewSetStatusText(ctx, msg);
+
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 }

@@ -6,11 +6,243 @@
 #include "PatternGame.h"
 #include "TamaTac.h"
 #include "SfxEngine.h"
+#include <lvgl_window_manager/window_manager.h>
 #include <cstdlib>
 #include <cstdio>
 
-void PatternGame::onStart(lv_obj_t* parent, TamaTac* appInstance) {
-    app = appInstance;
+namespace {
+
+// Button colors
+constexpr uint32_t BRIGHT_COLORS[4] = {0xFF4444, 0x4488FF, 0x44DD44, 0xFFDD44};
+constexpr uint32_t DIM_COLORS[4] = {0x661818, 0x182860, 0x186018, 0x605818};
+
+void highlightButton(PatternGameState* state, int index) {
+    if (index >= 0 && index < 4 && state->buttons[index]) {
+        lv_obj_set_style_bg_color(state->buttons[index], lv_color_hex(BRIGHT_COLORS[index]), 0);
+    }
+}
+
+void dimButton(PatternGameState* state, int index) {
+    if (index >= 0 && index < 4 && state->buttons[index]) {
+        lv_obj_set_style_bg_color(state->buttons[index], lv_color_hex(DIM_COLORS[index]), 0);
+    }
+}
+
+void dimAllButtons(PatternGameState* state) {
+    for (int i = 0; i < 4; i++) {
+        dimButton(state, i);
+    }
+}
+
+void clearTimers(PatternGameState* state) {
+    if (state->sequenceTimer) {
+        lv_timer_del(state->sequenceTimer);
+        state->sequenceTimer = nullptr;
+    }
+    if (state->delayTimer) {
+        lv_timer_del(state->delayTimer);
+        state->delayTimer = nullptr;
+    }
+}
+
+void generatePattern(PatternGameState* state) {
+    for (int i = 0; i < 8; i++) {
+        state->pattern[i] = rand() % 4;
+    }
+}
+
+void scheduleDelay(Context* ctx, uint32_t ms);
+void startRound(Context* ctx);
+void beginSequenceDisplay(Context* ctx);
+void startInputPhase(PatternGameState* state);
+void returnToMain(Context* ctx, bool won);
+
+void onSequenceTick(lv_timer_t* timer) {
+    auto* ctx = static_cast<Context*>(lv_timer_get_user_data(timer));
+    PatternGameState* state = &ctx->patternGame;
+
+    // Widgets only exist while this window is topmost - skip otherwise (window_manager deletes
+    // a buried window's widgets, but this independent lv_timer_t keeps firing regardless; same
+    // reasoning as GPIO.cpp's periodic status timer).
+    if (window_manager_get_state(ctx->window) != WINDOW_STATE_GRANTED) return;
+
+    if (state->showPhase) {
+        // Was highlighting -> dim it
+        dimButton(state, state->pattern[state->showIndex]);
+        state->showIndex++;
+        state->showPhase = false;
+
+        // Check if all shown
+        if (state->showIndex >= state->patternLength) {
+            lv_timer_del(state->sequenceTimer);
+            state->sequenceTimer = nullptr;
+            startInputPhase(state);
+            return;
+        }
+
+        // Short gap before next highlight
+        lv_timer_set_period(state->sequenceTimer, 200);
+    } else {
+        // Gap done -> highlight next button
+        highlightButton(state, state->pattern[state->showIndex]);
+        state->showPhase = true;
+
+        // Play blip for each flash
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Blip);
+
+        // Longer highlight duration
+        lv_timer_set_period(state->sequenceTimer, 400);
+    }
+}
+
+void onDelayDone(lv_timer_t* timer) {
+    auto* ctx = static_cast<Context*>(lv_timer_get_user_data(timer));
+    PatternGameState* state = &ctx->patternGame;
+    state->delayTimer = nullptr;
+
+    if (window_manager_get_state(ctx->window) != WINDOW_STATE_GRANTED) return;
+
+    switch (state->pendingAction) {
+        case PatternGameState::DelayAction::StartSequence:
+            beginSequenceDisplay(ctx);
+            break;
+        case PatternGameState::DelayAction::NextRound:
+            startRound(ctx);
+            break;
+        case PatternGameState::DelayAction::EndGame:
+            returnToMain(ctx, state->gameWon);
+            break;
+    }
+}
+
+void scheduleDelay(Context* ctx, uint32_t ms) {
+    PatternGameState* state = &ctx->patternGame;
+    if (state->delayTimer) {
+        lv_timer_del(state->delayTimer);
+        state->delayTimer = nullptr;
+    }
+    state->delayTimer = lv_timer_create(onDelayDone, ms, ctx);
+    lv_timer_set_repeat_count(state->delayTimer, 1);
+}
+
+void startRound(Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
+    state->acceptingInput = false;
+    dimAllButtons(state);
+
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Round %d - Watch!", state->round + 1);
+    if (state->statusLabel) lv_label_set_text(state->statusLabel, msg);
+
+    // Delay before showing pattern
+    state->pendingAction = PatternGameState::DelayAction::StartSequence;
+    scheduleDelay(ctx, 800);
+}
+
+void beginSequenceDisplay(Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
+    state->showIndex = 0;
+    state->showPhase = false;
+    state->sequenceTimer = lv_timer_create(onSequenceTick, 350, ctx);
+}
+
+void startInputPhase(PatternGameState* state) {
+    state->acceptingInput = true;
+    state->inputIndex = 0;
+    if (state->statusLabel) lv_label_set_text(state->statusLabel, "Your turn!");
+}
+
+void returnToMain(Context* ctx, bool won) {
+    tamaTacOnPatternGameComplete(ctx, ctx->patternGame.round, won);
+}
+
+void gameWin(Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
+    if (state->statusLabel) lv_label_set_text(state->statusLabel, LV_SYMBOL_OK " You win!");
+    dimAllButtons(state);
+
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Success);
+
+    state->gameWon = true;
+    state->pendingAction = PatternGameState::DelayAction::EndGame;
+    scheduleDelay(ctx, 1500);
+}
+
+void gameLose(Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
+    char msg[48];
+    snprintf(msg, sizeof(msg), LV_SYMBOL_CLOSE " Wrong! Rounds: %d/%d", state->round, PATTERN_GAME_MAX_ROUNDS);
+    if (state->statusLabel) lv_label_set_text(state->statusLabel, msg);
+    dimAllButtons(state);
+
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Error);
+
+    state->gameWon = false;
+    state->pendingAction = PatternGameState::DelayAction::EndGame;
+    scheduleDelay(ctx, 1500);
+}
+
+void roundWin(Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
+    state->round++;
+
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Confirm);
+
+    if (state->round >= PATTERN_GAME_MAX_ROUNDS) {
+        gameWin(ctx);
+        return;
+    }
+
+    // Show success message, then start next round
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Correct! Round %d next...", state->round + 1);
+    if (state->statusLabel) lv_label_set_text(state->statusLabel, msg);
+
+    state->patternLength++;
+    if (state->patternLength > 8) state->patternLength = 8;
+
+    state->pendingAction = PatternGameState::DelayAction::NextRound;
+    scheduleDelay(ctx, 1200);
+}
+
+void handleInput(Context* ctx, int buttonIndex) {
+    PatternGameState* state = &ctx->patternGame;
+
+    if (buttonIndex == state->pattern[state->inputIndex]) {
+        // Correct!
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Blip);
+        state->inputIndex++;
+
+        if (state->inputIndex >= state->patternLength) {
+            // Completed the full pattern
+            state->acceptingInput = false;
+            roundWin(ctx);
+        }
+    } else {
+        // Wrong!
+        state->acceptingInput = false;
+        gameLose(ctx);
+    }
+}
+
+void onButtonClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    PatternGameState* state = &ctx->patternGame;
+    if (!state->acceptingInput) return;
+
+    lv_obj_t* target = lv_event_get_target_obj(e);
+    for (int i = 0; i < 4; i++) {
+        if (target == state->buttons[i]) {
+            handleInput(ctx, i);
+            return;
+        }
+    }
+}
+
+} // namespace
+
+void patternGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
 
     // Screen size detection
     lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
@@ -37,9 +269,9 @@ void PatternGame::onStart(lv_obj_t* parent, TamaTac* appInstance) {
     lv_obj_remove_flag(wrapper, LV_OBJ_FLAG_SCROLLABLE);
 
     // Status label
-    statusLabel = lv_label_create(wrapper);
-    lv_label_set_text(statusLabel, "Get ready...");
-    lv_obj_set_style_text_align(statusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    state->statusLabel = lv_label_create(wrapper);
+    lv_label_set_text(state->statusLabel, "Get ready...");
+    lv_obj_set_style_text_align(state->statusLabel, LV_TEXT_ALIGN_CENTER, 0);
 
     // 2x2 button grid
     lv_obj_t* grid = lv_obj_create(wrapper);
@@ -57,246 +289,27 @@ void PatternGame::onStart(lv_obj_t* parent, TamaTac* appInstance) {
 
     // Create 4 game buttons
     for (int i = 0; i < 4; i++) {
-        buttons[i] = lv_btn_create(grid);
-        lv_obj_set_size(buttons[i], btnSize, btnSize);
-        lv_obj_set_style_bg_color(buttons[i], lv_color_hex(DIM_COLORS[i]), 0);
-        lv_obj_set_style_bg_color(buttons[i], lv_color_hex(BRIGHT_COLORS[i]), LV_STATE_PRESSED);
-        lv_obj_set_style_radius(buttons[i], radius, 0);
-        lv_obj_set_style_border_width(buttons[i], 0, 0);
-        lv_obj_set_style_shadow_width(buttons[i], 0, 0);
-        lv_obj_add_event_cb(buttons[i], onButtonClicked, LV_EVENT_CLICKED, this);
+        state->buttons[i] = lv_btn_create(grid);
+        lv_obj_set_size(state->buttons[i], btnSize, btnSize);
+        lv_obj_set_style_bg_color(state->buttons[i], lv_color_hex(DIM_COLORS[i]), 0);
+        lv_obj_set_style_bg_color(state->buttons[i], lv_color_hex(BRIGHT_COLORS[i]), LV_STATE_PRESSED);
+        lv_obj_set_style_radius(state->buttons[i], radius, 0);
+        lv_obj_set_style_border_width(state->buttons[i], 0, 0);
+        lv_obj_set_style_shadow_width(state->buttons[i], 0, 0);
+        lv_obj_add_event_cb(state->buttons[i], onButtonClicked, LV_EVENT_CLICKED, ctx);
     }
 
     // Initialize game
-    round = 0;
-    patternLength = START_LENGTH;
-    acceptingInput = false;
-    generatePattern();
-    startRound();
+    state->round = 0;
+    state->patternLength = 3;
+    state->acceptingInput = false;
+    generatePattern(state);
+    startRound(ctx);
 }
 
-void PatternGame::onStop() {
-    clearTimers();
-    statusLabel = nullptr;
-    for (int i = 0; i < 4; i++) buttons[i] = nullptr;
-    app = nullptr;
-}
-
-void PatternGame::clearTimers() {
-    if (sequenceTimer) {
-        lv_timer_del(sequenceTimer);
-        sequenceTimer = nullptr;
-    }
-    if (delayTimer) {
-        lv_timer_del(delayTimer);
-        delayTimer = nullptr;
-    }
-}
-
-void PatternGame::generatePattern() {
-    for (int i = 0; i < MAX_PATTERN; i++) {
-        pattern[i] = rand() % 4;
-    }
-}
-
-void PatternGame::startRound() {
-    acceptingInput = false;
-    dimAllButtons();
-
-    char msg[32];
-    snprintf(msg, sizeof(msg), "Round %d - Watch!", round + 1);
-    if (statusLabel) lv_label_set_text(statusLabel, msg);
-
-    // Delay before showing pattern
-    pendingAction = DelayAction::StartSequence;
-    scheduleDelay(800);
-}
-
-void PatternGame::beginSequenceDisplay() {
-    showIndex = 0;
-    showPhase = false;
-    sequenceTimer = lv_timer_create(onSequenceTick, 350, this);
-}
-
-void PatternGame::startInputPhase() {
-    acceptingInput = true;
-    inputIndex = 0;
-    if (statusLabel) lv_label_set_text(statusLabel, "Your turn!");
-}
-
-void PatternGame::scheduleDelay(uint32_t ms) {
-    if (delayTimer) {
-        lv_timer_del(delayTimer);
-        delayTimer = nullptr;
-    }
-    delayTimer = lv_timer_create(onDelayDone, ms, this);
-    lv_timer_set_repeat_count(delayTimer, 1);
-}
-
-//==============================================================================
-// Timer Callbacks
-//==============================================================================
-
-void PatternGame::onSequenceTick(lv_timer_t* timer) {
-    auto* self = static_cast<PatternGame*>(lv_timer_get_user_data(timer));
-
-    if (self->showPhase) {
-        // Was highlighting → dim it
-        self->dimButton(self->pattern[self->showIndex]);
-        self->showIndex++;
-        self->showPhase = false;
-
-        // Check if all shown
-        if (self->showIndex >= self->patternLength) {
-            lv_timer_del(self->sequenceTimer);
-            self->sequenceTimer = nullptr;
-            self->startInputPhase();
-            return;
-        }
-
-        // Short gap before next highlight
-        lv_timer_set_period(self->sequenceTimer, 200);
-    } else {
-        // Gap done → highlight next button
-        self->highlightButton(self->pattern[self->showIndex]);
-        self->showPhase = true;
-
-        // Play blip for each flash
-        SfxEngine* se = TamaTac::getSfxEngine();
-        if (se) se->play(SfxId::Blip);
-
-        // Longer highlight duration
-        lv_timer_set_period(self->sequenceTimer, 400);
-    }
-}
-
-void PatternGame::onDelayDone(lv_timer_t* timer) {
-    auto* self = static_cast<PatternGame*>(lv_timer_get_user_data(timer));
-    self->delayTimer = nullptr;
-
-    switch (self->pendingAction) {
-        case DelayAction::StartSequence:
-            self->beginSequenceDisplay();
-            break;
-        case DelayAction::NextRound:
-            self->startRound();
-            break;
-        case DelayAction::EndGame:
-            self->returnToMain(self->gameWon);
-            break;
-    }
-}
-
-//==============================================================================
-// Input Handling
-//==============================================================================
-
-void PatternGame::onButtonClicked(lv_event_t* e) {
-    auto* self = static_cast<PatternGame*>(lv_event_get_user_data(e));
-    if (!self->acceptingInput) return;
-
-    lv_obj_t* target = lv_event_get_target_obj(e);
-    for (int i = 0; i < 4; i++) {
-        if (target == self->buttons[i]) {
-            self->handleInput(i);
-            return;
-        }
-    }
-}
-
-void PatternGame::handleInput(int buttonIndex) {
-    SfxEngine* se = TamaTac::getSfxEngine();
-
-    if (buttonIndex == pattern[inputIndex]) {
-        // Correct!
-        if (se) se->play(SfxId::Blip);
-        inputIndex++;
-
-        if (inputIndex >= patternLength) {
-            // Completed the full pattern
-            acceptingInput = false;
-            roundWin();
-        }
-    } else {
-        // Wrong!
-        acceptingInput = false;
-        gameLose();
-    }
-}
-
-void PatternGame::roundWin() {
-    round++;
-
-    SfxEngine* se = TamaTac::getSfxEngine();
-    if (se) se->play(SfxId::Confirm);
-
-    if (round >= MAX_ROUNDS) {
-        gameWin();
-        return;
-    }
-
-    // Show success message, then start next round
-    char msg[48];
-    snprintf(msg, sizeof(msg), "Correct! Round %d next...", round + 1);
-    if (statusLabel) lv_label_set_text(statusLabel, msg);
-
-    patternLength++;
-    if (patternLength > MAX_PATTERN) patternLength = MAX_PATTERN;
-
-    pendingAction = DelayAction::NextRound;
-    scheduleDelay(1200);
-}
-
-void PatternGame::gameWin() {
-    if (statusLabel) lv_label_set_text(statusLabel, LV_SYMBOL_OK " You win!");
-    dimAllButtons();
-
-    SfxEngine* se = TamaTac::getSfxEngine();
-    if (se) se->play(SfxId::Success);
-
-    gameWon = true;
-    pendingAction = DelayAction::EndGame;
-    scheduleDelay(1500);
-}
-
-void PatternGame::gameLose() {
-    char msg[48];
-    snprintf(msg, sizeof(msg), LV_SYMBOL_CLOSE " Wrong! Rounds: %d/%d", round, MAX_ROUNDS);
-    if (statusLabel) lv_label_set_text(statusLabel, msg);
-    dimAllButtons();
-
-    SfxEngine* se = TamaTac::getSfxEngine();
-    if (se) se->play(SfxId::Error);
-
-    gameWon = false;
-    pendingAction = DelayAction::EndGame;
-    scheduleDelay(1500);
-}
-
-void PatternGame::returnToMain(bool won) {
-    if (app) {
-        app->onPatternGameComplete(round, won);
-    }
-}
-
-//==============================================================================
-// Visual Helpers
-//==============================================================================
-
-void PatternGame::highlightButton(int index) {
-    if (index >= 0 && index < 4 && buttons[index]) {
-        lv_obj_set_style_bg_color(buttons[index], lv_color_hex(BRIGHT_COLORS[index]), 0);
-    }
-}
-
-void PatternGame::dimButton(int index) {
-    if (index >= 0 && index < 4 && buttons[index]) {
-        lv_obj_set_style_bg_color(buttons[index], lv_color_hex(DIM_COLORS[index]), 0);
-    }
-}
-
-void PatternGame::dimAllButtons() {
-    for (int i = 0; i < 4; i++) {
-        dimButton(i);
-    }
+void patternGameStop(Context* ctx) {
+    PatternGameState* state = &ctx->patternGame;
+    clearTimers(state);
+    state->statusLabel = nullptr;
+    for (int i = 0; i < 4; i++) state->buttons[i] = nullptr;
 }

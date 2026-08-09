@@ -10,7 +10,15 @@ else()
 endif()
 
 include("${TACTILITY_SDK_PATH}/TactilitySDK.cmake")
-set(EXTRA_COMPONENT_DIRS ${TACTILITY_SDK_PATH})
+
+# Must be set before project() - ESP-IDF resolves components at that point, so setting these
+# from inside the tactility_project() macro (which necessarily runs after project(), since it
+# also calls project_elf()) would be too late.
+set(EXTRA_COMPONENT_DIRS
+    ${TACTILITY_SDK_PATH}
+    "${TACTILITY_SDK_PATH}/Libraries/TactilityFreeRtos"
+    "${TACTILITY_SDK_PATH}/Modules"
+)
 
 project(MediaKeys)
 tactility_project(MediaKeys)
