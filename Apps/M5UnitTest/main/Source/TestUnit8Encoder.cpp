@@ -1,18 +1,66 @@
 #include "TestUnit8Encoder.h"
+#include "M5UnitTest.h"
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <lvgl/fonts.h>
 #include <cstring>
 
+namespace {
 
-void TestUnit8Encoder::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
-    app_ = app;
-    memset(counters_,  0, sizeof(counters_));
-    memset(ledColors_, 0, sizeof(ledColors_));
+void selectIfNeeded(TestUnit8Encoder* self) {
+    if (self->usingPaHub_ && self->hub_.isPresent())
+        self->hub_.select(self->hub_.currentChannel());
+}
 
-    createToolbar(parent, handle, "8Encoder");
-    createBanner(parent, "8Encoder", "I2C", COLOR_I2C);
+void update(TestUnit8Encoder* self) {
+    selectIfNeeded(self);
+    if (!self->enc_.isPresent()) return;
+    int32_t deltas[8];
+    uint8_t buttons[8];
+    if (!self->enc_.readAll(deltas, buttons)) return;
+
+    for (int i = 0; i < 8; i++) {
+        self->counters_[i] += deltas[i];
+        lv_label_set_text_fmt(self->lblCounters_[i], "%ld", (long)self->counters_[i]);
+
+        lv_color_t dotCol = buttons[i] ? lv_color_hex(0x00DD44) : lv_color_hex(0x333333);
+        lv_obj_set_style_bg_color(self->dotButtons_[i], dotCol, 0);
+
+        // Encoder LED: hue cycles with counter position
+        uint32_t hue = (uint32_t)((self->counters_[i] % 360 + 360) % 360);
+        lv_color_t c = lv_color_hsv_to_rgb((uint16_t)hue, 100, 78);
+        lv_color32_t c32 = lv_color_to_32(c, LV_OPA_COVER);
+        self->ledColors_[i] = ((uint32_t)c32.red << 16) | ((uint32_t)c32.green << 8) | c32.blue;
+    }
+
+    // Switch (index 8): green=on, dark gray=off; skip update on I2C error
+    bool sw = false;
+    if (self->enc_.readSwitch(sw)) {
+        lv_label_set_text(self->lblSwitch_, sw ? "on" : "off");
+        lv_obj_set_style_bg_color(self->dotSwitch_, lv_color_hex(sw ? 0x00DD44 : 0x333333), 0);
+        self->ledColors_[8] = sw ? 0x00DD44 : 0x000000;
+    }
+
+    self->enc_.flushLeds(self->ledColors_);
+}
+
+void onTimer(lv_timer_t* t) {
+    auto* self = static_cast<TestUnit8Encoder*>(lv_timer_get_user_data(t));
+    if (window_manager_get_state(self->app_->window) != WINDOW_STATE_GRANTED) return;
+    update(self);
+}
+
+} // namespace
+
+void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* app) {
+    self->app_ = app;
+    memset(self->counters_,  0, sizeof(self->counters_));
+    memset(self->ledColors_, 0, sizeof(self->ledColors_));
+
+    testViewCreateToolbar(parent, app, "8Encoder");
+    testViewCreateBanner(parent, "8Encoder", "I2C", COLOR_I2C);
 
     int numCols = uiW() >= 800 ? 4 : (uiW() >= 200 ? 2 : 1);
     int dotSz   = (int)(uiShortSide() / 60);
@@ -22,11 +70,11 @@ void TestUnit8Encoder::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* a
     const lv_font_t* fnt = lvgl_get_text_font(uiFont());
 
     // Status label shown when not connected — sits above the grid at full width
-    lblStatus_ = lv_label_create(parent);
-    lv_obj_set_style_text_font(lblStatus_, fnt, 0);
-    lv_obj_set_width(lblStatus_, LV_PCT(100));
-    lv_obj_set_style_pad_hor(lblStatus_, uiPad(), 0);
-    lv_label_set_text(lblStatus_, "");
+    self->lblStatus_ = lv_label_create(parent);
+    lv_obj_set_style_text_font(self->lblStatus_, fnt, 0);
+    lv_obj_set_width(self->lblStatus_, LV_PCT(100));
+    lv_obj_set_style_pad_hor(self->lblStatus_, uiPad(), 0);
+    lv_label_set_text(self->lblStatus_, "");
 
     lv_obj_t* grid = lv_obj_create(parent);
     lv_obj_set_width(grid, LV_PCT(100));
@@ -73,12 +121,12 @@ void TestUnit8Encoder::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* a
         lv_obj_set_style_text_font(num, fnt, 0);
         lv_obj_set_width(num, LV_SIZE_CONTENT);
 
-        lblCounters_[i] = lv_label_create(card);
-        lv_label_set_text(lblCounters_[i], "0");
-        lv_obj_set_style_text_font(lblCounters_[i], fnt, 0);
-        lv_obj_set_flex_grow(lblCounters_[i], 1);
+        self->lblCounters_[i] = lv_label_create(card);
+        lv_label_set_text(self->lblCounters_[i], "0");
+        lv_obj_set_style_text_font(self->lblCounters_[i], fnt, 0);
+        lv_obj_set_flex_grow(self->lblCounters_[i], 1);
 
-        dotButtons_[i] = makeDot(card);
+        self->dotButtons_[i] = makeDot(card);
     }
 
     // Switch row
@@ -88,89 +136,48 @@ void TestUnit8Encoder::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* a
     lv_label_set_text(swLbl, "SW:");
     lv_obj_set_style_text_font(swLbl, fnt, 0);
     lv_obj_set_width(swLbl, LV_SIZE_CONTENT);
-    lblSwitch_ = lv_label_create(swCard);
-    lv_label_set_text(lblSwitch_, "off");
-    lv_obj_set_style_text_font(lblSwitch_, fnt, 0);
-    lv_obj_set_flex_grow(lblSwitch_, 1);
-    dotSwitch_ = makeDot(swCard);
+    self->lblSwitch_ = lv_label_create(swCard);
+    lv_label_set_text(self->lblSwitch_, "off");
+    lv_obj_set_style_text_font(self->lblSwitch_, fnt, 0);
+    lv_obj_set_flex_grow(self->lblSwitch_, 1);
+    self->dotSwitch_ = makeDot(swCard);
 
     Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        lv_label_set_text(lblStatus_, "grove0_i2c not found");
+        lv_label_set_text(self->lblStatus_, "grove0_i2c not found");
         return;
     }
 
-    if (enc_.begin(i2c)) {
-        usingPaHub_ = false;
-    } else if (hub_.begin(i2c)) {
-        usingPaHub_ = true;
+    if (self->enc_.begin(i2c)) {
+        self->usingPaHub_ = false;
+    } else if (self->hub_.begin(i2c)) {
+        self->usingPaHub_ = true;
         bool found = false;
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            hub_.select(ch);
-            if (enc_.begin(i2c)) found = true;
+            self->hub_.select(ch);
+            if (self->enc_.begin(i2c)) found = true;
         }
         if (!found) {
-            hub_.deselect();
-            lv_label_set_text(lblStatus_, "8Encoder not found");
+            self->hub_.deselect();
+            lv_label_set_text(self->lblStatus_, "8Encoder not found");
             return;
         }
     } else {
-        lv_label_set_text(lblStatus_, "8Encoder not found");
+        lv_label_set_text(self->lblStatus_, "8Encoder not found");
         return;
     }
 
-    timer_ = lv_timer_create(onTimer, 50, this);
-    update();
+    self->timer_ = lv_timer_create(onTimer, 50, self);
+    update(self);
 }
 
-void TestUnit8Encoder::onStop() {
-    if (timer_) { lv_timer_delete(timer_); timer_ = nullptr; }
-    selectIfNeeded();
-    if (enc_.isPresent()) enc_.setAllLeds(0x000000);
-    if (usingPaHub_ && hub_.isPresent()) hub_.deselect();
-    lblStatus_ = nullptr;
-    memset(lblCounters_, 0, sizeof(lblCounters_));
-    memset(dotButtons_,  0, sizeof(dotButtons_));
-    lblSwitch_ = dotSwitch_ = nullptr;
-}
-
-void TestUnit8Encoder::onTimer(lv_timer_t* t) {
-    static_cast<TestUnit8Encoder*>(lv_timer_get_user_data(t))->update();
-}
-
-void TestUnit8Encoder::selectIfNeeded() {
-    if (usingPaHub_ && hub_.isPresent())
-        hub_.select(hub_.currentChannel());
-}
-
-void TestUnit8Encoder::update() {
-    selectIfNeeded();
-    if (!enc_.isPresent()) return;
-    int32_t deltas[8];
-    uint8_t buttons[8];
-    if (!enc_.readAll(deltas, buttons)) return;
-
-    for (int i = 0; i < 8; i++) {
-        counters_[i] += deltas[i];
-        lv_label_set_text_fmt(lblCounters_[i], "%ld", (long)counters_[i]);
-
-        lv_color_t dotCol = buttons[i] ? lv_color_hex(0x00DD44) : lv_color_hex(0x333333);
-        lv_obj_set_style_bg_color(dotButtons_[i], dotCol, 0);
-
-        // Encoder LED: hue cycles with counter position
-        uint32_t hue = (uint32_t)((counters_[i] % 360 + 360) % 360);
-        lv_color_t c = lv_color_hsv_to_rgb((uint16_t)hue, 100, 78);
-        lv_color32_t c32 = lv_color_to_32(c, LV_OPA_COVER);
-        ledColors_[i] = ((uint32_t)c32.red << 16) | ((uint32_t)c32.green << 8) | c32.blue;
-    }
-
-    // Switch (index 8): green=on, dark gray=off; skip update on I2C error
-    bool sw = false;
-    if (enc_.readSwitch(sw)) {
-        lv_label_set_text(lblSwitch_, sw ? "on" : "off");
-        lv_obj_set_style_bg_color(dotSwitch_, lv_color_hex(sw ? 0x00DD44 : 0x333333), 0);
-        ledColors_[8] = sw ? 0x00DD44 : 0x000000;
-    }
-
-    enc_.flushLeds(ledColors_);
+void testUnit8EncoderStop(TestUnit8Encoder* self) {
+    if (self->timer_) { lv_timer_delete(self->timer_); self->timer_ = nullptr; }
+    selectIfNeeded(self);
+    if (self->enc_.isPresent()) self->enc_.setAllLeds(0x000000);
+    if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->lblStatus_ = nullptr;
+    memset(self->lblCounters_, 0, sizeof(self->lblCounters_));
+    memset(self->dotButtons_,  0, sizeof(self->dotButtons_));
+    self->lblSwitch_ = self->dotSwitch_ = nullptr;
 }

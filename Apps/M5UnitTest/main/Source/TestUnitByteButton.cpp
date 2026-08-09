@@ -1,17 +1,51 @@
 #include "TestUnitByteButton.h"
+#include "M5UnitTest.h"
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <lvgl/fonts.h>
 #include <cstring>
 
-void TestUnitByteButton::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
-    app_ = app;
-    memset(ledColors_,   0, sizeof(ledColors_));
-    memset(prevPressed_, 0, sizeof(prevPressed_));
+namespace {
 
-    createToolbar(parent, handle, "ByteButton");
-    createBanner(parent, "ByteButton", "I2C", COLOR_I2C);
+void selectIfNeeded(TestUnitByteButton* self) {
+    if (self->usingPaHub_ && self->hub_.isPresent())
+        self->hub_.select(self->hub_.currentChannel());
+}
+
+void update(TestUnitByteButton* self) {
+    selectIfNeeded(self);
+    if (!self->unit_.isPresent()) return;
+    uint8_t mask = self->unit_.readButtons();
+    for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) {
+        bool pressed = (mask >> i) & 0x01;
+        // Toggle LED only on rising edge (press, not hold)
+        if (pressed && !self->prevPressed_[i]) {
+            self->ledColors_[i] = (self->ledColors_[i] == 0) ? TestUnitByteButton::COLOR_ON : 0;
+            self->unit_.setLed((uint8_t)i, self->ledColors_[i]);
+        }
+        self->prevPressed_[i] = pressed;
+        lv_color_t col = pressed ? lv_color_hex(TestUnitByteButton::COLOR_PRESSED) : lv_color_hex(TestUnitByteButton::COLOR_OFF);
+        lv_obj_set_style_bg_color(self->indicators_[i], col, 0);
+    }
+}
+
+void onTimer(lv_timer_t* t) {
+    auto* self = static_cast<TestUnitByteButton*>(lv_timer_get_user_data(t));
+    if (window_manager_get_state(self->app_->window) != WINDOW_STATE_GRANTED) return;
+    update(self);
+}
+
+} // namespace
+
+void testUnitByteButtonStart(TestUnitByteButton* self, lv_obj_t* parent, Context* app) {
+    self->app_ = app;
+    memset(self->ledColors_,   0, sizeof(self->ledColors_));
+    memset(self->prevPressed_, 0, sizeof(self->prevPressed_));
+
+    testViewCreateToolbar(parent, app, "ByteButton");
+    testViewCreateBanner(parent, "ByteButton", "I2C", COLOR_I2C);
 
     int dotSz = (int)(uiShortSide() / 14);
     if (dotSz < 20) dotSz = 20;
@@ -41,16 +75,16 @@ void TestUnitByteButton::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest*
     lv_obj_set_style_border_width(dotGrid, 0, 0);
     lv_obj_set_style_pad_all(dotGrid, 0, 0);
 
-    for (int i = 0; i < BTN_COUNT; i++) {
+    for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) {
         lv_obj_t* sq = lv_obj_create(dotGrid);
         lv_obj_set_size(sq, dotSz, dotSz);
         lv_obj_set_style_radius(sq, 4, 0);
-        lv_obj_set_style_bg_color(sq, lv_color_hex(COLOR_OFF), 0);
+        lv_obj_set_style_bg_color(sq, lv_color_hex(TestUnitByteButton::COLOR_OFF), 0);
         lv_obj_set_style_bg_opa(sq, LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(sq, lv_color_hex(0x444444), 0);
         lv_obj_set_style_border_width(sq, 1, 0);
         lv_obj_remove_flag(sq, LV_OBJ_FLAG_SCROLLABLE);
-        indicators_[i] = sq;
+        self->indicators_[i] = sq;
     }
 
     lv_obj_t* hint = lv_label_create(cont);
@@ -59,68 +93,42 @@ void TestUnitByteButton::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest*
 
     Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        for (int i = 0; i < BTN_COUNT; i++) lv_obj_set_style_bg_color(indicators_[i], lv_color_hex(COLOR_ERROR), 0);
+        for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) lv_obj_set_style_bg_color(self->indicators_[i], lv_color_hex(TestUnitByteButton::COLOR_ERROR), 0);
         lv_label_set_text(hint, "grove0_i2c not found");
         return;
     }
 
-    if (unit_.begin(i2c)) {
-        usingPaHub_ = false;
-    } else if (hub_.begin(i2c)) {
-        usingPaHub_ = true;
+    if (self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+    } else if (self->hub_.begin(i2c)) {
+        self->usingPaHub_ = true;
         bool found = false;
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            hub_.select(ch);
-            if (unit_.begin(i2c)) found = true;
+            self->hub_.select(ch);
+            if (self->unit_.begin(i2c)) found = true;
         }
         if (!found) {
-            hub_.deselect();
-            for (int i = 0; i < BTN_COUNT; i++) lv_obj_set_style_bg_color(indicators_[i], lv_color_hex(COLOR_ERROR), 0);
+            self->hub_.deselect();
+            for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) lv_obj_set_style_bg_color(self->indicators_[i], lv_color_hex(TestUnitByteButton::COLOR_ERROR), 0);
             lv_label_set_text(hint, "ByteButton not found");
             return;
         }
     } else {
-        for (int i = 0; i < BTN_COUNT; i++) lv_obj_set_style_bg_color(indicators_[i], lv_color_hex(COLOR_ERROR), 0);
+        for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) lv_obj_set_style_bg_color(self->indicators_[i], lv_color_hex(TestUnitByteButton::COLOR_ERROR), 0);
         lv_label_set_text(hint, "ByteButton not found");
         return;
     }
 
-    timer_ = lv_timer_create(onTimer, 50, this);
-    update();
+    self->timer_ = lv_timer_create(onTimer, 50, self);
+    update(self);
 }
 
-void TestUnitByteButton::onStop() {
-    if (timer_) { lv_timer_delete(timer_); timer_ = nullptr; }
-    selectIfNeeded();
-    if (unit_.isPresent()) {
-        for (int i = 0; i < BTN_COUNT; i++) unit_.setLed((uint8_t)i, 0x000000);
+void testUnitByteButtonStop(TestUnitByteButton* self) {
+    if (self->timer_) { lv_timer_delete(self->timer_); self->timer_ = nullptr; }
+    selectIfNeeded(self);
+    if (self->unit_.isPresent()) {
+        for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) self->unit_.setLed((uint8_t)i, 0x000000);
     }
-    if (usingPaHub_ && hub_.isPresent()) hub_.deselect();
-    memset(indicators_, 0, sizeof(indicators_));
-}
-
-void TestUnitByteButton::selectIfNeeded() {
-    if (usingPaHub_ && hub_.isPresent())
-        hub_.select(hub_.currentChannel());
-}
-
-void TestUnitByteButton::onTimer(lv_timer_t* t) {
-    static_cast<TestUnitByteButton*>(lv_timer_get_user_data(t))->update();
-}
-
-void TestUnitByteButton::update() {
-    selectIfNeeded();
-    if (!unit_.isPresent()) return;
-    uint8_t mask = unit_.readButtons();
-    for (int i = 0; i < BTN_COUNT; i++) {
-        bool pressed = (mask >> i) & 0x01;
-        // Toggle LED only on rising edge (press, not hold)
-        if (pressed && !prevPressed_[i]) {
-            ledColors_[i] = (ledColors_[i] == 0) ? COLOR_ON : 0;
-            unit_.setLed((uint8_t)i, ledColors_[i]);
-        }
-        prevPressed_[i] = pressed;
-        lv_color_t col = pressed ? lv_color_hex(COLOR_PRESSED) : lv_color_hex(COLOR_OFF);
-        lv_obj_set_style_bg_color(indicators_[i], col, 0);
-    }
+    if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    memset(self->indicators_, 0, sizeof(self->indicators_));
 }

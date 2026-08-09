@@ -1,28 +1,16 @@
 #pragma once
 
-#include "tt_app.h"
-
 #include <lvgl.h>
-#include <deque>
-#include <string>
-#include <TactilityCpp/App.h>
+#include <stdint.h>
 
-class Calculator final : public App {
+struct Context {
+    uint32_t appInstanceId;
 
-    lv_obj_t* displayLabel;
-    lv_obj_t* resultLabel;
+    lv_obj_t* displayLabel = nullptr;
+    lv_obj_t* resultLabel = nullptr;
     char formulaBuffer[128] = {0}; // Stores the full input expression
     bool newInput = true;
-
-    static void button_event_cb(lv_event_t* e);
-    void handleInput(const char* txt);
-    void evaluateExpression();
-    double computeFormula();
-    static std::deque<std::string> infixToRPN(const std::string& infix);
-    static double evaluateRPN(std::deque<std::string> rpnQueue);
-    void resetCalculator();
-
-public:
-
-    void onShow(AppHandle context, lv_obj_t* parent) override;
 };
+
+/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+void calculatorCreateWidgets(lv_obj_t* parent, void* userData);

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <TactilityCpp/App.h>
-
 #include <atomic>
 #include <optional>
 #include <string>
@@ -24,85 +22,62 @@ public:
     AutoScanPauseGuard& operator=(const AutoScanPauseGuard&) = delete;
 };
 
-class EspNowBridge final : public App {
-public:
-    EspNowBridge() = default;
-    EspNowBridge(const EspNowBridge&) = delete;
-    EspNowBridge& operator=(const EspNowBridge&) = delete;
+struct Context {
+    uint32_t appInstanceId;
 
-    void onCreate(AppHandle app) override;
-    void onDestroy(AppHandle app) override;
-    void onShow(AppHandle app, lv_obj_t* parent) override;
-    void onHide(AppHandle app) override;
-    void onResult(AppHandle app, void* data, AppLaunchId launchId, AppResult result, BundleHandle resultData) override;
+    uint32_t pickFileLaunchId = 0;
+    std::string pendingUpdateFilePath;
+    Device* wifiDevice = nullptr;
 
-    // Public so the free-function dispatchToUi() work callbacks in EspNowBridge.cpp (which run
-    // outside any member-function's lexical scope, unlike the inline lambdas in performUpdate())
-    // can call them.
-    void setStatus(const std::string& text);
-    void setProgress(int percent);
+    // Resolved once per createWidgets() call via wifi_get_firmware_ops() - null on a WiFi
+    // device with no updatable co-processor (e.g. a native, non-hosted chip). All OTA/
+    // version-query calls go through this generic interface, not any esp_hosted-specific
+    // API directly.
+    const FirmwareOps* firmwareOps = nullptr;
+    void* firmwareCtx = nullptr;
 
-private:
-    AppHandle appHandle_ = nullptr;
-    AppLaunchId pickFileLaunchId_ = 0;
-    std::string pendingUpdateFilePath_;
-    Device* wifiDevice_ = nullptr;
+    // Set once widgets exist (end of espNowBridgeCreateWidgets()), false again the moment
+    // they don't (start of a rebuild, or final teardown) - checked (via dispatchToUi(), below)
+    // before touching any lv_obj_t*, since the OTA worker task and the WiFi-event callback can
+    // both outlive the window being buried by a modal child (e.g. the file picker) or the app
+    // closing entirely.
+    std::atomic<bool> isShown{false};
 
-    // Resolved once in onShow() via wifi_get_firmware_ops() - null on a WiFi device with no
-    // updatable co-processor (e.g. a native, non-hosted chip). All OTA/version-query calls go
-    // through this generic interface, not any esp_hosted-specific API directly.
-    const FirmwareOps* firmwareOps_ = nullptr;
-    void* firmwareCtx_ = nullptr;
-
-    // Set once in onShow(), false once onHide() tears the widget tree down - checked (via
-    // dispatchToUi(), below) before touching any lv_obj_t*, since the OTA worker task and the
-    // WiFi-event callback can both outlive a hide/app-switch.
-    std::atomic<bool> isShown_{false};
-
-    // Only one EspNowBridge instance is ever live at a time (app loader owns a single instance
-    // per running app), so a single static "is this instance still current" pointer, guarded by
-    // an atomic, substitutes for the internal app's shared_ptr-based lifetime guard - the OTA
-    // worker task and dispatchToUi()'s lv_async_call closures check liveInstance_ == this before
-    // touching any member, instead of holding a shared_ptr to keep `this` alive.
-    static std::atomic<EspNowBridge*> liveInstance_;
-
-    TaskHandle_t updateTask_ = nullptr;
+    TaskHandle_t updateTask = nullptr;
 
     // Number of background tasks (updateTaskEntry, waitForTransportTaskEntry) currently running
-    // against this instance's members. onDestroy() must wait for this to hit 0 before returning -
-    // the app framework frees this instance shortly after onDestroy() returns (see Loader.cpp),
-    // so any task still touching `this` past that point is a use-after-free.
-    std::atomic<int> outstandingTasks_{0};
-    SemaphoreHandle_t taskDoneSemaphore_ = nullptr;
+    // against this instance's members. espNowBridgeTeardown() must wait for this to hit 0 before
+    // returning - main() frees this Context shortly after, so any task still touching it past
+    // that point is a use-after-free.
+    std::atomic<int> outstandingTasks{0};
+    SemaphoreHandle_t taskDoneSemaphore = nullptr;
 
     // Outlives performUpdate() deliberately, so auto-scan stays paused across the async gap
     // between performUpdate() returning and the automatic restart - see performUpdate().
-    std::optional<AutoScanPauseGuard> heldAutoScanPauseGuard_;
+    std::optional<AutoScanPauseGuard> heldAutoScanPauseGuard;
 
-    lv_obj_t* currentVersionLabel_ = nullptr;
-    lv_obj_t* statusLabel_ = nullptr;
-    lv_obj_t* progressBar_ = nullptr;
-    lv_obj_t* updateButton_ = nullptr;
-    lv_obj_t* updateBundledButton_ = nullptr;
-    lv_obj_t* enableWifiButton_ = nullptr;
-
-    void refreshCurrentVersion();
-    bool isWifiRadioOn();
-    void refreshWifiPrompt();
-    /** Enables/disables both update-trigger buttons together - only one performUpdate() can run
-     *  at a time (see updateTask_), regardless of which button started it. */
-    void setUpdateButtonsDisabled(bool disabled);
-    /** Marshal a UI-touching closure onto the LVGL task. Only ever invoked if liveInstance_ is
-     *  still this instance (checked at dispatch time and again right before running, on the LVGL
-     *  task) and isShown_ is true (this app's widget tree exists). */
-    void dispatchToUi(void (*work)(EspNowBridge&, void*), void* context, void (*freeContext)(void*));
-    void performUpdate(const std::string& filePath);
-    void startUpdateTask(const std::string& filePath);
-
-    static void updateTaskEntry(void* arg);
-    static void onUpdateButtonClicked(lv_event_t* event);
-    static void onUpdateBundledButtonClicked(lv_event_t* event);
-    static void onEnableWifiButtonClicked(lv_event_t* event);
-    static void onWifiEvent(Device* device, void* callbackContext, WifiEvent event);
-    static void waitForTransportTaskEntry(void* arg);
+    lv_obj_t* currentVersionLabel = nullptr;
+    lv_obj_t* statusLabel = nullptr;
+    lv_obj_t* progressBar = nullptr;
+    lv_obj_t* updateButton = nullptr;
+    lv_obj_t* updateBundledButton = nullptr;
+    lv_obj_t* enableWifiButton = nullptr;
 };
+
+/** Sets up state that must exist for the whole app instance lifetime, regardless of how many
+ *  times the window is (re)built. Call once, right after constructing the Context. */
+void espNowBridgeInit(Context* ctx);
+
+/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData);
+
+/** Starts the update task if ctx->pendingUpdateFilePath is set (consuming it). Called both from
+ *  within espNowBridgeCreateWidgets() and directly by main()'s event loop right after a picked
+ *  path arrives - the file-selection child's window teardown (and so this window's rebuild)
+ *  happens before its APP_EVENT_RESULT is delivered here, so by the time the result arrives
+ *  espNowBridgeCreateWidgets() has typically already run and found the path not yet set. */
+void espNowBridgeApplyPendingUpdate(Context* ctx);
+
+/** Waits for any outstanding background task to finish, then releases resources. Call once,
+ *  after the window has been torn down and right before the Context itself is freed. */
+void espNowBridgeTeardown(Context* ctx);

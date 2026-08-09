@@ -1,28 +1,26 @@
 #include "Gpio.h"
 
-#include <Tactility/kernel/Kernel.h>
-
 #include <lvgl/widgets/toolbar.h>
-
 #include <lvgl/lvgl.h>
+#include <lvgl_window_manager/window_manager.h>
 
 #include <esp_log.h>
 #include <driver/gpio.h>
 
-constexpr char* TAG = "GPIO";
+constexpr auto* TAG = "GPIO";
 
-void Gpio::updatePinStates() {
+static void updatePinStates(Context* ctx) {
     // Update pin states
-    for (int i = 0; i < pinStates.size(); ++i) {
-        pinStates[i] = gpio_get_level((gpio_num_t)i);
+    for (size_t i = 0; i < ctx->pinStates.size(); ++i) {
+        ctx->pinStates[i] = gpio_get_level((gpio_num_t)i);
     }
 }
 
-void Gpio::updatePinWidgets() {
+static void updatePinWidgets(Context* ctx) {
     lvgl_lock();
-    for (int j = 0; j < pinStates.size(); ++j) {
-        int level = pinStates[j];
-        lv_obj_t* label = pinWidgets[j];
+    for (size_t j = 0; j < ctx->pinStates.size(); ++j) {
+        int level = ctx->pinStates[j];
+        lv_obj_t* label = ctx->pinWidgets[j];
         void* label_user_data = lv_obj_get_user_data(label);
         // The user data stores the state, so we can avoid unnecessary updates
         if (reinterpret_cast<void*>(level) != label_user_data) {
@@ -37,7 +35,7 @@ void Gpio::updatePinWidgets() {
     lvgl_unlock();
 }
 
-lv_obj_t* Gpio::createGpioRowWrapper(lv_obj_t* parent) {
+static lv_obj_t* createGpioRowWrapper(lv_obj_t* parent) {
     lv_obj_t* wrapper = lv_obj_create(parent);
     lv_obj_set_style_pad_all(wrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(wrapper, 0, LV_STATE_DEFAULT);
@@ -47,21 +45,18 @@ lv_obj_t* Gpio::createGpioRowWrapper(lv_obj_t* parent) {
 
 // region Task
 
-void Gpio::onTimer() {
-    mutex.lock();
-    updatePinStates();
-    updatePinWidgets();
-    mutex.unlock();
-}
-
-void Gpio::startTask() {
-    mutex.lock();
-    timer.start();
-    mutex.unlock();
-}
-
-void Gpio::stopTask() {
-    timer.stop();
+static void gpioOnTimer(Context* ctx) {
+    // Widgets only exist while this window is topmost - skip otherwise (buried by another app
+    // started non-modally, e.g. via app_manager_start(); window_manager deletes a buried
+    // window's widgets, so touching pinWidgets here would use-after-free them). Same fix as
+    // Development.cpp's periodic status timer.
+    if (window_manager_get_state(ctx->window) != WINDOW_STATE_GRANTED) {
+        return;
+    }
+    ctx->mutex.lock();
+    updatePinStates(ctx);
+    updatePinWidgets(ctx);
+    ctx->mutex.unlock();
 }
 
 // endregion Task
@@ -74,7 +69,9 @@ static int getSquareSpacing(UiDensity density) {
     }
 }
 
-void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
+void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
 
@@ -109,10 +106,10 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
     auto* row_wrapper = createGpioRowWrapper(centering_wrapper);
     lv_obj_align(row_wrapper, LV_ALIGN_TOP_MID, 0, 0);
 
-    mutex.lock();
+    ctx->mutex.lock();
 
-    pinStates.resize(GPIO_PIN_COUNT);
-    pinWidgets.resize(GPIO_PIN_COUNT);
+    ctx->pinStates.resize(GPIO_PIN_COUNT);
+    ctx->pinWidgets.resize(GPIO_PIN_COUNT);
 
     for (int i = 0; i < GPIO_PIN_COUNT; ++i) {
         constexpr uint8_t offset_from_left_label = 4;
@@ -128,8 +125,8 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
         lv_obj_set_pos(status_label, (column+1) * x_spacing + offset_from_left_label, 0);
         lv_label_set_text_fmt(status_label, "%s", LV_SYMBOL_STOP);
         lv_obj_set_style_text_color(status_label, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
-        pinWidgets[i] = status_label;
-        pinStates[i] = false;
+        ctx->pinWidgets[i] = status_label;
+        ctx->pinStates[i] = false;
 
         column++;
 
@@ -148,15 +145,21 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
         }
     }
 
-    mutex.unlock();
-
-    startTask();
+    ctx->mutex.unlock();
 }
 
-void Gpio::onHide(AppHandle app) {
-    mutex.lock();
-    stopTask();
-    pinWidgets.clear();
-    pinStates.clear();
-    mutex.unlock();
+void gpioInit(Context* ctx) {
+    ctx->timer = std::make_unique<tt::Timer>(tt::Timer::Type::Periodic, pdMS_TO_TICKS(100), [ctx] {
+        gpioOnTimer(ctx);
+    });
+}
+
+void gpioTeardown(Context* ctx) {
+    ctx->mutex.lock();
+    if (ctx->timer) {
+        ctx->timer->stop();
+    }
+    ctx->pinWidgets.clear();
+    ctx->pinStates.clear();
+    ctx->mutex.unlock();
 }

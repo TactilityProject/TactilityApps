@@ -1,34 +1,32 @@
 #pragma once
 
-#include <tt_app.h>
+#include <app/instance.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <lvgl.h>
-#include <TactilityCpp/App.h>
 
-// Forward declarations for test views
-class TestListView;
-class TestViewBase;
+struct Context {
+    AppInstanceId appInstanceId = 0;
+    // Set by main() right after window_manager_create() returns - test-unit timer callbacks
+    // need it to check whether this window is still topmost before touching any widget.
+    WindowId  window            = 0;
+    lv_obj_t* wrapper           = nullptr;  // full-screen container, cleaned between views
 
-class M5UnitTest final : public App {
-public:
-    void onShow(AppHandle handle, lv_obj_t* parent) override;
-    void onHide(AppHandle handle) override;
-
-    // Called by TestListView when user selects a unit to test
-    void showTest(int unitIndex);
-    // Called by test views when user presses back
-    void showList();
-    // Called by the Back button path after the view has already been deleted
-    void clearActiveTestView() { activeTestView_ = nullptr; }
-
-    AppHandle getAppHandle() const { return appHandle_; }
-
-private:
-    AppHandle     appHandle_       = nullptr;
-    lv_obj_t*     wrapper_         = nullptr;  // full-screen container, cleaned between views
-    TestListView* listView_        = nullptr;
-    TestViewBase* activeTestView_  = nullptr;
-
-    static M5UnitTest* s_instance;
-
-    void createWrapper(lv_obj_t* parent);
+    // Currently active test-unit view (heap-allocated by its create() wrapper), or nullptr
+    // when the list is shown. activeTestStop() knows how to stop+delete activeTest.
+    void*     activeTest        = nullptr;
+    void    (*activeTestStop)(void* self) = nullptr;
+    int       activeTestIndex   = -1;
 };
+
+/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+void m5UnitTestCreateWidgets(lv_obj_t* parent, void* userData);
+
+/** Stops whatever is currently shown (a test view, if any) and releases the wrapper. Call once,
+ *  after the window has been torn down. */
+void m5UnitTestTeardown(Context* ctx);
+
+/** Called by the list view when the user selects a unit to test. */
+void m5UnitTestShowTest(Context* ctx, int unitIndex);
+
+/** Called by test views (via the shared Back button) to return to the list. */
+void m5UnitTestShowList(Context* ctx);

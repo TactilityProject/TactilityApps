@@ -5,6 +5,6 @@ idf_component_register(
     SRCS ${SOURCE_FILES} ${UNIT_MODULE_FILES}
     # Library headers must be included directly,
     # because all regular dependencies get stripped by elf_loader's cmake script
-    INCLUDE_DIRS ../../../Libraries/TactilityCpp/Include ../../../Libraries/M5UnitModules/Include
+    INCLUDE_DIRS ../../../Libraries/M5UnitModules/Include
     REQUIRES TactilitySDK
 )

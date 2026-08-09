@@ -1,147 +1,27 @@
 #include "TestUnitLcd.h"
+#include "M5UnitTest.h"
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <lvgl/fonts.h>
 
-void TestUnitLcd::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
-    app_ = app;
-    rotation_    = 0;
-    usingPaHub_  = false;
+namespace {
 
-    createToolbar(parent, handle, "Color LCD");
-    createBanner(parent, "Color LCD", "I2C", COLOR_I2C);
-
-    lv_obj_t* cont = lv_obj_create(parent);
-    lv_obj_set_width(cont, LV_PCT(100));
-    lv_obj_set_flex_grow(cont, 1);
-    lv_obj_set_layout(cont, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(cont, uiPad(), 0);
-    lv_obj_set_style_pad_row(cont, uiRowGap(), 0);
-    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(cont, 0, 0);
-
-    const lv_font_t* fnt = lvgl_get_text_font(uiFont());
-
-    lblStatus_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblStatus_, fnt, 0);
-
-    // Brightness row
-    lv_obj_t* brRow = lv_obj_create(cont);
-    lv_obj_set_width(brRow, LV_PCT(100));
-    lv_obj_set_height(brRow, LV_SIZE_CONTENT);
-    lv_obj_set_layout(brRow, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(brRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(brRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(brRow, 0, 0);
-    lv_obj_set_style_bg_opa(brRow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(brRow, 0, 0);
-    lv_obj_t* brLbl = lv_label_create(brRow);
-    lv_label_set_text(brLbl, "Bright:");
-    lv_obj_set_style_text_font(brLbl, fnt, 0);
-    lv_obj_set_width(brLbl, LV_SIZE_CONTENT);
-    sliderBr_ = lv_slider_create(brRow);
-    lv_slider_set_range(sliderBr_, 0, 255);
-    lv_slider_set_value(sliderBr_, 128, LV_ANIM_OFF);
-    lv_obj_set_flex_grow(sliderBr_, 1);
-    lv_obj_add_event_cb(sliderBr_, onBrightnessChanged, LV_EVENT_VALUE_CHANGED, this);
-
-    // Rotation
-    lblRotation_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblRotation_, fnt, 0);
-
-    lv_obj_t* btnRot = lv_button_create(cont);
-    lv_obj_add_event_cb(btnRot, onRotateClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* lbl = lv_label_create(btnRot);
-    lv_label_set_text(lbl, "Rotate 90");
-    lv_obj_set_style_text_font(lbl, fnt, 0);
-
-    // Fill buttons
-    lv_obj_t* fillRow = lv_obj_create(cont);
-    lv_obj_set_width(fillRow, LV_PCT(100));
-    lv_obj_set_height(fillRow, LV_SIZE_CONTENT);
-    lv_obj_set_layout(fillRow, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(fillRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(fillRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(fillRow, 8, 0);
-    lv_obj_set_style_bg_opa(fillRow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(fillRow, 0, 0);
-    lv_obj_set_style_pad_all(fillRow, 0, 0);
-
-    lv_obj_t* btnRed = lv_button_create(fillRow);
-    lv_obj_add_event_cb(btnRed, onFillRedClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* lRed = lv_label_create(btnRed);
-    lv_label_set_text(lRed, "Fill Red");
-    lv_obj_set_style_text_font(lRed, fnt, 0);
-
-    lv_obj_t* btnBlue = lv_button_create(fillRow);
-    lv_obj_add_event_cb(btnBlue, onFillBlueClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* lBlue = lv_label_create(btnBlue);
-    lv_label_set_text(lBlue, "Fill Blue");
-    lv_obj_set_style_text_font(lBlue, fnt, 0);
-
-    // Text test button
-    lv_obj_t* btnText = lv_button_create(cont);
-    lv_obj_add_event_cb(btnText, onWriteTextClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* lText = lv_label_create(btnText);
-    lv_label_set_text(lText, "Write Text");
-    lv_obj_set_style_text_font(lText, fnt, 0);
-
-    Device* i2c = findGroveI2cDevice();
-    if (!i2c) {
-        lv_label_set_text(lblStatus_, "grove0_i2c not found");
-        return;
-    }
-
-    // Try standalone first, then scan PaHub channels
-    if (lcd_.begin(i2c)) {
-        usingPaHub_ = false;
-    } else if (hub_.begin(i2c)) {
-        usingPaHub_ = true;
-        bool found = false;
-        for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            hub_.select(ch);
-            if (lcd_.begin(i2c)) { found = true; lcdChannel_ = ch; }
-        }
-        if (!found) {
-            hub_.deselect();
-            lv_label_set_text(lblStatus_, "LCD Unit not found");
-            return;
-        }
-    } else {
-        lv_label_set_text(lblStatus_, "LCD Unit not found");
-        return;
-    }
-
-    lv_label_set_text(lblStatus_, "LCD ready");
-    lv_label_set_text_fmt(lblRotation_, "Rotation: %d (portrait)", (int)rotation_);
-    lcd_.setBrightness(128);
-    lcd_.fillScreen(0x0000);
+void selectIfNeeded(TestUnitLcd* self) {
+    if (self->usingPaHub_ && self->hub_.isPresent())
+        self->hub_.select(self->lcdChannel_);
 }
 
-void TestUnitLcd::selectIfNeeded() {
-    if (usingPaHub_ && hub_.isPresent())
-        hub_.select(lcdChannel_);
-}
-
-void TestUnitLcd::onStop() {
-    selectIfNeeded();
-    if (lcd_.isPresent()) lcd_.setBrightness(0);
-    if (usingPaHub_ && hub_.isPresent()) hub_.deselect();
-    lblStatus_ = sliderBr_ = lblRotation_ = nullptr;
-}
-
-void TestUnitLcd::onBrightnessChanged(lv_event_t* e) {
+void onBrightnessChanged(lv_event_t* e) {
     auto* self = static_cast<TestUnitLcd*>(lv_event_get_user_data(e));
-    self->selectIfNeeded();
+    selectIfNeeded(self);
     if (!self->lcd_.isPresent()) return;
     self->lcd_.setBrightness((uint8_t)lv_slider_get_value(self->sliderBr_));
 }
 
-void TestUnitLcd::onRotateClicked(lv_event_t* e) {
+void onRotateClicked(lv_event_t* e) {
     auto* self = static_cast<TestUnitLcd*>(lv_event_get_user_data(e));
-    self->selectIfNeeded();
+    selectIfNeeded(self);
     if (!self->lcd_.isPresent()) return;
     self->rotation_ = (self->rotation_ + 1) & 0x03;
     self->lcd_.setRotation(self->rotation_);
@@ -149,23 +29,23 @@ void TestUnitLcd::onRotateClicked(lv_event_t* e) {
     lv_label_set_text_fmt(self->lblRotation_, "Rotation: %s", names[self->rotation_]);
 }
 
-void TestUnitLcd::onFillRedClicked(lv_event_t* e) {
+void onFillRedClicked(lv_event_t* e) {
     auto* self = static_cast<TestUnitLcd*>(lv_event_get_user_data(e));
-    self->selectIfNeeded();
+    selectIfNeeded(self);
     if (!self->lcd_.isPresent()) return;
     self->lcd_.fillScreen(UnitLcd::rgb888to565(0xFF0000));
 }
 
-void TestUnitLcd::onFillBlueClicked(lv_event_t* e) {
+void onFillBlueClicked(lv_event_t* e) {
     auto* self = static_cast<TestUnitLcd*>(lv_event_get_user_data(e));
-    self->selectIfNeeded();
+    selectIfNeeded(self);
     if (!self->lcd_.isPresent()) return;
     self->lcd_.fillScreen(UnitLcd::rgb888to565(0x0000FF));
 }
 
-void TestUnitLcd::onWriteTextClicked(lv_event_t* e) {
+void onWriteTextClicked(lv_event_t* e) {
     auto* self = static_cast<TestUnitLcd*>(lv_event_get_user_data(e));
-    self->selectIfNeeded();
+    selectIfNeeded(self);
     if (!self->lcd_.isPresent()) return;
     self->lcd_.fillScreen(0x0000);
     uint16_t white  = UnitLcd::rgb888to565(0xFFFFFF);
@@ -190,4 +70,129 @@ void TestUnitLcd::onWriteTextClicked(lv_event_t* e) {
     self->lcd_.drawText(4, middleY,          "MIDDLE",   white,  black, 1);
     // Right-side marker so portrait/landscape are visually distinct
     self->lcd_.drawText(rightX, 4, "R", white, black, 1);
+}
+
+} // namespace
+
+void testUnitLcdStart(TestUnitLcd* self, lv_obj_t* parent, Context* app) {
+    self->app_ = app;
+    self->rotation_    = 0;
+    self->usingPaHub_  = false;
+
+    testViewCreateToolbar(parent, app, "Color LCD");
+    testViewCreateBanner(parent, "Color LCD", "I2C", COLOR_I2C);
+
+    lv_obj_t* cont = lv_obj_create(parent);
+    lv_obj_set_width(cont, LV_PCT(100));
+    lv_obj_set_flex_grow(cont, 1);
+    lv_obj_set_layout(cont, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(cont, uiPad(), 0);
+    lv_obj_set_style_pad_row(cont, uiRowGap(), 0);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+
+    const lv_font_t* fnt = lvgl_get_text_font(uiFont());
+
+    self->lblStatus_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblStatus_, fnt, 0);
+
+    // Brightness row
+    lv_obj_t* brRow = lv_obj_create(cont);
+    lv_obj_set_width(brRow, LV_PCT(100));
+    lv_obj_set_height(brRow, LV_SIZE_CONTENT);
+    lv_obj_set_layout(brRow, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(brRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(brRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(brRow, 0, 0);
+    lv_obj_set_style_bg_opa(brRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(brRow, 0, 0);
+    lv_obj_t* brLbl = lv_label_create(brRow);
+    lv_label_set_text(brLbl, "Bright:");
+    lv_obj_set_style_text_font(brLbl, fnt, 0);
+    lv_obj_set_width(brLbl, LV_SIZE_CONTENT);
+    self->sliderBr_ = lv_slider_create(brRow);
+    lv_slider_set_range(self->sliderBr_, 0, 255);
+    lv_slider_set_value(self->sliderBr_, 128, LV_ANIM_OFF);
+    lv_obj_set_flex_grow(self->sliderBr_, 1);
+    lv_obj_add_event_cb(self->sliderBr_, onBrightnessChanged, LV_EVENT_VALUE_CHANGED, self);
+
+    // Rotation
+    self->lblRotation_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblRotation_, fnt, 0);
+
+    lv_obj_t* btnRot = lv_button_create(cont);
+    lv_obj_add_event_cb(btnRot, onRotateClicked, LV_EVENT_CLICKED, self);
+    lv_obj_t* lbl = lv_label_create(btnRot);
+    lv_label_set_text(lbl, "Rotate 90");
+    lv_obj_set_style_text_font(lbl, fnt, 0);
+
+    // Fill buttons
+    lv_obj_t* fillRow = lv_obj_create(cont);
+    lv_obj_set_width(fillRow, LV_PCT(100));
+    lv_obj_set_height(fillRow, LV_SIZE_CONTENT);
+    lv_obj_set_layout(fillRow, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(fillRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(fillRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(fillRow, 8, 0);
+    lv_obj_set_style_bg_opa(fillRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(fillRow, 0, 0);
+    lv_obj_set_style_pad_all(fillRow, 0, 0);
+
+    lv_obj_t* btnRed = lv_button_create(fillRow);
+    lv_obj_add_event_cb(btnRed, onFillRedClicked, LV_EVENT_CLICKED, self);
+    lv_obj_t* lRed = lv_label_create(btnRed);
+    lv_label_set_text(lRed, "Fill Red");
+    lv_obj_set_style_text_font(lRed, fnt, 0);
+
+    lv_obj_t* btnBlue = lv_button_create(fillRow);
+    lv_obj_add_event_cb(btnBlue, onFillBlueClicked, LV_EVENT_CLICKED, self);
+    lv_obj_t* lBlue = lv_label_create(btnBlue);
+    lv_label_set_text(lBlue, "Fill Blue");
+    lv_obj_set_style_text_font(lBlue, fnt, 0);
+
+    // Text test button
+    lv_obj_t* btnText = lv_button_create(cont);
+    lv_obj_add_event_cb(btnText, onWriteTextClicked, LV_EVENT_CLICKED, self);
+    lv_obj_t* lText = lv_label_create(btnText);
+    lv_label_set_text(lText, "Write Text");
+    lv_obj_set_style_text_font(lText, fnt, 0);
+
+    Device* i2c = findGroveI2cDevice();
+    if (!i2c) {
+        lv_label_set_text(self->lblStatus_, "grove0_i2c not found");
+        return;
+    }
+
+    // Try standalone first, then scan PaHub channels
+    if (self->lcd_.begin(i2c)) {
+        self->usingPaHub_ = false;
+    } else if (self->hub_.begin(i2c)) {
+        self->usingPaHub_ = true;
+        bool found = false;
+        for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
+            self->hub_.select(ch);
+            if (self->lcd_.begin(i2c)) { found = true; self->lcdChannel_ = ch; }
+        }
+        if (!found) {
+            self->hub_.deselect();
+            lv_label_set_text(self->lblStatus_, "LCD Unit not found");
+            return;
+        }
+    } else {
+        lv_label_set_text(self->lblStatus_, "LCD Unit not found");
+        return;
+    }
+
+    lv_label_set_text(self->lblStatus_, "LCD ready");
+    lv_label_set_text_fmt(self->lblRotation_, "Rotation: %d (portrait)", (int)self->rotation_);
+    self->lcd_.setBrightness(128);
+    self->lcd_.fillScreen(0x0000);
+}
+
+void testUnitLcdStop(TestUnitLcd* self) {
+    selectIfNeeded(self);
+    if (self->lcd_.isPresent()) self->lcd_.setBrightness(0);
+    if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->lblStatus_ = self->sliderBr_ = self->lblRotation_ = nullptr;
 }

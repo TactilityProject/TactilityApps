@@ -1,16 +1,73 @@
 #include "TestUnitJoystick2.h"
+#include "M5UnitTest.h"
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <lvgl/fonts.h>
 #include <algorithm>
 #include <cmath>
 
-void TestUnitJoystick2::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
-    app_ = app;
+namespace {
 
-    createToolbar(parent, handle, "Joystick2");
-    createBanner(parent, "Joystick2", "I2C", COLOR_I2C);
+void selectIfNeeded(TestUnitJoystick2* self) {
+    if (self->usingPaHub_ && self->hub_.isPresent())
+        self->hub_.select(self->hub_.currentChannel());
+}
+
+void update(TestUnitJoystick2* self) {
+    selectIfNeeded(self);
+    if (!self->unit_.isPresent()) return;
+
+    int16_t x = 0, y = 0;
+    self->unit_.readXY12(&x, &y);
+    bool pressed = self->unit_.isPressed();
+    lv_label_set_text_fmt(self->lblXY_, "X: %d  Y: %d", (int)x, (int)y);
+    lv_label_set_text_fmt(self->lblButton_, "Button: %s", pressed ? "PRESSED" : "released");
+
+    // Map ±2048 joystick range to dot position within a circle.
+    // Work in float to do circular clamping, then snap back to int pixels.
+    // Negate both axes to match LVGL screen coordinates and joystick orientation.
+    // Grove connector facing away from the user.
+    float radius = (float)(self->joyArea_ - self->dotSize_) / 2.0f;
+    float nx = -(float)x / 2048.0f;  // normalised -1..1
+    float ny = -(float)y / 2048.0f;  // normalised -1..1
+    float dist2 = nx * nx + ny * ny;
+    if (dist2 > 1.0f) {
+        float inv = 1.0f / std::sqrt(dist2);
+        nx *= inv;
+        ny *= inv;
+    }
+    int cx = (int)(radius + nx * radius);
+    int cy = (int)(radius + ny * radius);
+    lv_obj_set_pos(self->dot_, cx, cy);
+
+    // LED: hue cycles with X position, blue when pressed
+    if (pressed) {
+        self->unit_.setLed(0x0000FF);
+    } else {
+        uint16_t hue = (uint16_t)((int)x * 360 / 4096 + 180);  // map -2048..2048 -> 0..360
+        lv_color_t c = lv_color_hsv_to_rgb(hue % 360, 100, 78);
+        lv_color32_t c32 = lv_color_to_32(c, LV_OPA_COVER);
+        self->unit_.setLed(((uint32_t)c32.red << 16) | ((uint32_t)c32.green << 8) | c32.blue);
+    }
+
+    lv_obj_set_style_bg_color(self->dot_, pressed ? lv_color_hex(0xFF4400) : lv_color_hex(0x00FF00), 0);
+}
+
+void onTimer(lv_timer_t* t) {
+    auto* self = static_cast<TestUnitJoystick2*>(lv_timer_get_user_data(t));
+    if (window_manager_get_state(self->app_->window) != WINDOW_STATE_GRANTED) return;
+    update(self);
+}
+
+} // namespace
+
+void testUnitJoystick2Start(TestUnitJoystick2* self, lv_obj_t* parent, Context* app) {
+    self->app_ = app;
+
+    testViewCreateToolbar(parent, app, "Joystick2");
+    testViewCreateBanner(parent, "Joystick2", "I2C", COLOR_I2C);
 
     // Scale joystick area to shorter display dimension, clamped 80..300px
     lv_coord_t minDim = std::min(uiW(), uiH());
@@ -32,113 +89,64 @@ void TestUnitJoystick2::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* 
 
     const lv_font_t* fnt = lvgl_get_text_font(uiFont());
 
-    lblXY_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblXY_, fnt, 0);
+    self->lblXY_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblXY_, fnt, 0);
 
-    lblButton_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblButton_, fnt, 0);
+    self->lblButton_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblButton_, fnt, 0);
 
-    joyArea_ = JOY_AREA;
-    dotSize_ = DOT_SIZE;
+    self->joyArea_ = JOY_AREA;
+    self->dotSize_ = DOT_SIZE;
 
     // Visual joystick area
-    joyCont_ = lv_obj_create(cont);
-    lv_obj_set_size(joyCont_, JOY_AREA, JOY_AREA);
-    lv_obj_set_style_bg_color(joyCont_, lv_color_hex(0x222222), 0);
-    lv_obj_set_style_radius(joyCont_, JOY_AREA / 2, 0);
-    lv_obj_set_style_border_width(joyCont_, 2, 0);
-    lv_obj_set_style_pad_all(joyCont_, 0, 0);
-    lv_obj_remove_flag(joyCont_, LV_OBJ_FLAG_SCROLLABLE);
+    self->joyCont_ = lv_obj_create(cont);
+    lv_obj_set_size(self->joyCont_, JOY_AREA, JOY_AREA);
+    lv_obj_set_style_bg_color(self->joyCont_, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_radius(self->joyCont_, JOY_AREA / 2, 0);
+    lv_obj_set_style_border_width(self->joyCont_, 2, 0);
+    lv_obj_set_style_pad_all(self->joyCont_, 0, 0);
+    lv_obj_remove_flag(self->joyCont_, LV_OBJ_FLAG_SCROLLABLE);
 
-    dot_ = lv_obj_create(joyCont_);
-    lv_obj_set_size(dot_, DOT_SIZE, DOT_SIZE);
-    lv_obj_set_style_radius(dot_, DOT_SIZE / 2, 0);
-    lv_obj_set_style_bg_color(dot_, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_border_width(dot_, 0, 0);
-    lv_obj_set_pos(dot_, (JOY_AREA - DOT_SIZE) / 2, (JOY_AREA - DOT_SIZE) / 2);
+    self->dot_ = lv_obj_create(self->joyCont_);
+    lv_obj_set_size(self->dot_, DOT_SIZE, DOT_SIZE);
+    lv_obj_set_style_radius(self->dot_, DOT_SIZE / 2, 0);
+    lv_obj_set_style_bg_color(self->dot_, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_border_width(self->dot_, 0, 0);
+    lv_obj_set_pos(self->dot_, (JOY_AREA - DOT_SIZE) / 2, (JOY_AREA - DOT_SIZE) / 2);
 
     Device* i2c = findGroveI2cDevice();
     if (!i2c) {
-        lv_label_set_text(lblXY_, "grove0_i2c not found");
+        lv_label_set_text(self->lblXY_, "grove0_i2c not found");
         return;
     }
 
-    if (unit_.begin(i2c)) {
-        usingPaHub_ = false;
-    } else if (hub_.begin(i2c)) {
-        usingPaHub_ = true;
+    if (self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+    } else if (self->hub_.begin(i2c)) {
+        self->usingPaHub_ = true;
         bool found = false;
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            hub_.select(ch);
-            if (unit_.begin(i2c)) found = true;
+            self->hub_.select(ch);
+            if (self->unit_.begin(i2c)) found = true;
         }
         if (!found) {
-            hub_.deselect();
-            lv_label_set_text(lblXY_, "Joystick2 not found");
+            self->hub_.deselect();
+            lv_label_set_text(self->lblXY_, "Joystick2 not found");
             return;
         }
     } else {
-        lv_label_set_text(lblXY_, "Joystick2 not found");
+        lv_label_set_text(self->lblXY_, "Joystick2 not found");
         return;
     }
 
-    timer_ = lv_timer_create(onTimer, 50, this);
-    update();
+    self->timer_ = lv_timer_create(onTimer, 50, self);
+    update(self);
 }
 
-void TestUnitJoystick2::onStop() {
-    if (timer_) { lv_timer_delete(timer_); timer_ = nullptr; }
-    selectIfNeeded();
-    if (unit_.isPresent()) unit_.setLed(0x000000);
-    if (usingPaHub_ && hub_.isPresent()) hub_.deselect();
-    lblXY_ = lblButton_ = dot_ = joyCont_ = nullptr;
-}
-
-void TestUnitJoystick2::selectIfNeeded() {
-    if (usingPaHub_ && hub_.isPresent())
-        hub_.select(hub_.currentChannel());
-}
-
-void TestUnitJoystick2::onTimer(lv_timer_t* t) {
-    static_cast<TestUnitJoystick2*>(lv_timer_get_user_data(t))->update();
-}
-
-void TestUnitJoystick2::update() {
-    selectIfNeeded();
-    if (!unit_.isPresent()) return;
-
-    int16_t x = 0, y = 0;
-    unit_.readXY12(&x, &y);
-    bool pressed = unit_.isPressed();
-    lv_label_set_text_fmt(lblXY_, "X: %d  Y: %d", (int)x, (int)y);
-    lv_label_set_text_fmt(lblButton_, "Button: %s", pressed ? "PRESSED" : "released");
-
-    // Map ±2048 joystick range to dot position within a circle.
-    // Work in float to do circular clamping, then snap back to int pixels.
-    // Negate both axes to match LVGL screen coordinates and joystick orientation.
-    // Grove connector facing away from the user.
-    float radius = (float)(joyArea_ - dotSize_) / 2.0f;
-    float nx = -(float)x / 2048.0f;  // normalised -1..1
-    float ny = -(float)y / 2048.0f;  // normalised -1..1
-    float dist2 = nx * nx + ny * ny;
-    if (dist2 > 1.0f) {
-        float inv = 1.0f / std::sqrt(dist2);
-        nx *= inv;
-        ny *= inv;
-    }
-    int cx = (int)(radius + nx * radius);
-    int cy = (int)(radius + ny * radius);
-    lv_obj_set_pos(dot_, cx, cy);
-
-    // LED: hue cycles with X position, blue when pressed
-    if (pressed) {
-        unit_.setLed(0x0000FF);
-    } else {
-        uint16_t hue = (uint16_t)((int)x * 360 / 4096 + 180);  // map -2048..2048 -> 0..360
-        lv_color_t c = lv_color_hsv_to_rgb(hue % 360, 100, 78);
-        lv_color32_t c32 = lv_color_to_32(c, LV_OPA_COVER);
-        unit_.setLed(((uint32_t)c32.red << 16) | ((uint32_t)c32.green << 8) | c32.blue);
-    }
-
-    lv_obj_set_style_bg_color(dot_, pressed ? lv_color_hex(0xFF4400) : lv_color_hex(0x00FF00), 0);
+void testUnitJoystick2Stop(TestUnitJoystick2* self) {
+    if (self->timer_) { lv_timer_delete(self->timer_); self->timer_ = nullptr; }
+    selectIfNeeded(self);
+    if (self->unit_.isPresent()) self->unit_.setLed(0x000000);
+    if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->lblXY_ = self->lblButton_ = self->dot_ = self->joyCont_ = nullptr;
 }

@@ -12,7 +12,7 @@ import tarfile
 from urllib.parse import urlparse
 
 ttbuild_path = ".tactility"
-ttbuild_version = "4.1.0"
+ttbuild_version = "4.2.0"
 ttbuild_cdn = "https://cdn.tactilityproject.org"
 ttbuild_sdk_json_validity = 3600  # seconds
 ttport = 6666
@@ -20,6 +20,10 @@ verbose = False
 use_local_sdk = False
 local_base_path = None
 http_timeout_seconds = 10
+# App install uploads the whole package over HTTP and the device only responds once it's
+# fully received, extracted and registered - large packages (e.g. bundled fonts/assets) can
+# easily take well over http_timeout_seconds on a slow SD card, so give it a lot more room.
+install_timeout_seconds = 120
 
 shell_color_red = "\033[91m"
 shell_color_orange = "\033[93m"
@@ -586,7 +590,7 @@ def install_action(ip, platforms):
             files = {
                 'elf': file
             }
-            response = requests.put(url, files=files, timeout=http_timeout_seconds)
+            response = requests.put(url, files=files, timeout=install_timeout_seconds)
             if response.status_code != 200:
                 print_status_error("Install failed")
                 return False

@@ -3,12 +3,10 @@
 #include <UnitPaHub.h>
 #include <Unit8Encoder.h>
 
-class TestUnit8Encoder final : public TestViewBase {
-public:
-    void onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) override;
-    void onStop() override;
+struct Context;
 
-private:
+struct TestUnit8Encoder {
+    Context*     app_                            = nullptr;
     UnitPaHub    hub_;
     Unit8Encoder enc_;
     lv_obj_t*    lblStatus_                     = nullptr;
@@ -20,8 +18,7 @@ private:
     int32_t      counters_[8]                   = {};
     uint32_t     ledColors_[Unit8Encoder::LED_COUNT] = {};
     bool         usingPaHub_                    = false;
-
-    static void onTimer(lv_timer_t* t);
-    void update();
-    void selectIfNeeded();
 };
+
+void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* app);
+void testUnit8EncoderStop(TestUnit8Encoder* self);

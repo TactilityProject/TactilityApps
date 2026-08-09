@@ -7,8 +7,11 @@
 
 #include <cstdio>
 #include <cmath>
+
+#include <app/paths.h>
 #include <lvgl/widgets/toolbar.h>
-#include <tt_preferences.h>
+#include <tactility/preferences.h>
+
 #include <esp_random.h>
 #include <tactility/device.h>
 #include <tactility/drivers/keyboard.h>
@@ -18,7 +21,9 @@
 
 constexpr auto* TAG = "Breakout";
 
-static constexpr const char* PREF_NAMESPACE = "Breakout";
+/** Must match manifest.properties' app.id */
+static constexpr const char* APP_ID = "one.tactility.breakout";
+
 static constexpr const char* PREF_HIGH_SCORE = "high";
 static constexpr const char* PREF_SOUND = "sound";
 
@@ -61,33 +66,43 @@ static constexpr int LASER_COOLDOWN_TICKS = 12;
 // Amber (Gold) bricks
 static constexpr int INDESTRUCTIBLE_HITS = 999;
 
+static bool getSettingsPath(char* buf, size_t bufSize) {
+    return app_paths_get_user_data_path(APP_ID, "settings.properties", buf, bufSize) == ERROR_NONE;
+}
+
 static void loadSettings() {
-    PreferencesHandle prefs = tt_preferences_alloc(PREF_NAMESPACE);
+    char path[192];
+    if (!getSettingsPath(path, sizeof(path))) return;
+    Preferences* prefs = preferences_open(path);
     if (prefs) {
-        tt_preferences_opt_int32(prefs, PREF_HIGH_SCORE, &highScore);
+        preferences_opt_int32(prefs, PREF_HIGH_SCORE, &highScore);
         int32_t snd = 1;
-        tt_preferences_opt_int32(prefs, PREF_SOUND, &snd);
+        preferences_opt_int32(prefs, PREF_SOUND, &snd);
         soundEnabled = (snd != 0);
-        tt_preferences_free(prefs);
+        preferences_close(prefs);
     }
 }
 
 static void saveHighScore(int32_t score) {
     if (score <= highScore) return;
     highScore = score;
-    PreferencesHandle prefs = tt_preferences_alloc(PREF_NAMESPACE);
+    char path[192];
+    if (!getSettingsPath(path, sizeof(path))) return;
+    Preferences* prefs = preferences_open(path);
     if (prefs) {
-        tt_preferences_put_int32(prefs, PREF_HIGH_SCORE, score);
-        tt_preferences_free(prefs);
+        preferences_put_int32(prefs, PREF_HIGH_SCORE, score);
+        preferences_close(prefs);
     }
 }
 
 static void saveSoundSetting(bool enabled) {
     soundEnabled = enabled;
-    PreferencesHandle prefs = tt_preferences_alloc(PREF_NAMESPACE);
+    char path[192];
+    if (!getSettingsPath(path, sizeof(path))) return;
+    Preferences* prefs = preferences_open(path);
     if (prefs) {
-        tt_preferences_put_int32(prefs, PREF_SOUND, enabled ? 1 : 0);
-        tt_preferences_free(prefs);
+        preferences_put_int32(prefs, PREF_SOUND, enabled ? 1 : 0);
+        preferences_close(prefs);
     }
 }
 
@@ -97,7 +112,44 @@ static uint32_t levelRng(uint32_t& seed) {
     return (seed >> 16) & 0x7FFF;
 }
 
-// ── UI Creation ──────────────────────────────────────────────
+/* ── Forward declarations (game logic operates on Context*) ─────── */
+
+static void startGame(Context* ctx);
+static void nextLevel(Context* ctx);
+static void resetBall(Context* ctx);
+static void launchBall(Context* ctx);
+static void update(Context* ctx);
+static void checkLaserBrickCollisions(Context* ctx);
+static void loseLife(Context* ctx);
+static void winLevel(Context* ctx);
+static void createBricks(Context* ctx);
+static void setupLevelPattern(Context* ctx);
+static void refreshBricks(Context* ctx);
+static void updateScoreDisplay(Context* ctx);
+static void updateMessage(Context* ctx);
+static void togglePause(Context* ctx);
+static void updateSoundIcon(Context* ctx);
+
+static void spawnCapsule(Context* ctx, float x, float y);
+static void updateCapsules(Context* ctx);
+static void activatePowerUp(Context* ctx, PowerUpType type);
+static void clearPowerUps(Context* ctx);
+static void createCapsuleObjs(Context* ctx);
+
+static void updateBalls(Context* ctx);
+static void splitBalls(Context* ctx);
+
+static void updateLasers(Context* ctx);
+static void fireLaser(Context* ctx);
+static void createLaserObjs(Context* ctx);
+
+static void openExit(Context* ctx);
+static void closeExit(Context* ctx);
+
+static void hitBrick(Context* ctx, int idx);
+static int scoreBrick(Context* ctx, int idx);
+
+/* ── UI Creation ──────────────────────────────────────────────── */
 
 static uint32_t getToolbarHeight(UiDensity uiDensity) {
     if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
@@ -112,20 +164,32 @@ static uint32_t getActionIconPadding(UiDensity uiDensity) {
     return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
 }
 
-void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
+/* ── Event Callbacks (declared here so createWidgets can wire them up) ── */
+
+static void onTick(lv_timer_t* timer);
+static void onPressed(lv_event_t* e);
+static void onClicked(lv_event_t* e);
+static void onKey(lv_event_t* e);
+static void onReenterKeyMode(lv_event_t* e);
+static void onPauseClicked(lv_event_t* e);
+static void onSoundToggled(lv_event_t* e);
+
+void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_pad_row(parent, 0, 0);
 
     // Load settings on first show
-    if (needsInit) loadSettings();
+    if (ctx->needsInit) loadSettings();
 
     // Start sfx engine
-    if (!sfxEngine) {
-        sfxEngine = new SfxEngine();
-        sfxEngine->start();
-        sfxEngine->setEnabled(soundEnabled);
+    if (!ctx->sfxEngine) {
+        ctx->sfxEngine = new SfxEngine();
+        ctx->sfxEngine->start();
+        ctx->sfxEngine->setEnabled(soundEnabled);
     }
 
     // Toolbar
@@ -142,10 +206,10 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_style_bg_opa(scoreWrap, 0, 0);
     lv_obj_remove_flag(scoreWrap, LV_OBJ_FLAG_SCROLLABLE);
 
-    scoreLabel = lv_label_create(scoreWrap);
-    lv_obj_set_style_text_font(scoreLabel, lv_font_get_default(), 0);
-    lv_obj_set_style_text_color(scoreLabel, lv_palette_main(LV_PALETTE_AMBER), 0);
-    lv_obj_align(scoreLabel, LV_ALIGN_CENTER, 0, 0);
+    ctx->scoreLabel = lv_label_create(scoreWrap);
+    lv_obj_set_style_text_font(ctx->scoreLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_color(ctx->scoreLabel, lv_palette_main(LV_PALETTE_AMBER), 0);
+    lv_obj_align(ctx->scoreLabel, LV_ALIGN_CENTER, 0, 0);
 
     // Lives wrapper in toolbar
     lv_obj_t* livesWrap = lv_obj_create(toolbar);
@@ -158,10 +222,10 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_style_bg_opa(livesWrap, 0, 0);
     lv_obj_remove_flag(livesWrap, LV_OBJ_FLAG_SCROLLABLE);
 
-    livesLabel = lv_label_create(livesWrap);
-    lv_obj_set_style_text_font(livesLabel, lv_font_get_default(), 0);
-    lv_obj_set_style_text_color(livesLabel, lv_palette_main(LV_PALETTE_RED), 0);
-    lv_obj_align(livesLabel, LV_ALIGN_CENTER, 0, 0);
+    ctx->livesLabel = lv_label_create(livesWrap);
+    lv_obj_set_style_text_font(ctx->livesLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_color(ctx->livesLabel, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_align(ctx->livesLabel, LV_ALIGN_CENTER, 0, 0);
 
     auto ui_density = lvgl_get_ui_density();
     auto toolbar_height = getToolbarHeight(ui_density);
@@ -180,7 +244,7 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_size(pauseBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(pauseBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(pauseBtn, onPauseClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(pauseBtn, onPauseClicked, LV_EVENT_CLICKED, ctx);
 
     lv_obj_t* pauseIcon = lv_label_create(pauseBtn);
     lv_label_set_text(pauseIcon, LV_SYMBOL_PAUSE);
@@ -191,11 +255,11 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_size(soundBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
     lv_obj_set_style_pad_all(soundBtn, 0, LV_STATE_DEFAULT);
     lv_obj_align(soundBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(soundBtn, onSoundToggled, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(soundBtn, onSoundToggled, LV_EVENT_CLICKED, ctx);
 
-    soundBtnIcon = lv_label_create(soundBtn);
-    lv_obj_align(soundBtnIcon, LV_ALIGN_CENTER, 0, 0);
-    updateSoundIcon();
+    ctx->soundBtnIcon = lv_label_create(soundBtn);
+    lv_obj_align(ctx->soundBtnIcon, LV_ALIGN_CENTER, 0, 0);
+    updateSoundIcon(ctx);
 
     // Screen size detection (The Book)
     lv_coord_t screenW = lv_display_get_horizontal_resolution(nullptr);
@@ -204,267 +268,270 @@ void Breakout::onShow(AppHandle appHandle, lv_obj_t* parent) {
     bool isXLarge = (screenW >= 600);
 
     // Scaled dimensions
-    cols = isSmall ? 8 : (isXLarge ? 12 : 10);
-    rows = isSmall ? 3 : (isXLarge ? 5 : 4);
-    brickW = isSmall ? 24 : (isXLarge ? 56 : 28);
-    brickH = isSmall ? 8 : (isXLarge ? 18 : 10);
-    brickGap = isSmall ? 2 : (isXLarge ? 4 : 2);
-    ballSize = isSmall ? 6 : (isXLarge ? 14 : 8);
-    paddleW = isSmall ? 40 : (isXLarge ? 100 : 54);
-    paddleH = isSmall ? 6 : (isXLarge ? 14 : 8);
-    baseBallSpeed = isSmall ? 2.0f : (isXLarge ? 4.0f : 2.5f);
-    paddleSpeed = isSmall ? 16.0f : (isXLarge ? 36.0f : 24.0f);
+    ctx->cols = isSmall ? 8 : (isXLarge ? 12 : 10);
+    ctx->rows = isSmall ? 3 : (isXLarge ? 5 : 4);
+    ctx->brickW = isSmall ? 24 : (isXLarge ? 56 : 28);
+    ctx->brickH = isSmall ? 8 : (isXLarge ? 18 : 10);
+    ctx->brickGap = isSmall ? 2 : (isXLarge ? 4 : 2);
+    ctx->ballSize = isSmall ? 6 : (isXLarge ? 14 : 8);
+    ctx->paddleW = isSmall ? 40 : (isXLarge ? 100 : 54);
+    ctx->paddleH = isSmall ? 6 : (isXLarge ? 14 : 8);
+    ctx->baseBallSpeed = isSmall ? 2.0f : (isXLarge ? 4.0f : 2.5f);
+    ctx->paddleSpeed = isSmall ? 16.0f : (isXLarge ? 36.0f : 24.0f);
     int paddleMargin = isSmall ? 2 : (isXLarge ? 8 : 4);
     int brickTopPad = isSmall ? 4 : (isXLarge ? 12 : 8);
 
     // Capsule dimensions
-    capsuleW = isSmall ? 16 : (isXLarge ? 36 : 22);
-    capsuleH = isSmall ? 8 : (isXLarge ? 16 : 12);
-    capsuleFallSpeed = isSmall ? 1.2f : (isXLarge ? 2.5f : 1.8f);
+    ctx->capsuleW = isSmall ? 16 : (isXLarge ? 36 : 22);
+    ctx->capsuleH = isSmall ? 8 : (isXLarge ? 16 : 12);
+    ctx->capsuleFallSpeed = isSmall ? 1.2f : (isXLarge ? 2.5f : 1.8f);
 
     // Laser dimensions
-    laserW = isSmall ? 2 : (isXLarge ? 4 : 3);
-    laserH = isSmall ? 6 : (isXLarge ? 12 : 8);
-    laserSpeed = isSmall ? 4.0f : (isXLarge ? 8.0f : 6.0f);
+    ctx->laserW = isSmall ? 2 : (isXLarge ? 4 : 3);
+    ctx->laserH = isSmall ? 6 : (isXLarge ? 12 : 8);
+    ctx->laserSpeed = isSmall ? 4.0f : (isXLarge ? 8.0f : 6.0f);
 
     // Store original paddle width for extend reset
-    originalPaddleW = paddleW;
+    ctx->originalPaddleW = ctx->paddleW;
 
     // Ball speed includes level scaling
-    ballSpeed = baseBallSpeed + (level - 1) * 0.3f;
+    ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
 
     // Game area
-    gameArea = lv_obj_create(parent);
-    lv_obj_set_width(gameArea, LV_PCT(100));
-    lv_obj_set_flex_grow(gameArea, 1);
-    lv_obj_set_style_bg_color(gameArea, lv_color_hex(0x0a0a1e), 0);
-    lv_obj_set_style_bg_opa(gameArea, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(gameArea, 0, 0);
-    lv_obj_set_style_pad_all(gameArea, 0, 0);
-    lv_obj_set_style_radius(gameArea, 0, 0);
-    lv_obj_remove_flag(gameArea, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(gameArea, LV_OBJ_FLAG_CLICKABLE);
+    ctx->gameArea = lv_obj_create(parent);
+    lv_obj_set_width(ctx->gameArea, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->gameArea, 1);
+    lv_obj_set_style_bg_color(ctx->gameArea, lv_color_hex(0x0a0a1e), 0);
+    lv_obj_set_style_bg_opa(ctx->gameArea, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ctx->gameArea, 0, 0);
+    lv_obj_set_style_pad_all(ctx->gameArea, 0, 0);
+    lv_obj_set_style_radius(ctx->gameArea, 0, 0);
+    lv_obj_remove_flag(ctx->gameArea, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(ctx->gameArea, LV_OBJ_FLAG_CLICKABLE);
 
     // Force layout to get accurate game area dimensions
     lv_obj_update_layout(parent);
-    areaW = lv_obj_get_content_width(gameArea);
-    areaH = lv_obj_get_content_height(gameArea);
-    paddleYPos = areaH - paddleH - paddleMargin;
+    ctx->areaW = lv_obj_get_content_width(ctx->gameArea);
+    ctx->areaH = lv_obj_get_content_height(ctx->gameArea);
+    ctx->paddleYPos = ctx->areaH - ctx->paddleH - paddleMargin;
 
     // Calculate brick layout (centered horizontally)
-    int totalBrickW = cols * brickW + (cols - 1) * brickGap;
-    brickOffsetX = (areaW - totalBrickW) / 2;
-    brickOffsetY = brickTopPad;
+    int totalBrickW = ctx->cols * ctx->brickW + (ctx->cols - 1) * ctx->brickGap;
+    ctx->brickOffsetX = (ctx->areaW - totalBrickW) / 2;
+    ctx->brickOffsetY = brickTopPad;
 
     // Create bricks
-    createBricks();
+    createBricks(ctx);
 
     // Create paddle
-    paddle = lv_obj_create(gameArea);
-    lv_obj_set_size(paddle, paddleW, paddleH);
-    lv_obj_set_style_bg_color(paddle, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
-    lv_obj_set_style_border_width(paddle, 0, 0);
-    lv_obj_set_style_pad_all(paddle, 0, 0);
-    lv_obj_set_style_radius(paddle, 2, 0);
-    lv_obj_remove_flag(paddle, LV_OBJ_FLAG_SCROLLABLE);
+    ctx->paddle = lv_obj_create(ctx->gameArea);
+    lv_obj_set_size(ctx->paddle, ctx->paddleW, ctx->paddleH);
+    lv_obj_set_style_bg_color(ctx->paddle, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
+    lv_obj_set_style_border_width(ctx->paddle, 0, 0);
+    lv_obj_set_style_pad_all(ctx->paddle, 0, 0);
+    lv_obj_set_style_radius(ctx->paddle, 2, 0);
+    lv_obj_remove_flag(ctx->paddle, LV_OBJ_FLAG_SCROLLABLE);
 
     // Create balls (primary + extras for split)
     for (int i = 0; i < MAX_BALLS; i++) {
-        balls[i].obj = lv_obj_create(gameArea);
-        lv_obj_set_size(balls[i].obj, ballSize, ballSize);
-        lv_obj_set_style_bg_color(balls[i].obj, lv_color_white(), 0);
-        lv_obj_set_style_border_width(balls[i].obj, 0, 0);
-        lv_obj_set_style_pad_all(balls[i].obj, 0, 0);
-        lv_obj_set_style_radius(balls[i].obj, LV_RADIUS_CIRCLE, 0);
-        lv_obj_remove_flag(balls[i].obj, LV_OBJ_FLAG_SCROLLABLE);
+        ctx->balls[i].obj = lv_obj_create(ctx->gameArea);
+        lv_obj_set_size(ctx->balls[i].obj, ctx->ballSize, ctx->ballSize);
+        lv_obj_set_style_bg_color(ctx->balls[i].obj, lv_color_white(), 0);
+        lv_obj_set_style_border_width(ctx->balls[i].obj, 0, 0);
+        lv_obj_set_style_pad_all(ctx->balls[i].obj, 0, 0);
+        lv_obj_set_style_radius(ctx->balls[i].obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_remove_flag(ctx->balls[i].obj, LV_OBJ_FLAG_SCROLLABLE);
         if (i > 0) {
-            lv_obj_add_flag(balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
     // Create capsule objects (pre-created, hidden)
-    createCapsuleObjs();
+    createCapsuleObjs(ctx);
 
     // Create laser objects (pre-created, hidden)
-    createLaserObjs();
+    createLaserObjs(ctx);
 
     // BreakOut exit indicator at paddle level (hidden by default)
-    int exitH = paddleH * 3;
-    exitIndicator = lv_obj_create(gameArea);
-    lv_obj_set_size(exitIndicator, 6, exitH);
-    lv_obj_set_style_bg_color(exitIndicator, lv_color_hex(0xFF44AA), 0);
-    lv_obj_set_style_bg_opa(exitIndicator, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(exitIndicator, 0, 0);
-    lv_obj_set_style_radius(exitIndicator, 0, 0);
-    lv_obj_remove_flag(exitIndicator, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(exitIndicator, areaW - 6, paddleYPos - exitH / 2 + paddleH / 2);
-    lv_obj_add_flag(exitIndicator, LV_OBJ_FLAG_HIDDEN);
+    int exitH = ctx->paddleH * 3;
+    ctx->exitIndicator = lv_obj_create(ctx->gameArea);
+    lv_obj_set_size(ctx->exitIndicator, 6, exitH);
+    lv_obj_set_style_bg_color(ctx->exitIndicator, lv_color_hex(0xFF44AA), 0);
+    lv_obj_set_style_bg_opa(ctx->exitIndicator, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ctx->exitIndicator, 0, 0);
+    lv_obj_set_style_radius(ctx->exitIndicator, 0, 0);
+    lv_obj_remove_flag(ctx->exitIndicator, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(ctx->exitIndicator, ctx->areaW - 6, ctx->paddleYPos - exitH / 2 + ctx->paddleH / 2);
+    lv_obj_add_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
 
     // Message overlay (centered in game area)
-    messageLabel = lv_label_create(gameArea);
-    lv_obj_set_style_text_color(messageLabel, lv_color_white(), 0);
-    lv_obj_set_style_text_align(messageLabel, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(messageLabel);
+    ctx->messageLabel = lv_label_create(ctx->gameArea);
+    lv_obj_set_style_text_color(ctx->messageLabel, lv_color_white(), 0);
+    lv_obj_set_style_text_align(ctx->messageLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(ctx->messageLabel);
 
     // Initialize or restore
-    if (needsInit) {
-        paddleX = (areaW - paddleW) / 2.0f;
-        startGame();
-        needsInit = false;
+    if (ctx->needsInit) {
+        ctx->paddleX = (ctx->areaW - ctx->paddleW) / 2.0f;
+        startGame(ctx);
+        ctx->needsInit = false;
     } else {
         // Restore visual positions from saved state
         // Re-apply extended paddle width if still active
-        if (extendActive && paddle) lv_obj_set_width(paddle, paddleW);
-        lv_obj_set_pos(paddle, (int)paddleX, paddleYPos);
+        if (ctx->extendActive && ctx->paddle) lv_obj_set_width(ctx->paddle, ctx->paddleW);
+        lv_obj_set_pos(ctx->paddle, (int)ctx->paddleX, ctx->paddleYPos);
         for (int i = 0; i < MAX_BALLS; i++) {
-            if (balls[i].active && balls[i].obj) {
-                lv_obj_set_pos(balls[i].obj, (int)balls[i].x, (int)balls[i].y);
-                lv_obj_clear_flag(balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+            if (ctx->balls[i].active && ctx->balls[i].obj) {
+                lv_obj_set_pos(ctx->balls[i].obj, (int)ctx->balls[i].x, (int)ctx->balls[i].y);
+                lv_obj_clear_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
             }
         }
-    // Restore falling capsules
-    for (int i = 0; i < MAX_CAPSULES; i++) {
-        if (capsules[i].active && capsuleObjs[i]) {
-            lv_obj_set_pos(capsuleObjs[i], (int)capsules[i].x, (int)capsules[i].y);
-            lv_obj_clear_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        // Restore falling capsules
+        for (int i = 0; i < MAX_CAPSULES; i++) {
+            if (ctx->capsules[i].active && ctx->capsuleObjs[i]) {
+                lv_obj_set_pos(ctx->capsuleObjs[i], (int)ctx->capsules[i].x, (int)ctx->capsules[i].y);
+                lv_obj_clear_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+            }
         }
-    }
-    // Restore exit indicator
-    if (exitOpen && exitIndicator) lv_obj_clear_flag(exitIndicator, LV_OBJ_FLAG_HIDDEN);
-        updateScoreDisplay();
-        updateMessage();
+        // Restore exit indicator
+        if (ctx->exitOpen && ctx->exitIndicator) lv_obj_clear_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
+        updateScoreDisplay(ctx);
+        updateMessage(ctx);
     }
 
     // Input handlers
-    lv_obj_add_event_cb(gameArea, onPressed, LV_EVENT_PRESSING, this);
-    lv_obj_add_event_cb(gameArea, onClicked, LV_EVENT_SHORT_CLICKED, this);
-    lv_obj_add_event_cb(gameArea, onKey, LV_EVENT_KEY, this);
-    lv_obj_add_event_cb(gameArea, onReenterKeyMode, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(ctx->gameArea, onPressed, LV_EVENT_PRESSING, ctx);
+    lv_obj_add_event_cb(ctx->gameArea, onClicked, LV_EVENT_SHORT_CLICKED, ctx);
+    lv_obj_add_event_cb(ctx->gameArea, onKey, LV_EVENT_KEY, ctx);
+    lv_obj_add_event_cb(ctx->gameArea, onReenterKeyMode, LV_EVENT_CLICKED, ctx);
 
     // Keyboard focus - explicit enter/exit, no focus/defocus handlers
     lv_group_t* group = lv_group_get_default();
     if (group) {
-        lv_group_add_obj(group, gameArea);
-        lv_group_focus_obj(gameArea);
+        lv_group_add_obj(group, ctx->gameArea);
+        lv_group_focus_obj(ctx->gameArea);
         lv_group_set_editing(group, true);
     }
 
     // Start game timer
-    gameTimer = lv_timer_create(onTick, TICK_MS, this);
+    ctx->gameTimer = lv_timer_create(onTick, TICK_MS, ctx);
 }
 
-void Breakout::onHide(AppHandle appHandle) {
-    if (gameTimer) {
-        lv_timer_delete(gameTimer);
-        gameTimer = nullptr;
+void breakoutTeardown(Context* ctx) {
+    if (ctx->gameTimer) {
+        lv_timer_delete(ctx->gameTimer);
+        ctx->gameTimer = nullptr;
     }
-    if (gameArea) {
+    if (ctx->gameArea) {
         lv_group_t* group = lv_group_get_default();
         if (group) lv_group_set_editing(group, false);
-        lv_group_remove_obj(gameArea);
+        lv_group_remove_obj(ctx->gameArea);
     }
-    gameArea = nullptr;
-    paddle = nullptr;
-    for (int i = 0; i < MAX_BRICKS; i++) bricks[i] = nullptr;
-    for (int i = 0; i < MAX_BALLS; i++) balls[i].obj = nullptr;
+    ctx->gameArea = nullptr;
+    ctx->paddle = nullptr;
+    for (int i = 0; i < MAX_BRICKS; i++) ctx->bricks[i] = nullptr;
+    for (int i = 0; i < MAX_BALLS; i++) ctx->balls[i].obj = nullptr;
     for (int i = 0; i < MAX_CAPSULES; i++) {
-        capsuleObjs[i] = nullptr;
-        capsuleLabels[i] = nullptr;
+        ctx->capsuleObjs[i] = nullptr;
+        ctx->capsuleLabels[i] = nullptr;
     }
-    for (int i = 0; i < MAX_LASERS; i++) lasers[i].obj = nullptr;
-    exitIndicator = nullptr;
-    scoreLabel = nullptr;
-    livesLabel = nullptr;
-    messageLabel = nullptr;
-    soundBtnIcon = nullptr;
+    for (int i = 0; i < MAX_LASERS; i++) ctx->lasers[i].obj = nullptr;
+    ctx->exitIndicator = nullptr;
+    ctx->scoreLabel = nullptr;
+    ctx->livesLabel = nullptr;
+    ctx->messageLabel = nullptr;
+    ctx->soundBtnIcon = nullptr;
 
     // Clean up sfx engine
-    if (sfxEngine) {
-        sfxEngine->stop();
-        delete sfxEngine;
-        sfxEngine = nullptr;
+    if (ctx->sfxEngine) {
+        ctx->sfxEngine->stop();
+        delete ctx->sfxEngine;
+        ctx->sfxEngine = nullptr;
     }
 }
 
-// ── Capsule & Laser Object Creation ─────────────────────────
+/* ── Capsule & Laser Object Creation ─────────────────────────── */
 
-void Breakout::createCapsuleObjs() {
+static void createCapsuleObjs(Context* ctx) {
     for (int i = 0; i < MAX_CAPSULES; i++) {
-        capsuleObjs[i] = lv_obj_create(gameArea);
-        lv_obj_set_size(capsuleObjs[i], capsuleW, capsuleH);
-        lv_obj_set_style_border_width(capsuleObjs[i], 1, 0);
-        lv_obj_set_style_border_color(capsuleObjs[i], lv_color_white(), 0);
-        lv_obj_set_style_pad_all(capsuleObjs[i], 0, 0);
-        lv_obj_set_style_radius(capsuleObjs[i], 3, 0);
-        lv_obj_remove_flag(capsuleObjs[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_remove_flag(capsuleObjs[i], LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        ctx->capsuleObjs[i] = lv_obj_create(ctx->gameArea);
+        lv_obj_set_size(ctx->capsuleObjs[i], ctx->capsuleW, ctx->capsuleH);
+        lv_obj_set_style_border_width(ctx->capsuleObjs[i], 1, 0);
+        lv_obj_set_style_border_color(ctx->capsuleObjs[i], lv_color_white(), 0);
+        lv_obj_set_style_pad_all(ctx->capsuleObjs[i], 0, 0);
+        lv_obj_set_style_radius(ctx->capsuleObjs[i], 3, 0);
+        lv_obj_remove_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
 
-        capsuleLabels[i] = lv_label_create(capsuleObjs[i]);
-        lv_obj_set_style_text_color(capsuleLabels[i], lv_color_white(), 0);
-        lv_obj_center(capsuleLabels[i]);
+        ctx->capsuleLabels[i] = lv_label_create(ctx->capsuleObjs[i]);
+        lv_obj_set_style_text_color(ctx->capsuleLabels[i], lv_color_white(), 0);
+        lv_obj_center(ctx->capsuleLabels[i]);
     }
 }
 
-void Breakout::createLaserObjs() {
+static void createLaserObjs(Context* ctx) {
     for (int i = 0; i < MAX_LASERS; i++) {
-        lasers[i].obj = lv_obj_create(gameArea);
-        lv_obj_set_size(lasers[i].obj, laserW, laserH);
-        lv_obj_set_style_bg_color(lasers[i].obj, lv_color_hex(0xFF4444), 0);
-        lv_obj_set_style_bg_opa(lasers[i].obj, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(lasers[i].obj, 0, 0);
-        lv_obj_set_style_pad_all(lasers[i].obj, 0, 0);
-        lv_obj_set_style_radius(lasers[i].obj, 0, 0);
-        lv_obj_remove_flag(lasers[i].obj, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
-        lasers[i].active = false;
+        ctx->lasers[i].obj = lv_obj_create(ctx->gameArea);
+        lv_obj_set_size(ctx->lasers[i].obj, ctx->laserW, ctx->laserH);
+        lv_obj_set_style_bg_color(ctx->lasers[i].obj, lv_color_hex(0xFF4444), 0);
+        lv_obj_set_style_bg_opa(ctx->lasers[i].obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(ctx->lasers[i].obj, 0, 0);
+        lv_obj_set_style_pad_all(ctx->lasers[i].obj, 0, 0);
+        lv_obj_set_style_radius(ctx->lasers[i].obj, 0, 0);
+        lv_obj_remove_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+        ctx->lasers[i].active = false;
     }
 }
 
-// ── Brick Creation ───────────────────────────────────────────
+/* ── Brick Creation ───────────────────────────────────────────── */
 
-void Breakout::createBricks() {
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            int idx = r * cols + c;
+static void createBricks(Context* ctx) {
+    for (int r = 0; r < ctx->rows; r++) {
+        for (int c = 0; c < ctx->cols; c++) {
+            int idx = r * ctx->cols + c;
             if (idx >= MAX_BRICKS) continue;
-            bricks[idx] = lv_obj_create(gameArea);
-            lv_obj_set_size(bricks[idx], brickW, brickH);
-            lv_obj_set_style_border_width(bricks[idx], 0, 0);
-            lv_obj_set_style_pad_all(bricks[idx], 0, 0);
-            lv_obj_set_style_radius(bricks[idx], 2, 0);
-            lv_obj_remove_flag(bricks[idx], LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_remove_flag(bricks[idx], LV_OBJ_FLAG_CLICKABLE);
+            ctx->bricks[idx] = lv_obj_create(ctx->gameArea);
+            lv_obj_set_size(ctx->bricks[idx], ctx->brickW, ctx->brickH);
+            lv_obj_set_style_border_width(ctx->bricks[idx], 0, 0);
+            lv_obj_set_style_pad_all(ctx->bricks[idx], 0, 0);
+            lv_obj_set_style_radius(ctx->bricks[idx], 2, 0);
+            lv_obj_remove_flag(ctx->bricks[idx], LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_remove_flag(ctx->bricks[idx], LV_OBJ_FLAG_CLICKABLE);
 
-            int x = brickOffsetX + c * (brickW + brickGap);
-            int y = brickOffsetY + r * (brickH + brickGap);
-            lv_obj_set_pos(bricks[idx], x, y);
+            int x = ctx->brickOffsetX + c * (ctx->brickW + ctx->brickGap);
+            int y = ctx->brickOffsetY + r * (ctx->brickH + ctx->brickGap);
+            lv_obj_set_pos(ctx->bricks[idx], x, y);
         }
     }
-    refreshBricks();
+    refreshBricks(ctx);
 }
 
-void Breakout::setupLevelPattern() {
-    int total = cols * rows;
+static void setupLevelPattern(Context* ctx) {
+    int total = ctx->cols * ctx->rows;
     int numPatterns = 12;
 
     // Initialize all bricks
     for (int i = 0; i < total; i++) {
-        brickAlive[i] = true;
-        brickType[i] = BrickType::Normal;
-        brickHits[i] = 1;
+        ctx->brickAlive[i] = true;
+        ctx->brickType[i] = BrickType::Normal;
+        ctx->brickHits[i] = 1;
     }
 
-    int colorOffset = (level - 1) % 8;
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            brickColorIndex[r * cols + c] = (r + colorOffset) % 8;
+    int colorOffset = (ctx->level - 1) % 8;
+    for (int r = 0; r < ctx->rows; r++) {
+        for (int c = 0; c < ctx->cols; c++) {
+            ctx->brickColorIndex[r * ctx->cols + c] = (r + colorOffset) % 8;
         }
     }
 
-    if (level <= numPatterns) {
+    if (ctx->level <= numPatterns) {
         // Hardcoded patterns
-        int pattern = (level - 1) % numPatterns;
+        int pattern = (ctx->level - 1) % numPatterns;
+        int rows = ctx->rows;
+        int cols = ctx->cols;
+        bool* brickAlive = ctx->brickAlive;
         switch (pattern) {
             case 0: // Full grid
                 break;
@@ -548,621 +615,621 @@ void Breakout::setupLevelPattern() {
         }
     } else {
         // Procedural generation (levels 13+)
-        uint32_t seed = (uint32_t)level * 2654435761u;
-        int density = 50 + (level * 2);
+        uint32_t seed = (uint32_t)ctx->level * 2654435761u;
+        int density = 50 + (ctx->level * 2);
         if (density > 85) density = 85;
 
         for (int i = 0; i < total; i++) {
             int roll = (int)(levelRng(seed) % 100);
-            brickAlive[i] = (roll < density);
+            ctx->brickAlive[i] = (roll < density);
         }
         // Ensure at least some bricks exist
         int aliveCount = 0;
-        for (int i = 0; i < total; i++) if (brickAlive[i]) aliveCount++;
+        for (int i = 0; i < total; i++) if (ctx->brickAlive[i]) aliveCount++;
         if (aliveCount < 5) {
             for (int i = 0; i < total && aliveCount < 8; i++) {
-                if (!brickAlive[i]) { brickAlive[i] = true; aliveCount++; }
+                if (!ctx->brickAlive[i]) { ctx->brickAlive[i] = true; aliveCount++; }
             }
         }
     }
 
     // Add Silver bricks (level 3+)
-    if (level >= 3) {
-        int silverCount = (level - 2);
-        if (silverCount > rows) silverCount = rows;
-        int silverHits = (level >= 7) ? 3 : 2;
-        uint32_t seed = (uint32_t)level * 31337u;
+    if (ctx->level >= 3) {
+        int silverCount = (ctx->level - 2);
+        if (silverCount > ctx->rows) silverCount = ctx->rows;
+        int silverHits = (ctx->level >= 7) ? 3 : 2;
+        uint32_t seed = (uint32_t)ctx->level * 31337u;
         int placed = 0;
         for (int attempt = 0; attempt < total * 2 && placed < silverCount; attempt++) {
             int idx = (int)(levelRng(seed) % total);
-            if (brickAlive[idx] && brickType[idx] == BrickType::Normal) {
-                brickType[idx] = BrickType::Silver;
-                brickHits[idx] = silverHits;
+            if (ctx->brickAlive[idx] && ctx->brickType[idx] == BrickType::Normal) {
+                ctx->brickType[idx] = BrickType::Silver;
+                ctx->brickHits[idx] = silverHits;
                 placed++;
             }
         }
     }
 
     // Add Gold bricks (level 5+)
-    if (level >= 5) {
-        int goldCount = (level - 4) / 2;
+    if (ctx->level >= 5) {
+        int goldCount = (ctx->level - 4) / 2;
         if (goldCount > 4) goldCount = 4;
-        uint32_t seed = (uint32_t)level * 48271u;
+        uint32_t seed = (uint32_t)ctx->level * 48271u;
         int placed = 0;
         for (int attempt = 0; attempt < total * 2 && placed < goldCount; attempt++) {
             int idx = (int)(levelRng(seed) % total);
-            if (brickAlive[idx] && brickType[idx] == BrickType::Normal) {
-                brickType[idx] = BrickType::Gold;
-                brickHits[idx] = INDESTRUCTIBLE_HITS; // indestructible
+            if (ctx->brickAlive[idx] && ctx->brickType[idx] == BrickType::Normal) {
+                ctx->brickType[idx] = BrickType::Gold;
+                ctx->brickHits[idx] = INDESTRUCTIBLE_HITS; // indestructible
                 placed++;
             }
         }
     }
 
     // Count alive bricks (excluding Gold)
-    bricksRemaining = 0;
-    destroyedCount = 0;
+    ctx->bricksRemaining = 0;
+    ctx->destroyedCount = 0;
     for (int i = 0; i < total; i++) {
-        if (brickAlive[i] && brickType[i] != BrickType::Gold) bricksRemaining++;
+        if (ctx->brickAlive[i] && ctx->brickType[i] != BrickType::Gold) ctx->bricksRemaining++;
     }
 }
 
-void Breakout::refreshBricks() {
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            int idx = r * cols + c;
-            if (!bricks[idx]) continue;
+static void refreshBricks(Context* ctx) {
+    for (int r = 0; r < ctx->rows; r++) {
+        for (int c = 0; c < ctx->cols; c++) {
+            int idx = r * ctx->cols + c;
+            if (!ctx->bricks[idx]) continue;
 
-            if (!brickAlive[idx]) {
-                lv_obj_add_flag(bricks[idx], LV_OBJ_FLAG_HIDDEN);
+            if (!ctx->brickAlive[idx]) {
+                lv_obj_add_flag(ctx->bricks[idx], LV_OBJ_FLAG_HIDDEN);
                 continue;
             }
 
-            lv_obj_clear_flag(bricks[idx], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(ctx->bricks[idx], LV_OBJ_FLAG_HIDDEN);
 
-            switch (brickType[idx]) {
+            switch (ctx->brickType[idx]) {
                 case BrickType::Normal: {
-                    lv_palette_t color = BRICK_COLORS[brickColorIndex[idx]];
-                    lv_obj_set_style_bg_color(bricks[idx], lv_palette_main(color), 0);
-                    lv_obj_set_style_border_width(bricks[idx], 0, 0);
+                    lv_palette_t color = BRICK_COLORS[ctx->brickColorIndex[idx]];
+                    lv_obj_set_style_bg_color(ctx->bricks[idx], lv_palette_main(color), 0);
+                    lv_obj_set_style_border_width(ctx->bricks[idx], 0, 0);
                     break;
                 }
                 case BrickType::Silver: {
-                    int darken = 3 - brickHits[idx]; // more hits taken = darker
+                    int darken = 3 - ctx->brickHits[idx]; // more hits taken = darker
                     if (darken < 0) darken = 0;
                     if (darken > 3) darken = 3;
-                    lv_obj_set_style_bg_color(bricks[idx], lv_palette_darken(LV_PALETTE_GREY, darken), 0);
-                    lv_obj_set_style_border_width(bricks[idx], 1, 0);
-                    lv_obj_set_style_border_color(bricks[idx], lv_color_white(), 0);
+                    lv_obj_set_style_bg_color(ctx->bricks[idx], lv_palette_darken(LV_PALETTE_GREY, darken), 0);
+                    lv_obj_set_style_border_width(ctx->bricks[idx], 1, 0);
+                    lv_obj_set_style_border_color(ctx->bricks[idx], lv_color_white(), 0);
                     break;
                 }
                 case BrickType::Gold:
-                    lv_obj_set_style_bg_color(bricks[idx], lv_palette_main(LV_PALETTE_AMBER), 0);
-                    lv_obj_set_style_border_width(bricks[idx], 1, 0);
-                    lv_obj_set_style_border_color(bricks[idx], lv_palette_lighten(LV_PALETTE_AMBER, 2), 0);
+                    lv_obj_set_style_bg_color(ctx->bricks[idx], lv_palette_main(LV_PALETTE_AMBER), 0);
+                    lv_obj_set_style_border_width(ctx->bricks[idx], 1, 0);
+                    lv_obj_set_style_border_color(ctx->bricks[idx], lv_palette_lighten(LV_PALETTE_AMBER, 2), 0);
                     break;
             }
         }
     }
 }
 
-// ── Brick Hit Logic ──────────────────────────────────────────
+/* ── Brick Hit Logic ──────────────────────────────────────────── */
 
-int Breakout::scoreBrick(int idx) {
-    switch (brickType[idx]) {
+static int scoreBrick(Context* ctx, int idx) {
+    switch (ctx->brickType[idx]) {
         case BrickType::Silver:
-            return 50 * level;
+            return 50 * ctx->level;
         case BrickType::Gold:
             return 0; // can't be destroyed
         case BrickType::Normal:
         default:
-            return COLOR_SCORES[brickColorIndex[idx] % 8];
+            return COLOR_SCORES[ctx->brickColorIndex[idx] % 8];
     }
 }
 
-void Breakout::hitBrick(int idx) {
-    if (!brickAlive[idx]) return;
+static void hitBrick(Context* ctx, int idx) {
+    if (!ctx->brickAlive[idx]) return;
 
-    if (brickType[idx] == BrickType::Gold) {
+    if (ctx->brickType[idx] == BrickType::Gold) {
         // Bounce but don't damage
-        if (sfxEngine) sfxEngine->play(SfxId::Click);
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
         return;
     }
 
-    brickHits[idx]--;
-    if (brickHits[idx] <= 0) {
+    ctx->brickHits[idx]--;
+    if (ctx->brickHits[idx] <= 0) {
         // Brick destroyed
-        brickAlive[idx] = false;
-        if (bricks[idx]) lv_obj_add_flag(bricks[idx], LV_OBJ_FLAG_HIDDEN);
-        score += scoreBrick(idx);
-        if (brickType[idx] != BrickType::Gold) {
-            bricksRemaining--;
-            destroyedCount++;
+        ctx->brickAlive[idx] = false;
+        if (ctx->bricks[idx]) lv_obj_add_flag(ctx->bricks[idx], LV_OBJ_FLAG_HIDDEN);
+        ctx->score += scoreBrick(ctx, idx);
+        if (ctx->brickType[idx] != BrickType::Gold) {
+            ctx->bricksRemaining--;
+            ctx->destroyedCount++;
         }
 
         // Speed up ball slightly every 5 bricks destroyed
-        if (destroyedCount % 5 == 0) {
-            ballSpeed += 0.15f;
+        if (ctx->destroyedCount % 5 == 0) {
+            ctx->ballSpeed += 0.15f;
             // Scale active ball velocities
             for (int b = 0; b < MAX_BALLS; b++) {
-                if (!balls[b].active) continue;
-                float curSpd = std::sqrt(balls[b].vx * balls[b].vx + balls[b].vy * balls[b].vy);
+                if (!ctx->balls[b].active) continue;
+                float curSpd = std::sqrt(ctx->balls[b].vx * ctx->balls[b].vx + ctx->balls[b].vy * ctx->balls[b].vy);
                 if (curSpd > 0.01f) {
-                    float scale = ballSpeed / curSpd;
-                    balls[b].vx *= scale;
-                    balls[b].vy *= scale;
+                    float scale = ctx->ballSpeed / curSpd;
+                    ctx->balls[b].vx *= scale;
+                    ctx->balls[b].vy *= scale;
                 }
             }
         }
 
-        updateScoreDisplay();
-        if (sfxEngine) sfxEngine->play(SfxId::BrickHit);
+        updateScoreDisplay(ctx);
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::BrickHit);
 
         // Try to spawn capsule (only when single ball)
-        if (activeBallCount <= 1) {
-            int bx = brickOffsetX + (idx % cols) * (brickW + brickGap);
-            int by = brickOffsetY + (idx / cols) * (brickH + brickGap);
+        if (ctx->activeBallCount <= 1) {
+            int bx = ctx->brickOffsetX + (idx % ctx->cols) * (ctx->brickW + ctx->brickGap);
+            int by = ctx->brickOffsetY + (idx / ctx->cols) * (ctx->brickH + ctx->brickGap);
             if ((int)(esp_random() % 100) < CAPSULE_DROP_CHANCE) {
-                spawnCapsule((float)bx, (float)by);
+                spawnCapsule(ctx, (float)bx, (float)by);
             }
         }
 
-        if (bricksRemaining <= 0) {
-            winLevel();
+        if (ctx->bricksRemaining <= 0) {
+            winLevel(ctx);
         }
     } else {
         // Multi-hit brick took damage (Silver)
-        if (bricks[idx]) {
-            int darken = 3 - brickHits[idx];
+        if (ctx->bricks[idx]) {
+            int darken = 3 - ctx->brickHits[idx];
             if (darken < 0) darken = 0;
             if (darken > 3) darken = 3;
-            lv_obj_set_style_bg_color(bricks[idx], lv_palette_darken(LV_PALETTE_GREY, darken), 0);
+            lv_obj_set_style_bg_color(ctx->bricks[idx], lv_palette_darken(LV_PALETTE_GREY, darken), 0);
         }
-        if (sfxEngine) sfxEngine->play(SfxId::Click);
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
     }
 }
 
-// ── Game State Management ────────────────────────────────────
+/* ── Game State Management ────────────────────────────────────── */
 
-void Breakout::startGame() {
-    score = 0;
-    lives = INITIAL_LIVES;
-    level = 1;
-    state = GameState::Ready;
-    ballSpeed = baseBallSpeed;
+static void startGame(Context* ctx) {
+    ctx->score = 0;
+    ctx->lives = INITIAL_LIVES;
+    ctx->level = 1;
+    ctx->state = GameState::Ready;
+    ctx->ballSpeed = ctx->baseBallSpeed;
 
-    clearPowerUps();
-    setupLevelPattern();
-    refreshBricks();
+    clearPowerUps(ctx);
+    setupLevelPattern(ctx);
+    refreshBricks(ctx);
 
-    paddleX = (areaW - paddleW) / 2.0f;
-    if (paddle) lv_obj_set_pos(paddle, (int)paddleX, paddleYPos);
+    ctx->paddleX = (ctx->areaW - ctx->paddleW) / 2.0f;
+    if (ctx->paddle) lv_obj_set_pos(ctx->paddle, (int)ctx->paddleX, ctx->paddleYPos);
 
-    resetBall();
-    updateScoreDisplay();
-    updateMessage();
+    resetBall(ctx);
+    updateScoreDisplay(ctx);
+    updateMessage(ctx);
 
-    if (sfxEngine) sfxEngine->play(SfxId::Confirm);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Confirm);
 }
 
-void Breakout::nextLevel() {
-    level++;
+static void nextLevel(Context* ctx) {
+    ctx->level++;
 
     // Speed up ball each level
-    ballSpeed = baseBallSpeed + (level - 1) * 0.3f;
+    ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
 
-    clearPowerUps();
-    setupLevelPattern();
-    refreshBricks();
+    clearPowerUps(ctx);
+    setupLevelPattern(ctx);
+    refreshBricks(ctx);
 
-    state = GameState::Ready;
-    paddleX = (areaW - paddleW) / 2.0f;
-    if (paddle) lv_obj_set_pos(paddle, (int)paddleX, paddleYPos);
+    ctx->state = GameState::Ready;
+    ctx->paddleX = (ctx->areaW - ctx->paddleW) / 2.0f;
+    if (ctx->paddle) lv_obj_set_pos(ctx->paddle, (int)ctx->paddleX, ctx->paddleYPos);
 
-    resetBall();
-    updateScoreDisplay();
-    updateMessage();
+    resetBall(ctx);
+    updateScoreDisplay(ctx);
+    updateMessage(ctx);
 
-    if (sfxEngine) sfxEngine->play(SfxId::LevelUp);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::LevelUp);
 }
 
-void Breakout::resetBall() {
+static void resetBall(Context* ctx) {
     // Reset to single ball
     for (int i = 1; i < MAX_BALLS; i++) {
-        balls[i].active = false;
-        if (balls[i].obj) lv_obj_add_flag(balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+        ctx->balls[i].active = false;
+        if (ctx->balls[i].obj) lv_obj_add_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
     }
-    activeBallCount = 1;
+    ctx->activeBallCount = 1;
 
-    balls[0].active = true;
-    balls[0].x = paddleX + paddleW / 2.0f - ballSize / 2.0f;
-    balls[0].y = (float)(paddleYPos - ballSize - 2);
-    balls[0].vx = 0;
-    balls[0].vy = 0;
-    if (balls[0].obj) {
-        lv_obj_set_pos(balls[0].obj, (int)balls[0].x, (int)balls[0].y);
-        lv_obj_clear_flag(balls[0].obj, LV_OBJ_FLAG_HIDDEN);
+    ctx->balls[0].active = true;
+    ctx->balls[0].x = ctx->paddleX + ctx->paddleW / 2.0f - ctx->ballSize / 2.0f;
+    ctx->balls[0].y = (float)(ctx->paddleYPos - ctx->ballSize - 2);
+    ctx->balls[0].vx = 0;
+    ctx->balls[0].vy = 0;
+    if (ctx->balls[0].obj) {
+        lv_obj_set_pos(ctx->balls[0].obj, (int)ctx->balls[0].x, (int)ctx->balls[0].y);
+        lv_obj_clear_flag(ctx->balls[0].obj, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
-void Breakout::launchBall() {
-    if (catchActive && catchBallIndex >= 0) {
+static void launchBall(Context* ctx) {
+    if (ctx->catchActive && ctx->catchBallIndex >= 0) {
         // Release caught ball
-        BallState& b = balls[catchBallIndex];
-        b.vx = (esp_random() % 2 ? 1.0f : -1.0f) * ballSpeed * 0.7f;
-        b.vy = -ballSpeed;
-        catchBallIndex = -1;
-        catchAutoReleaseTicks = 0;
-        if (sfxEngine) sfxEngine->play(SfxId::Confirm);
+        BallState& b = ctx->balls[ctx->catchBallIndex];
+        b.vx = (esp_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
+        b.vy = -ctx->ballSpeed;
+        ctx->catchBallIndex = -1;
+        ctx->catchAutoReleaseTicks = 0;
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Confirm);
         return;
     }
 
-    balls[0].vx = (esp_random() % 2 ? 1.0f : -1.0f) * ballSpeed * 0.7f;
-    balls[0].vy = -ballSpeed;
-    state = GameState::Playing;
-    updateMessage();
+    ctx->balls[0].vx = (esp_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
+    ctx->balls[0].vy = -ctx->ballSpeed;
+    ctx->state = GameState::Playing;
+    updateMessage(ctx);
 
-    if (sfxEngine) sfxEngine->play(SfxId::Confirm);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Confirm);
 }
 
-void Breakout::loseLife() {
-    lives--;
-    clearPowerUps();
+static void loseLife(Context* ctx) {
+    ctx->lives--;
+    clearPowerUps(ctx);
 
-    if (sfxEngine) sfxEngine->play(SfxId::Hurt);
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Hurt);
 
-    if (lives <= 0) {
-        state = GameState::GameOver;
+    if (ctx->lives <= 0) {
+        ctx->state = GameState::GameOver;
         for (int i = 0; i < MAX_BALLS; i++) {
-            balls[i].vx = 0;
-            balls[i].vy = 0;
+            ctx->balls[i].vx = 0;
+            ctx->balls[i].vy = 0;
         }
-        if (sfxEngine) sfxEngine->play(SfxId::GameOver);
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::GameOver);
     } else {
-        state = GameState::Ready;
-        paddleX = (areaW - paddleW) / 2.0f;
-        if (paddle) lv_obj_set_pos(paddle, (int)paddleX, paddleYPos);
-        resetBall();
+        ctx->state = GameState::Ready;
+        ctx->paddleX = (ctx->areaW - ctx->paddleW) / 2.0f;
+        if (ctx->paddle) lv_obj_set_pos(ctx->paddle, (int)ctx->paddleX, ctx->paddleYPos);
+        resetBall(ctx);
     }
-    updateScoreDisplay();
-    updateMessage();
-    if (lives <= 0) {
-        saveHighScore(score);
-    }
-}
-
-void Breakout::winLevel() {
-    saveHighScore(score);
-    nextLevel();
-}
-
-void Breakout::togglePause() {
-    if (state == GameState::Playing) {
-        state = GameState::Paused;
-        updateMessage();
-    } else if (state == GameState::Paused) {
-        state = GameState::Playing;
-        updateMessage();
+    updateScoreDisplay(ctx);
+    updateMessage(ctx);
+    if (ctx->lives <= 0) {
+        saveHighScore(ctx->score);
     }
 }
 
-// ── Power-Up System ──────────────────────────────────────────
+static void winLevel(Context* ctx) {
+    saveHighScore(ctx->score);
+    nextLevel(ctx);
+}
 
-void Breakout::spawnCapsule(float x, float y) {
+static void togglePause(Context* ctx) {
+    if (ctx->state == GameState::Playing) {
+        ctx->state = GameState::Paused;
+        updateMessage(ctx);
+    } else if (ctx->state == GameState::Paused) {
+        ctx->state = GameState::Playing;
+        updateMessage(ctx);
+    }
+}
+
+/* ── Power-Up System ──────────────────────────────────────────── */
+
+static void spawnCapsule(Context* ctx, float x, float y) {
     for (int i = 0; i < MAX_CAPSULES; i++) {
-        if (!capsules[i].active) {
-            capsules[i].active = true;
-            capsules[i].x = x;
-            capsules[i].y = y;
+        if (!ctx->capsules[i].active) {
+            ctx->capsules[i].active = true;
+            ctx->capsules[i].x = x;
+            ctx->capsules[i].y = y;
 
             // Random power-up type (ExtraLife rarer)
             int roll = (int)(esp_random() % 100);
             if (roll < 5) {
-                capsules[i].type = PowerUpType::ExtraLife;
+                ctx->capsules[i].type = PowerUpType::ExtraLife;
             } else if (roll < 18) {
-                capsules[i].type = PowerUpType::Laser;
+                ctx->capsules[i].type = PowerUpType::Laser;
             } else if (roll < 33) {
-                capsules[i].type = PowerUpType::Extend;
+                ctx->capsules[i].type = PowerUpType::Extend;
             } else if (roll < 48) {
-                capsules[i].type = PowerUpType::Catch;
+                ctx->capsules[i].type = PowerUpType::Catch;
             } else if (roll < 63) {
-                capsules[i].type = PowerUpType::Slow;
+                ctx->capsules[i].type = PowerUpType::Slow;
             } else if (roll < 78) {
-                capsules[i].type = PowerUpType::Split;
+                ctx->capsules[i].type = PowerUpType::Split;
             } else {
-                capsules[i].type = PowerUpType::BreakOut;
+                ctx->capsules[i].type = PowerUpType::BreakOut;
             }
 
-            int typeIdx = static_cast<int>(capsules[i].type);
-            if (capsuleObjs[i]) {
-                lv_obj_set_style_bg_color(capsuleObjs[i], lv_color_hex(CAPSULE_COLORS[typeIdx]), 0);
-                lv_obj_set_pos(capsuleObjs[i], (int)x, (int)y);
-                lv_obj_clear_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+            int typeIdx = static_cast<int>(ctx->capsules[i].type);
+            if (ctx->capsuleObjs[i]) {
+                lv_obj_set_style_bg_color(ctx->capsuleObjs[i], lv_color_hex(CAPSULE_COLORS[typeIdx]), 0);
+                lv_obj_set_pos(ctx->capsuleObjs[i], (int)x, (int)y);
+                lv_obj_clear_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
             }
-            if (capsuleLabels[i]) {
-                lv_label_set_text(capsuleLabels[i], CAPSULE_LETTERS[typeIdx]);
+            if (ctx->capsuleLabels[i]) {
+                lv_label_set_text(ctx->capsuleLabels[i], CAPSULE_LETTERS[typeIdx]);
             }
             return;
         }
     }
 }
 
-void Breakout::updateCapsules() {
+static void updateCapsules(Context* ctx) {
     for (int i = 0; i < MAX_CAPSULES; i++) {
-        if (!capsules[i].active) continue;
+        if (!ctx->capsules[i].active) continue;
 
-        capsules[i].y += capsuleFallSpeed;
+        ctx->capsules[i].y += ctx->capsuleFallSpeed;
 
         // Off screen
-        if (capsules[i].y > areaH) {
-            capsules[i].active = false;
-            if (capsuleObjs[i]) lv_obj_add_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        if (ctx->capsules[i].y > ctx->areaH) {
+            ctx->capsules[i].active = false;
+            if (ctx->capsuleObjs[i]) lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
 
         // Paddle collision
-        if (capsules[i].y + capsuleH > paddleYPos &&
-            capsules[i].y < paddleYPos + paddleH &&
-            capsules[i].x + capsuleW > paddleX &&
-            capsules[i].x < paddleX + paddleW) {
-            activatePowerUp(capsules[i].type);
-            capsules[i].active = false;
-            if (capsuleObjs[i]) lv_obj_add_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        if (ctx->capsules[i].y + ctx->capsuleH > ctx->paddleYPos &&
+            ctx->capsules[i].y < ctx->paddleYPos + ctx->paddleH &&
+            ctx->capsules[i].x + ctx->capsuleW > ctx->paddleX &&
+            ctx->capsules[i].x < ctx->paddleX + ctx->paddleW) {
+            activatePowerUp(ctx, ctx->capsules[i].type);
+            ctx->capsules[i].active = false;
+            if (ctx->capsuleObjs[i]) lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
 
-        if (capsuleObjs[i]) lv_obj_set_pos(capsuleObjs[i], (int)capsules[i].x, (int)capsules[i].y);
+        if (ctx->capsuleObjs[i]) lv_obj_set_pos(ctx->capsuleObjs[i], (int)ctx->capsules[i].x, (int)ctx->capsules[i].y);
     }
 }
 
-void Breakout::activatePowerUp(PowerUpType type) {
-    if (sfxEngine) sfxEngine->play(SfxId::Powerup);
+static void activatePowerUp(Context* ctx, PowerUpType type) {
+    if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Powerup);
 
     switch (type) {
         case PowerUpType::Extend:
-            if (!extendActive) {
-                extendActive = true;
-                paddleW = (int)(originalPaddleW * 1.5f);
-                int maxW = areaW / 2;
-                if (paddleW > maxW) paddleW = maxW;
-                if (paddle) lv_obj_set_width(paddle, paddleW);
+            if (!ctx->extendActive) {
+                ctx->extendActive = true;
+                ctx->paddleW = (int)(ctx->originalPaddleW * 1.5f);
+                int maxW = ctx->areaW / 2;
+                if (ctx->paddleW > maxW) ctx->paddleW = maxW;
+                if (ctx->paddle) lv_obj_set_width(ctx->paddle, ctx->paddleW);
                 // Re-clamp paddle position
-                if (paddleX + paddleW > areaW) paddleX = (float)(areaW - paddleW);
-                if (paddle) lv_obj_set_x(paddle, (int)paddleX);
+                if (ctx->paddleX + ctx->paddleW > ctx->areaW) ctx->paddleX = (float)(ctx->areaW - ctx->paddleW);
+                if (ctx->paddle) lv_obj_set_x(ctx->paddle, (int)ctx->paddleX);
             }
             break;
 
         case PowerUpType::ExtraLife:
-            lives++;
-            if (sfxEngine) sfxEngine->play(SfxId::OneUp);
-            updateScoreDisplay();
+            ctx->lives++;
+            if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::OneUp);
+            updateScoreDisplay(ctx);
             break;
 
         case PowerUpType::Slow:
-            if (slowRecoveryTicks <= 0) {
+            if (ctx->slowRecoveryTicks <= 0) {
                 // First slow: save speed and apply reduction
-                originalBallSpeed = ballSpeed;
-                ballSpeed *= 0.6f;
+                ctx->originalBallSpeed = ctx->ballSpeed;
+                ctx->ballSpeed *= 0.6f;
                 // Scale all active ball velocities
                 for (int b = 0; b < MAX_BALLS; b++) {
-                    if (!balls[b].active) continue;
-                    float curSpd = std::sqrt(balls[b].vx * balls[b].vx + balls[b].vy * balls[b].vy);
+                    if (!ctx->balls[b].active) continue;
+                    float curSpd = std::sqrt(ctx->balls[b].vx * ctx->balls[b].vx + ctx->balls[b].vy * ctx->balls[b].vy);
                     if (curSpd > 0.01f) {
-                        float scale = ballSpeed / curSpd;
-                        balls[b].vx *= scale;
-                        balls[b].vy *= scale;
+                        float scale = ctx->ballSpeed / curSpd;
+                        ctx->balls[b].vx *= scale;
+                        ctx->balls[b].vy *= scale;
                     }
                 }
             }
             // Reset (or extend) recovery timer
-            slowRecoveryTicks = SLOW_RECOVERY_TICKS;
+            ctx->slowRecoveryTicks = SLOW_RECOVERY_TICKS;
             break;
 
         case PowerUpType::Catch:
-            catchActive = true;
-            catchBallIndex = -1;
+            ctx->catchActive = true;
+            ctx->catchBallIndex = -1;
             break;
 
         case PowerUpType::Split:
-            splitBalls();
+            splitBalls(ctx);
             break;
 
         case PowerUpType::Laser:
-            laserActive = true;
-            laserCooldown = 0;
+            ctx->laserActive = true;
+            ctx->laserCooldown = 0;
             break;
 
         case PowerUpType::BreakOut:
-            openExit();
+            openExit(ctx);
             break;
     }
 }
 
-void Breakout::clearPowerUps() {
+static void clearPowerUps(Context* ctx) {
     // Reset extend
-    if (extendActive) {
-        extendActive = false;
-        paddleW = originalPaddleW;
-        if (paddle) lv_obj_set_width(paddle, paddleW);
+    if (ctx->extendActive) {
+        ctx->extendActive = false;
+        ctx->paddleW = ctx->originalPaddleW;
+        if (ctx->paddle) lv_obj_set_width(ctx->paddle, ctx->paddleW);
     }
 
     // Reset catch
-    catchActive = false;
-    catchBallIndex = -1;
-    catchAutoReleaseTicks = 0;
+    ctx->catchActive = false;
+    ctx->catchBallIndex = -1;
+    ctx->catchAutoReleaseTicks = 0;
 
     // Reset slow
-    if (slowRecoveryTicks > 0) {
-        ballSpeed = baseBallSpeed + (level - 1) * 0.3f;
-        slowRecoveryTicks = 0;
+    if (ctx->slowRecoveryTicks > 0) {
+        ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+        ctx->slowRecoveryTicks = 0;
     }
 
     // Reset laser
-    laserActive = false;
-    laserCooldown = 0;
+    ctx->laserActive = false;
+    ctx->laserCooldown = 0;
     for (int i = 0; i < MAX_LASERS; i++) {
-        lasers[i].active = false;
-        if (lasers[i].obj) lv_obj_add_flag(lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+        ctx->lasers[i].active = false;
+        if (ctx->lasers[i].obj) lv_obj_add_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
     }
 
     // Clear capsules
     for (int i = 0; i < MAX_CAPSULES; i++) {
-        capsules[i].active = false;
-        if (capsuleObjs[i]) lv_obj_add_flag(capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        ctx->capsules[i].active = false;
+        if (ctx->capsuleObjs[i]) lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     // Close exit
-    closeExit();
+    closeExit(ctx);
 }
 
-// ── Multi-Ball ───────────────────────────────────────────────
+/* ── Multi-Ball ───────────────────────────────────────────────── */
 
-void Breakout::splitBalls() {
+static void splitBalls(Context* ctx) {
     // Find first active ball to split from
     int sourceIdx = -1;
     for (int i = 0; i < MAX_BALLS; i++) {
-        if (balls[i].active) { sourceIdx = i; break; }
+        if (ctx->balls[i].active) { sourceIdx = i; break; }
     }
     if (sourceIdx < 0) return;
 
-    BallState& src = balls[sourceIdx];
+    BallState& src = ctx->balls[sourceIdx];
     int spawned = 0;
     for (int i = 0; i < MAX_BALLS && spawned < 2; i++) {
-        if (balls[i].active) continue;
-        balls[i].active = true;
-        balls[i].x = src.x;
-        balls[i].y = src.y;
+        if (ctx->balls[i].active) continue;
+        ctx->balls[i].active = true;
+        ctx->balls[i].x = src.x;
+        ctx->balls[i].y = src.y;
 
         // Diverging angles: +30 and -30 degrees from source
         float angle = (spawned == 0) ? 0.5f : -0.5f;
         float speed = std::sqrt(src.vx * src.vx + src.vy * src.vy);
-        if (speed < 0.01f) speed = ballSpeed;
+        if (speed < 0.01f) speed = ctx->ballSpeed;
         float srcAngle = std::atan2(src.vy, src.vx);
-        balls[i].vx = speed * std::cos(srcAngle + angle);
-        balls[i].vy = speed * std::sin(srcAngle + angle);
+        ctx->balls[i].vx = speed * std::cos(srcAngle + angle);
+        ctx->balls[i].vy = speed * std::sin(srcAngle + angle);
 
-        if (balls[i].obj) {
-            lv_obj_set_pos(balls[i].obj, (int)balls[i].x, (int)balls[i].y);
-            lv_obj_clear_flag(balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+        if (ctx->balls[i].obj) {
+            lv_obj_set_pos(ctx->balls[i].obj, (int)ctx->balls[i].x, (int)ctx->balls[i].y);
+            lv_obj_clear_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
         }
         spawned++;
     }
-    activeBallCount += spawned;
+    ctx->activeBallCount += spawned;
 }
 
-void Breakout::updateBalls() {
+static void updateBalls(Context* ctx) {
     for (int b = 0; b < MAX_BALLS; b++) {
-        if (!balls[b].active) continue;
+        if (!ctx->balls[b].active) continue;
 
         // Caught ball follows paddle
-        if (catchActive && catchBallIndex == b) {
-            balls[b].x = paddleX + catchOffsetX;
-            balls[b].y = (float)(paddleYPos - ballSize - 2);
-            if (balls[b].obj) lv_obj_set_pos(balls[b].obj, (int)balls[b].x, (int)balls[b].y);
+        if (ctx->catchActive && ctx->catchBallIndex == b) {
+            ctx->balls[b].x = ctx->paddleX + ctx->catchOffsetX;
+            ctx->balls[b].y = (float)(ctx->paddleYPos - ctx->ballSize - 2);
+            if (ctx->balls[b].obj) lv_obj_set_pos(ctx->balls[b].obj, (int)ctx->balls[b].x, (int)ctx->balls[b].y);
 
-            catchAutoReleaseTicks++;
-            if (catchAutoReleaseTicks >= CATCH_AUTO_RELEASE_TICKS) {
+            ctx->catchAutoReleaseTicks++;
+            if (ctx->catchAutoReleaseTicks >= CATCH_AUTO_RELEASE_TICKS) {
                 // Auto-release
-                balls[b].vx = (esp_random() % 2 ? 1.0f : -1.0f) * ballSpeed * 0.7f;
-                balls[b].vy = -ballSpeed;
-                catchBallIndex = -1;
-                catchAutoReleaseTicks = 0;
+                ctx->balls[b].vx = (esp_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
+                ctx->balls[b].vy = -ctx->ballSpeed;
+                ctx->catchBallIndex = -1;
+                ctx->catchAutoReleaseTicks = 0;
             }
             continue;
         }
 
         // Move ball
-        balls[b].x += balls[b].vx;
-        balls[b].y += balls[b].vy;
+        ctx->balls[b].x += ctx->balls[b].vx;
+        ctx->balls[b].y += ctx->balls[b].vy;
 
         // Left wall collision
-        if (balls[b].x < 0) {
-            balls[b].x = 0;
-            balls[b].vx = -balls[b].vx;
-            if (sfxEngine) sfxEngine->play(SfxId::Click);
+        if (ctx->balls[b].x < 0) {
+            ctx->balls[b].x = 0;
+            ctx->balls[b].vx = -ctx->balls[b].vx;
+            if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
         }
 
         // Right wall collision (ball always bounces, exit is paddle-only)
-        if (balls[b].x + ballSize > areaW) {
-            balls[b].x = (float)(areaW - ballSize);
-            balls[b].vx = -balls[b].vx;
-            if (sfxEngine) sfxEngine->play(SfxId::Click);
+        if (ctx->balls[b].x + ctx->ballSize > ctx->areaW) {
+            ctx->balls[b].x = (float)(ctx->areaW - ctx->ballSize);
+            ctx->balls[b].vx = -ctx->balls[b].vx;
+            if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
         }
 
         // Top wall
-        if (balls[b].y < 0) {
-            balls[b].y = 0;
-            balls[b].vy = -balls[b].vy;
-            if (sfxEngine) sfxEngine->play(SfxId::Click);
+        if (ctx->balls[b].y < 0) {
+            ctx->balls[b].y = 0;
+            ctx->balls[b].vy = -ctx->balls[b].vy;
+            if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
         }
 
         // Bottom edge
-        if (balls[b].y + ballSize > areaH) {
-            balls[b].active = false;
-            if (balls[b].obj) lv_obj_add_flag(balls[b].obj, LV_OBJ_FLAG_HIDDEN);
-            activeBallCount--;
-            if (activeBallCount <= 0) {
-                activeBallCount = 0;
-                loseLife();
+        if (ctx->balls[b].y + ctx->ballSize > ctx->areaH) {
+            ctx->balls[b].active = false;
+            if (ctx->balls[b].obj) lv_obj_add_flag(ctx->balls[b].obj, LV_OBJ_FLAG_HIDDEN);
+            ctx->activeBallCount--;
+            if (ctx->activeBallCount <= 0) {
+                ctx->activeBallCount = 0;
+                loseLife(ctx);
                 return;
             }
             continue;
         }
 
         // Paddle collision
-        if (balls[b].vy > 0 &&
-            balls[b].x + ballSize > paddleX && balls[b].x < paddleX + paddleW &&
-            balls[b].y + ballSize > paddleYPos && balls[b].y < paddleYPos + paddleH) {
+        if (ctx->balls[b].vy > 0 &&
+            ctx->balls[b].x + ctx->ballSize > ctx->paddleX && ctx->balls[b].x < ctx->paddleX + ctx->paddleW &&
+            ctx->balls[b].y + ctx->ballSize > ctx->paddleYPos && ctx->balls[b].y < ctx->paddleYPos + ctx->paddleH) {
 
-            if (catchActive && catchBallIndex < 0) {
+            if (ctx->catchActive && ctx->catchBallIndex < 0) {
                 // Catch the ball
-                catchBallIndex = b;
-                catchOffsetX = balls[b].x - paddleX;
-                catchAutoReleaseTicks = 0;
-                balls[b].vx = 0;
-                balls[b].vy = 0;
-                balls[b].y = (float)(paddleYPos - ballSize - 2);
-                if (sfxEngine) sfxEngine->play(SfxId::Click);
+                ctx->catchBallIndex = b;
+                ctx->catchOffsetX = ctx->balls[b].x - ctx->paddleX;
+                ctx->catchAutoReleaseTicks = 0;
+                ctx->balls[b].vx = 0;
+                ctx->balls[b].vy = 0;
+                ctx->balls[b].y = (float)(ctx->paddleYPos - ctx->ballSize - 2);
+                if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
             } else {
                 // Normal bounce
-                float hitPos = (balls[b].x + ballSize / 2.0f - paddleX) / (float)paddleW;
+                float hitPos = (ctx->balls[b].x + ctx->ballSize / 2.0f - ctx->paddleX) / (float)ctx->paddleW;
                 float angle = (hitPos - 0.5f) * 2.0f;
-                balls[b].vx = angle * ballSpeed;
-                balls[b].vy = -std::fabs(balls[b].vy);
-                if (std::fabs(balls[b].vy) < ballSpeed * 0.3f) {
-                    balls[b].vy = -ballSpeed * 0.3f;
+                ctx->balls[b].vx = angle * ctx->ballSpeed;
+                ctx->balls[b].vy = -std::fabs(ctx->balls[b].vy);
+                if (std::fabs(ctx->balls[b].vy) < ctx->ballSpeed * 0.3f) {
+                    ctx->balls[b].vy = -ctx->ballSpeed * 0.3f;
                 }
-                balls[b].y = (float)(paddleYPos - ballSize);
-                if (sfxEngine) sfxEngine->play(SfxId::Click);
+                ctx->balls[b].y = (float)(ctx->paddleYPos - ctx->ballSize);
+                if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Click);
             }
         }
 
         // Brick collisions for this ball
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                int idx = r * cols + c;
-                if (!brickAlive[idx]) continue;
+        for (int r = 0; r < ctx->rows; r++) {
+            for (int c = 0; c < ctx->cols; c++) {
+                int idx = r * ctx->cols + c;
+                if (!ctx->brickAlive[idx]) continue;
 
-                float bx = (float)(brickOffsetX + c * (brickW + brickGap));
-                float by = (float)(brickOffsetY + r * (brickH + brickGap));
+                float bx = (float)(ctx->brickOffsetX + c * (ctx->brickW + ctx->brickGap));
+                float by = (float)(ctx->brickOffsetY + r * (ctx->brickH + ctx->brickGap));
 
-                if (balls[b].x + ballSize > bx && balls[b].x < bx + brickW &&
-                    balls[b].y + ballSize > by && balls[b].y < by + brickH) {
+                if (ctx->balls[b].x + ctx->ballSize > bx && ctx->balls[b].x < bx + ctx->brickW &&
+                    ctx->balls[b].y + ctx->ballSize > by && ctx->balls[b].y < by + ctx->brickH) {
 
-                    hitBrick(idx);
+                    hitBrick(ctx, idx);
 
                     // Bounce direction
-                    float overlapLeft = balls[b].x + ballSize - bx;
-                    float overlapRight = bx + brickW - balls[b].x;
-                    float overlapTop = balls[b].y + ballSize - by;
-                    float overlapBottom = by + brickH - balls[b].y;
+                    float overlapLeft = ctx->balls[b].x + ctx->ballSize - bx;
+                    float overlapRight = bx + ctx->brickW - ctx->balls[b].x;
+                    float overlapTop = ctx->balls[b].y + ctx->ballSize - by;
+                    float overlapBottom = by + ctx->brickH - ctx->balls[b].y;
                     float minOverlapX = overlapLeft < overlapRight ? overlapLeft : overlapRight;
                     float minOverlapY = overlapTop < overlapBottom ? overlapTop : overlapBottom;
 
                     if (minOverlapX < minOverlapY) {
-                        balls[b].vx = -balls[b].vx;
+                        ctx->balls[b].vx = -ctx->balls[b].vx;
                     } else {
-                        balls[b].vy = -balls[b].vy;
+                        ctx->balls[b].vy = -ctx->balls[b].vy;
                     }
 
                     goto nextBall; // One brick per ball per tick
@@ -1171,77 +1238,77 @@ void Breakout::updateBalls() {
         }
 
         nextBall:
-        if (balls[b].obj && balls[b].active) {
-            lv_obj_set_pos(balls[b].obj, (int)balls[b].x, (int)balls[b].y);
+        if (ctx->balls[b].obj && ctx->balls[b].active) {
+            lv_obj_set_pos(ctx->balls[b].obj, (int)ctx->balls[b].x, (int)ctx->balls[b].y);
         }
     }
 }
 
-// ── Laser System ─────────────────────────────────────────────
+/* ── Laser System ─────────────────────────────────────────────── */
 
-void Breakout::fireLaser() {
+static void fireLaser(Context* ctx) {
     for (int i = 0; i < MAX_LASERS; i++) {
-        if (!lasers[i].active) {
-            lasers[i].active = true;
-            lasers[i].x = paddleX + paddleW / 2.0f - laserW / 2.0f;
-            lasers[i].y = (float)(paddleYPos - laserH);
-            if (lasers[i].obj) {
-                lv_obj_set_pos(lasers[i].obj, (int)lasers[i].x, (int)lasers[i].y);
-                lv_obj_clear_flag(lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+        if (!ctx->lasers[i].active) {
+            ctx->lasers[i].active = true;
+            ctx->lasers[i].x = ctx->paddleX + ctx->paddleW / 2.0f - ctx->laserW / 2.0f;
+            ctx->lasers[i].y = (float)(ctx->paddleYPos - ctx->laserH);
+            if (ctx->lasers[i].obj) {
+                lv_obj_set_pos(ctx->lasers[i].obj, (int)ctx->lasers[i].x, (int)ctx->lasers[i].y);
+                lv_obj_clear_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
             }
-            if (sfxEngine) sfxEngine->play(SfxId::Laser);
+            if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Laser);
             return;
         }
     }
 }
 
-void Breakout::updateLasers() {
-    if (!laserActive) return;
+static void updateLasers(Context* ctx) {
+    if (!ctx->laserActive) return;
 
     // Auto-fire
-    laserCooldown--;
-    if (laserCooldown <= 0) {
-        fireLaser();
-        laserCooldown = LASER_COOLDOWN_TICKS;
+    ctx->laserCooldown--;
+    if (ctx->laserCooldown <= 0) {
+        fireLaser(ctx);
+        ctx->laserCooldown = LASER_COOLDOWN_TICKS;
     }
 
     for (int i = 0; i < MAX_LASERS; i++) {
-        if (!lasers[i].active) continue;
+        if (!ctx->lasers[i].active) continue;
 
-        lasers[i].y -= laserSpeed;
+        ctx->lasers[i].y -= ctx->laserSpeed;
 
-        if (lasers[i].y + laserH < 0) {
-            lasers[i].active = false;
-            if (lasers[i].obj) lv_obj_add_flag(lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+        if (ctx->lasers[i].y + ctx->laserH < 0) {
+            ctx->lasers[i].active = false;
+            if (ctx->lasers[i].obj) lv_obj_add_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
             continue;
         }
 
-        if (lasers[i].obj && lasers[i].active) {
-            lv_obj_set_pos(lasers[i].obj, (int)lasers[i].x, (int)lasers[i].y);
+        if (ctx->lasers[i].obj && ctx->lasers[i].active) {
+            lv_obj_set_pos(ctx->lasers[i].obj, (int)ctx->lasers[i].x, (int)ctx->lasers[i].y);
         }
     }
 
     // Check all laser-brick collisions once per tick
-    checkLaserBrickCollisions();
+    checkLaserBrickCollisions(ctx);
 }
 
-void Breakout::checkLaserBrickCollisions() {
+static void checkLaserBrickCollisions(Context* ctx) {
     for (int li = 0; li < MAX_LASERS; li++) {
-        if (!lasers[li].active) continue;
+        if (!ctx->lasers[li].active) continue;
 
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                int idx = r * cols + c;
-                if (!brickAlive[idx]) continue;
+        for (int r = 0; r < ctx->rows; r++) {
+            for (int c = 0; c < ctx->cols; c++) {
+                int idx = r * ctx->cols + c;
+                if (!ctx->brickAlive[idx]) continue;
 
-                float bx = (float)(brickOffsetX + c * (brickW + brickGap));
-                float by = (float)(brickOffsetY + r * (brickH + brickGap));
+                float bx = (float)(ctx->brickOffsetX + c * (ctx->brickW + ctx->brickGap));
+                float by = (float)(ctx->brickOffsetY + r * (ctx->brickH + ctx->brickGap));
 
-                if (lasers[li].x + laserW > bx && lasers[li].x < bx + brickW &&
-                    lasers[li].y + laserH > by && lasers[li].y < by + brickH) {
-                    hitBrick(idx);
-                    lasers[li].active = false;
-                    if (lasers[li].obj) lv_obj_add_flag(lasers[li].obj, LV_OBJ_FLAG_HIDDEN);
+                if (ctx->lasers[li].x + ctx->laserW > bx && ctx->lasers[li].x < bx + ctx->brickW &&
+                    ctx->lasers[li].y + ctx->laserH > by && ctx->lasers[li].y < by + ctx->brickH) {
+                    hitBrick(ctx, idx);
+                    ctx->lasers[li].active = false;
+                    if (ctx->lasers[li].obj) lv_obj_add_flag(ctx->lasers[li].obj, LV_OBJ_FLAG_HIDDEN);
                     goto nextLaser;
                 }
             }
@@ -1250,178 +1317,178 @@ void Breakout::checkLaserBrickCollisions() {
     }
 }
 
-// ── BreakOut Exit ────────────────────────────────────────────
+/* ── BreakOut Exit ────────────────────────────────────────────── */
 
-void Breakout::openExit() {
-    exitOpen = true;
-    if (exitIndicator) lv_obj_clear_flag(exitIndicator, LV_OBJ_FLAG_HIDDEN);
+static void openExit(Context* ctx) {
+    ctx->exitOpen = true;
+    if (ctx->exitIndicator) lv_obj_clear_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
 }
 
-void Breakout::closeExit() {
-    exitOpen = false;
-    if (exitIndicator) lv_obj_add_flag(exitIndicator, LV_OBJ_FLAG_HIDDEN);
+static void closeExit(Context* ctx) {
+    ctx->exitOpen = false;
+    if (ctx->exitIndicator) lv_obj_add_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
 }
 
-// ── Main Game Tick ───────────────────────────────────────────
+/* ── Main Game Tick ───────────────────────────────────────────── */
 
-void Breakout::update() {
-    if (state == GameState::Ready) {
+static void update(Context* ctx) {
+    if (ctx->state == GameState::Ready) {
         // Ball follows paddle
-        balls[0].x = paddleX + paddleW / 2.0f - ballSize / 2.0f;
-        if (balls[0].obj) lv_obj_set_x(balls[0].obj, (int)balls[0].x);
+        ctx->balls[0].x = ctx->paddleX + ctx->paddleW / 2.0f - ctx->ballSize / 2.0f;
+        if (ctx->balls[0].obj) lv_obj_set_x(ctx->balls[0].obj, (int)ctx->balls[0].x);
         return;
     }
-    if (state != GameState::Playing) return;
+    if (ctx->state != GameState::Playing) return;
 
     // Slow ball recovery
-    if (slowRecoveryTicks > 0) {
-        slowRecoveryTicks--;
-        if (slowRecoveryTicks <= 0) {
+    if (ctx->slowRecoveryTicks > 0) {
+        ctx->slowRecoveryTicks--;
+        if (ctx->slowRecoveryTicks <= 0) {
             // Restore normal speed
-            float targetSpeed = baseBallSpeed + (level - 1) * 0.3f;
-            ballSpeed = targetSpeed;
+            float targetSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+            ctx->ballSpeed = targetSpeed;
         } else {
             // Gradually recover speed
-            float targetSpeed = baseBallSpeed + (level - 1) * 0.3f;
-            float progress = 1.0f - (float)slowRecoveryTicks / SLOW_RECOVERY_TICKS;
-            ballSpeed = originalBallSpeed * 0.6f + (targetSpeed - originalBallSpeed * 0.6f) * progress;
+            float targetSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+            float progress = 1.0f - (float)ctx->slowRecoveryTicks / SLOW_RECOVERY_TICKS;
+            ctx->ballSpeed = ctx->originalBallSpeed * 0.6f + (targetSpeed - ctx->originalBallSpeed * 0.6f) * progress;
         }
     }
 
     // Update all balls (movement, collisions)
-    updateBalls();
+    updateBalls(ctx);
 
     // Check if paddle reaches BreakOut exit
-    if (exitOpen && paddleX + paddleW >= areaW - 8) {
-        score += 10000;
-        updateScoreDisplay();
-        saveHighScore(score);
-        if (sfxEngine) sfxEngine->play(SfxId::Warp);
-        winLevel();
+    if (ctx->exitOpen && ctx->paddleX + ctx->paddleW >= ctx->areaW - 8) {
+        ctx->score += 10000;
+        updateScoreDisplay(ctx);
+        saveHighScore(ctx->score);
+        if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Warp);
+        winLevel(ctx);
         return;
     }
 
     // Update capsules
-    updateCapsules();
+    updateCapsules(ctx);
 
     // Update lasers
-    updateLasers();
+    updateLasers(ctx);
 }
 
-// ── Display Updates ──────────────────────────────────────────
+/* ── Display Updates ──────────────────────────────────────────── */
 
-void Breakout::updateScoreDisplay() {
-    if (scoreLabel) {
-        if (level > 1) {
-            lv_label_set_text_fmt(scoreLabel, "L%d: %d", level, score);
+static void updateScoreDisplay(Context* ctx) {
+    if (ctx->scoreLabel) {
+        if (ctx->level > 1) {
+            lv_label_set_text_fmt(ctx->scoreLabel, "L%d: %d", ctx->level, ctx->score);
         } else {
-            lv_label_set_text_fmt(scoreLabel, "SCORE: %d", score);
+            lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %d", ctx->score);
         }
     }
-    if (livesLabel) {
-        lv_label_set_text_fmt(livesLabel, "L: %d", lives);
+    if (ctx->livesLabel) {
+        lv_label_set_text_fmt(ctx->livesLabel, "L: %d", ctx->lives);
     }
 }
 
-void Breakout::updateMessage() {
-    if (!messageLabel) return;
+static void updateMessage(Context* ctx) {
+    if (!ctx->messageLabel) return;
 
-    switch (state) {
+    switch (ctx->state) {
         case GameState::Ready: {
             char buf[64];
             const char* input_hint = "Touch";
             if (device_has_active_by_type(&KEYBOARD_TYPE)) {
                 input_hint = "Space";
             }
-            if (level > 1) {
-                snprintf(buf, sizeof(buf), "Level %d\n%s to start!", level, input_hint);
+            if (ctx->level > 1) {
+                snprintf(buf, sizeof(buf), "Level %d\n%s to start!", ctx->level, input_hint);
             } else if (highScore > 0) {
                 snprintf(buf, sizeof(buf), "%s to start!\nBest Score: %d", input_hint, (int)highScore);
             } else {
                 snprintf(buf, sizeof(buf), "%s to start!", input_hint);
             }
-            lv_label_set_text(messageLabel, buf);
-            lv_obj_clear_flag(messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(ctx->messageLabel, buf);
+            lv_obj_clear_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
             break;
         }
         case GameState::Playing:
-            lv_obj_add_flag(messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
             break;
         case GameState::Paused:
-            lv_label_set_text(messageLabel, "PAUSED");
-            lv_obj_clear_flag(messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(ctx->messageLabel, "PAUSED");
+            lv_obj_clear_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
             break;
         case GameState::GameOver: {
             char buf[64];
-            if (score > highScore && score > 0) {
-                snprintf(buf, sizeof(buf), "NEW HIGH SCORE!\n%d", score);
+            if (ctx->score > highScore && ctx->score > 0) {
+                snprintf(buf, sizeof(buf), "NEW HIGH SCORE!\n%d", ctx->score);
             } else {
-                snprintf(buf, sizeof(buf), "Game Over\nScore: %d\nBest Score: %d", score, (int)highScore);
+                snprintf(buf, sizeof(buf), "Game Over\nScore: %d\nBest Score: %d", ctx->score, (int)highScore);
             }
-            lv_label_set_text(messageLabel, buf);
-            lv_obj_clear_flag(messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(ctx->messageLabel, buf);
+            lv_obj_clear_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
             break;
         }
     }
-    lv_obj_center(messageLabel);
+    lv_obj_center(ctx->messageLabel);
 }
 
-void Breakout::updateSoundIcon() {
-    if (soundBtnIcon) {
-        lv_label_set_text(soundBtnIcon, soundEnabled ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_MUTE);
+static void updateSoundIcon(Context* ctx) {
+    if (ctx->soundBtnIcon) {
+        lv_label_set_text(ctx->soundBtnIcon, soundEnabled ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_MUTE);
     }
 }
 
-// ── Event Callbacks ──────────────────────────────────────────
+/* ── Event Callbacks ──────────────────────────────────────────── */
 
-void Breakout::onTick(lv_timer_t* timer) {
-    Breakout* self = static_cast<Breakout*>(lv_timer_get_user_data(timer));
-    if (self) self->update();
+static void onTick(lv_timer_t* timer) {
+    auto* ctx = static_cast<Context*>(lv_timer_get_user_data(timer));
+    if (ctx) update(ctx);
 }
 
-void Breakout::onPressed(lv_event_t* e) {
-    Breakout* self = static_cast<Breakout*>(lv_event_get_user_data(e));
-    if (!self || !self->paddle) return;
-    if (self->state == GameState::GameOver || self->state == GameState::Paused) return;
+static void onPressed(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->paddle) return;
+    if (ctx->state == GameState::GameOver || ctx->state == GameState::Paused) return;
 
     lv_point_t point;
     lv_indev_get_point(lv_indev_active(), &point);
 
     // Move paddle to touch X (centered on finger)
-    self->paddleX = (float)(point.x - self->paddleW / 2);
+    ctx->paddleX = (float)(point.x - ctx->paddleW / 2);
 
     // Clamp to game area bounds
-    if (self->paddleX < 0) self->paddleX = 0;
-    if (self->paddleX + self->paddleW > self->areaW)
-        self->paddleX = (float)(self->areaW - self->paddleW);
+    if (ctx->paddleX < 0) ctx->paddleX = 0;
+    if (ctx->paddleX + ctx->paddleW > ctx->areaW)
+        ctx->paddleX = (float)(ctx->areaW - ctx->paddleW);
 
-    lv_obj_set_x(self->paddle, (int)self->paddleX);
+    lv_obj_set_x(ctx->paddle, (int)ctx->paddleX);
 
     // In ready state, ball follows paddle
-    if (self->state == GameState::Ready) {
-        self->balls[0].x = self->paddleX + self->paddleW / 2.0f - self->ballSize / 2.0f;
-        if (self->balls[0].obj) lv_obj_set_x(self->balls[0].obj, (int)self->balls[0].x);
+    if (ctx->state == GameState::Ready) {
+        ctx->balls[0].x = ctx->paddleX + ctx->paddleW / 2.0f - ctx->ballSize / 2.0f;
+        if (ctx->balls[0].obj) lv_obj_set_x(ctx->balls[0].obj, (int)ctx->balls[0].x);
     }
 }
 
-void Breakout::onClicked(lv_event_t* e) {
-    Breakout* self = static_cast<Breakout*>(lv_event_get_user_data(e));
-    if (!self) return;
+static void onClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (!ctx) return;
 
-    if (self->state == GameState::Ready) {
-        self->launchBall();
-    } else if (self->state == GameState::GameOver) {
-        self->startGame();
-    } else if (self->state == GameState::Paused) {
-        self->togglePause();
-    } else if (self->state == GameState::Playing && self->catchActive && self->catchBallIndex >= 0) {
-        self->launchBall();
+    if (ctx->state == GameState::Ready) {
+        launchBall(ctx);
+    } else if (ctx->state == GameState::GameOver) {
+        startGame(ctx);
+    } else if (ctx->state == GameState::Paused) {
+        togglePause(ctx);
+    } else if (ctx->state == GameState::Playing && ctx->catchActive && ctx->catchBallIndex >= 0) {
+        launchBall(ctx);
     }
 }
 
-void Breakout::onKey(lv_event_t* e) {
-    Breakout* self = static_cast<Breakout*>(lv_event_get_user_data(e));
-    if (!self) return;
+static void onKey(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (!ctx) return;
 
     uint32_t key = lv_event_get_key(e);
 
@@ -1430,38 +1497,38 @@ void Breakout::onKey(lv_event_t* e) {
         case 'a':
         case 'A':
         case ',':
-            if (self->state == GameState::GameOver || self->state == GameState::Paused) break;
-            self->paddleX -= self->paddleSpeed;
-            if (self->paddleX < 0) self->paddleX = 0;
-            if (self->paddle) lv_obj_set_x(self->paddle, (int)self->paddleX);
-            if (self->state == GameState::Ready) self->resetBall();
+            if (ctx->state == GameState::GameOver || ctx->state == GameState::Paused) break;
+            ctx->paddleX -= ctx->paddleSpeed;
+            if (ctx->paddleX < 0) ctx->paddleX = 0;
+            if (ctx->paddle) lv_obj_set_x(ctx->paddle, (int)ctx->paddleX);
+            if (ctx->state == GameState::Ready) resetBall(ctx);
             break;
 
         case LV_KEY_RIGHT:
         case 'd':
         case 'D':
         case '/':
-            if (self->state == GameState::GameOver || self->state == GameState::Paused) break;
-            self->paddleX += self->paddleSpeed;
-            if (self->paddleX + self->paddleW > self->areaW)
-                self->paddleX = (float)(self->areaW - self->paddleW);
-            if (self->paddle) lv_obj_set_x(self->paddle, (int)self->paddleX);
-            if (self->state == GameState::Ready) self->resetBall();
+            if (ctx->state == GameState::GameOver || ctx->state == GameState::Paused) break;
+            ctx->paddleX += ctx->paddleSpeed;
+            if (ctx->paddleX + ctx->paddleW > ctx->areaW)
+                ctx->paddleX = (float)(ctx->areaW - ctx->paddleW);
+            if (ctx->paddle) lv_obj_set_x(ctx->paddle, (int)ctx->paddleX);
+            if (ctx->state == GameState::Ready) resetBall(ctx);
             break;
 
         case LV_KEY_ENTER:
         case ' ':
-            if (self->state == GameState::Ready) {
-                self->launchBall();
-            } else if (self->state == GameState::GameOver) {
-                self->startGame();
-            } else if (self->state == GameState::Paused) {
-                self->togglePause();
-            } else if (self->state == GameState::Playing) {
-                if (self->catchActive && self->catchBallIndex >= 0) {
-                    self->launchBall();
+            if (ctx->state == GameState::Ready) {
+                launchBall(ctx);
+            } else if (ctx->state == GameState::GameOver) {
+                startGame(ctx);
+            } else if (ctx->state == GameState::Paused) {
+                togglePause(ctx);
+            } else if (ctx->state == GameState::Playing) {
+                if (ctx->catchActive && ctx->catchBallIndex >= 0) {
+                    launchBall(ctx);
                 } else {
-                    self->togglePause();
+                    togglePause(ctx);
                 }
             }
             break;
@@ -1478,22 +1545,22 @@ void Breakout::onKey(lv_event_t* e) {
     }
 }
 
-void Breakout::onPauseClicked(lv_event_t* e) {
-    Breakout* self = static_cast<Breakout*>(lv_event_get_user_data(e));
-    if (self) self->togglePause();
+static void onPauseClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx) togglePause(ctx);
 }
 
-void Breakout::onSoundToggled(lv_event_t* e) {
-    Breakout* self = static_cast<Breakout*>(lv_event_get_user_data(e));
-    if (!self) return;
+static void onSoundToggled(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (!ctx) return;
 
     soundEnabled = !soundEnabled;
-    if (self->sfxEngine) self->sfxEngine->setEnabled(soundEnabled);
+    if (ctx->sfxEngine) ctx->sfxEngine->setEnabled(soundEnabled);
     saveSoundSetting(soundEnabled);
-    self->updateSoundIcon();
+    updateSoundIcon(ctx);
 }
 
-void Breakout::onReenterKeyMode(lv_event_t* e) {
+static void onReenterKeyMode(lv_event_t* e) {
     lv_obj_t* area = lv_event_get_current_target_obj(e);
     lv_group_t* group = lv_group_get_default();
     if (!group) return;

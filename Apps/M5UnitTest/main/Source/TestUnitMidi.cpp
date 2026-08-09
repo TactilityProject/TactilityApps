@@ -1,14 +1,80 @@
 #include "TestUnitMidi.h"
+#include "M5UnitTest.h"
 #include "GroveLookup.h"
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <lvgl/fonts.h>
 
-void TestUnitMidi::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) {
-    app_ = app;
+namespace {
 
-    createToolbar(parent, handle, "MIDI / Synth");
-    createBanner(parent, "MIDI", "UART", COLOR_UART);
+void updateLabels(TestUnitMidi* self) {
+    lv_label_set_text_fmt(self->lblChannel_, "Channel: %d", (int)self->channel_ + 1);
+    lv_label_set_text_fmt(self->lblProgram_, "Program: %d", (int)self->program_ + 1);
+}
+
+void onNoteOnClicked(lv_event_t* e) {
+    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
+    if (!self->unit_.isPresent()) return;
+    self->unit_.noteOn(self->channel_, self->note_, 100);
+    self->notePlaying_ = true;
+}
+
+void onNoteOffClicked(lv_event_t* e) {
+    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
+    if (!self->unit_.isPresent()) return;
+    self->unit_.noteOff(self->channel_, self->note_);
+    self->notePlaying_ = false;
+}
+
+void onChDown(lv_event_t* e) {
+    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
+    if (self->channel_ > 0) {
+        if (self->notePlaying_ && self->unit_.isPresent()) {
+            self->unit_.noteOff(self->channel_, self->note_);
+            self->notePlaying_ = false;
+        }
+        self->channel_--;
+        updateLabels(self);
+    }
+}
+
+void onChUp(lv_event_t* e) {
+    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
+    if (self->channel_ < 15) {
+        if (self->notePlaying_ && self->unit_.isPresent()) {
+            self->unit_.noteOff(self->channel_, self->note_);
+            self->notePlaying_ = false;
+        }
+        self->channel_++;
+        updateLabels(self);
+    }
+}
+
+void onProgDown(lv_event_t* e) {
+    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
+    if (self->program_ > 0) {
+        self->program_--;
+        if (self->unit_.isPresent()) self->unit_.programChange(self->channel_, self->program_);
+        updateLabels(self);
+    }
+}
+
+void onProgUp(lv_event_t* e) {
+    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
+    if (self->program_ < 127) {
+        self->program_++;
+        if (self->unit_.isPresent()) self->unit_.programChange(self->channel_, self->program_);
+        updateLabels(self);
+    }
+}
+
+} // namespace
+
+void testUnitMidiStart(TestUnitMidi* self, lv_obj_t* parent, Context* app) {
+    self->app_ = app;
+
+    testViewCreateToolbar(parent, app, "MIDI / Synth");
+    testViewCreateBanner(parent, "MIDI", "UART", COLOR_UART);
 
     lv_obj_t* cont = lv_obj_create(parent);
     lv_obj_set_width(cont, LV_PCT(100));
@@ -23,14 +89,14 @@ void TestUnitMidi::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) 
     const lv_font_t* fnt  = lvgl_get_text_font(uiFont());
     const lv_font_t* fntS = lvgl_get_text_font(FONT_SIZE_SMALL);
 
-    lblStatus_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblStatus_, fnt, 0);
+    self->lblStatus_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblStatus_, fnt, 0);
 
-    lblChannel_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblChannel_, fntS, 0);
+    self->lblChannel_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblChannel_, fntS, 0);
 
-    lblProgram_ = lv_label_create(cont);
-    lv_obj_set_style_text_font(lblProgram_, fntS, 0);
+    self->lblProgram_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblProgram_, fntS, 0);
 
     // Channel row
     auto makeAdjRow = [&](const char* name, lv_event_cb_t down, lv_event_cb_t up) {
@@ -51,12 +117,12 @@ void TestUnitMidi::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) 
         lv_obj_set_width(lbl, LV_SIZE_CONTENT);
 
         lv_obj_t* bDown = lv_button_create(row);
-        lv_obj_add_event_cb(bDown, down, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(bDown, down, LV_EVENT_CLICKED, self);
         lv_obj_t* lD = lv_label_create(bDown); lv_label_set_text(lD, "-");
         lv_obj_set_style_text_font(lD, fntS, 0);
 
         lv_obj_t* bUp = lv_button_create(row);
-        lv_obj_add_event_cb(bUp, up, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(bUp, up, LV_EVENT_CLICKED, self);
         lv_obj_t* lU = lv_label_create(bUp); lv_label_set_text(lU, "+");
         lv_obj_set_style_text_font(lU, fntS, 0);
     };
@@ -76,93 +142,32 @@ void TestUnitMidi::onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) 
     lv_obj_set_style_border_width(noteRow, 0, 0);
 
     lv_obj_t* btnOn = lv_button_create(noteRow);
-    lv_obj_add_event_cb(btnOn, onNoteOnClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(btnOn, onNoteOnClicked, LV_EVENT_CLICKED, self);
     lv_obj_t* lOn = lv_label_create(btnOn); lv_label_set_text(lOn, "Note On (C4)");
     lv_obj_set_style_text_font(lOn, fntS, 0);
 
     lv_obj_t* btnOff = lv_button_create(noteRow);
-    lv_obj_add_event_cb(btnOff, onNoteOffClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(btnOff, onNoteOffClicked, LV_EVENT_CLICKED, self);
     lv_obj_t* lOff = lv_label_create(btnOff); lv_label_set_text(lOff, "Note Off");
     lv_obj_set_style_text_font(lOff, fntS, 0);
 
     Device* uart = findGroveUartDevice();
-    if (!uart || !device_is_ready(uart) || !unit_.begin(uart)) {
-        lv_label_set_text(lblStatus_, "MIDI UART not available");
-        updateLabels();
+    if (!uart || !device_is_ready(uart) || !self->unit_.begin(uart)) {
+        lv_label_set_text(self->lblStatus_, "MIDI UART not available");
+        updateLabels(self);
         return;
     }
 
-    lv_label_set_text(lblStatus_, "MIDI ready (31250 bps)");
-    unit_.programChange(channel_, program_);
-    updateLabels();
+    lv_label_set_text(self->lblStatus_, "MIDI ready (31250 bps)");
+    self->unit_.programChange(self->channel_, self->program_);
+    updateLabels(self);
 }
 
-void TestUnitMidi::onStop() {
-    if (notePlaying_ && unit_.isPresent()) {
-        unit_.noteOff(channel_, note_);
-        notePlaying_ = false;
+void testUnitMidiStop(TestUnitMidi* self) {
+    if (self->notePlaying_ && self->unit_.isPresent()) {
+        self->unit_.noteOff(self->channel_, self->note_);
+        self->notePlaying_ = false;
     }
-    unit_.end();
-    lblStatus_ = lblChannel_ = lblProgram_ = nullptr;
-}
-
-void TestUnitMidi::updateLabels() {
-    lv_label_set_text_fmt(lblChannel_, "Channel: %d", (int)channel_ + 1);
-    lv_label_set_text_fmt(lblProgram_, "Program: %d", (int)program_ + 1);
-}
-
-void TestUnitMidi::onNoteOnClicked(lv_event_t* e) {
-    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
-    if (!self->unit_.isPresent()) return;
-    self->unit_.noteOn(self->channel_, self->note_, 100);
-    self->notePlaying_ = true;
-}
-
-void TestUnitMidi::onNoteOffClicked(lv_event_t* e) {
-    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
-    if (!self->unit_.isPresent()) return;
-    self->unit_.noteOff(self->channel_, self->note_);
-    self->notePlaying_ = false;
-}
-
-void TestUnitMidi::onChDown(lv_event_t* e) {
-    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
-    if (self->channel_ > 0) {
-        if (self->notePlaying_ && self->unit_.isPresent()) {
-            self->unit_.noteOff(self->channel_, self->note_);
-            self->notePlaying_ = false;
-        }
-        self->channel_--;
-        self->updateLabels();
-    }
-}
-
-void TestUnitMidi::onChUp(lv_event_t* e) {
-    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
-    if (self->channel_ < 15) {
-        if (self->notePlaying_ && self->unit_.isPresent()) {
-            self->unit_.noteOff(self->channel_, self->note_);
-            self->notePlaying_ = false;
-        }
-        self->channel_++;
-        self->updateLabels();
-    }
-}
-
-void TestUnitMidi::onProgDown(lv_event_t* e) {
-    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
-    if (self->program_ > 0) {
-        self->program_--;
-        if (self->unit_.isPresent()) self->unit_.programChange(self->channel_, self->program_);
-        self->updateLabels();
-    }
-}
-
-void TestUnitMidi::onProgUp(lv_event_t* e) {
-    auto* self = static_cast<TestUnitMidi*>(lv_event_get_user_data(e));
-    if (self->program_ < 127) {
-        self->program_++;
-        if (self->unit_.isPresent()) self->unit_.programChange(self->channel_, self->program_);
-        self->updateLabels();
-    }
+    self->unit_.end();
+    self->lblStatus_ = self->lblChannel_ = self->lblProgram_ = nullptr;
 }

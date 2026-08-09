@@ -3,12 +3,10 @@
 #include <UnitJoystick2.h>
 #include <UnitPaHub.h>
 
-class TestUnitJoystick2 final : public TestViewBase {
-public:
-    void onStart(lv_obj_t* parent, AppHandle handle, M5UnitTest* app) override;
-    void onStop() override;
+struct Context;
 
-private:
+struct TestUnitJoystick2 {
+    Context*      app_       = nullptr;
     UnitPaHub     hub_;
     UnitJoystick2 unit_;
     lv_obj_t*   lblXY_      = nullptr;
@@ -19,8 +17,7 @@ private:
     bool        usingPaHub_ = false;
     int         joyArea_    = 120;
     int         dotSize_    = 16;
-
-    void selectIfNeeded();
-    static void onTimer(lv_timer_t* t);
-    void update();
 };
+
+void testUnitJoystick2Start(TestUnitJoystick2* self, lv_obj_t* parent, Context* app);
+void testUnitJoystick2Stop(TestUnitJoystick2* self);

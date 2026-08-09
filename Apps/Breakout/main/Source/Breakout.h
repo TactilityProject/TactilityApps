@@ -4,9 +4,8 @@
  */
 #pragma once
 
-#include <tt_app.h>
 #include <lvgl.h>
-#include <TactilityCpp/App.h>
+#include <stdint.h>
 
 class SfxEngine;
 
@@ -44,10 +43,10 @@ struct Laser {
     lv_obj_t* obj;
 };
 
-class Breakout final : public App {
+struct Context {
+    uint32_t appInstanceId;
 
-private:
-    // UI pointers (nulled in onHide)
+    // UI pointers (nulled on teardown)
     lv_obj_t* gameArea = nullptr;
     lv_obj_t* paddle = nullptr;
     lv_obj_t* bricks[MAX_BRICKS] = {};
@@ -116,7 +115,7 @@ private:
     // Paddle
     float paddleX = 0;
 
-    // Layout dimensions (calculated in onShow)
+    // Layout dimensions (calculated on create)
     int areaW = 0, areaH = 0;
     int cols = 0, rows = 0;
     int brickW = 0, brickH = 0;
@@ -127,58 +126,10 @@ private:
     int paddleYPos = 0;
     float ballSpeed = 0;
     float paddleSpeed = 0;
-
-    // Static callbacks
-    static void onTick(lv_timer_t* timer);
-    static void onPressed(lv_event_t* e);
-    static void onClicked(lv_event_t* e);
-    static void onKey(lv_event_t* e);
-    static void onReenterKeyMode(lv_event_t* e);
-    static void onPauseClicked(lv_event_t* e);
-    static void onSoundToggled(lv_event_t* e);
-
-    // Game logic
-    void startGame();
-    void nextLevel();
-    void resetBall();
-    void launchBall();
-    void update();
-    void checkLaserBrickCollisions();
-    void loseLife();
-    void winLevel();
-    void createBricks();
-    void setupLevelPattern();
-    void refreshBricks();
-    void updateScoreDisplay();
-    void updateMessage();
-    void togglePause();
-    void updateSoundIcon();
-
-    // Capsule system
-    void spawnCapsule(float x, float y);
-    void updateCapsules();
-    void activatePowerUp(PowerUpType type);
-    void clearPowerUps();
-    void createCapsuleObjs();
-
-    // Multi-ball
-    void updateBalls();
-    void splitBalls();
-
-    // Laser
-    void updateLasers();
-    void fireLaser();
-    void createLaserObjs();
-
-    // BreakOut exit
-    void openExit();
-    void closeExit();
-
-    // Brick helpers
-    void hitBrick(int idx);
-    int scoreBrick(int idx);
-
-public:
-    void onShow(AppHandle context, lv_obj_t* parent) override;
-    void onHide(AppHandle context) override;
 };
+
+/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+void breakoutCreateWidgets(lv_obj_t* parent, void* userData);
+
+/** Releases resources acquired while the window was shown (sfx engine, LVGL group/timer). Call once the window is torn down. */
+void breakoutTeardown(Context* ctx);

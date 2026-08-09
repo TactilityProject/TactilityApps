@@ -1,10 +1,13 @@
 #include "Calculator.h"
 
-#include <cstdio>
-#include <ctype.h>
 #include <lvgl/widgets/toolbar.h>
-#include <stack>
+
+#include <cstdio>
 #include <cstring>
+#include <ctype.h>
+#include <deque>
+#include <stack>
+#include <string>
 
 constexpr auto* TAG = "Calculator";
 
@@ -14,39 +17,7 @@ static int precedence(char op) {
     return 0;
 }
 
-void Calculator::button_event_cb(lv_event_t* e) {
-    Calculator* self = static_cast<Calculator*>(lv_event_get_user_data(e));
-    lv_obj_t* buttonmatrix = lv_event_get_current_target_obj(e);
-    lv_event_code_t event_code = lv_event_get_code(e);
-    uint32_t button_id = lv_buttonmatrix_get_selected_button(buttonmatrix);
-    const char* button_text = lv_buttonmatrix_get_button_text(buttonmatrix, button_id);
-    if (event_code == LV_EVENT_VALUE_CHANGED) {
-        self->handleInput(button_text);
-    }
-}
-
-void Calculator::handleInput(const char* txt) {
-    if (strcmp(txt, "C") == 0) {
-        resetCalculator();
-        return;
-    }
-
-    if (strcmp(txt, "=") == 0) {
-        evaluateExpression();
-        return;
-    }
-
-    if (strlen(formulaBuffer) + strlen(txt) < sizeof(formulaBuffer) - 1) {
-        if (newInput) {
-            memset(formulaBuffer, 0, sizeof(formulaBuffer));
-            newInput = false;
-        }
-        strcat(formulaBuffer, txt);
-        lv_label_set_text(displayLabel, formulaBuffer);
-    }
-}
-
-std::deque<std::string> Calculator::infixToRPN(const std::string& infix) {
+static std::deque<std::string> infixToRPN(const std::string& infix) {
     std::stack<char> opStack;
     std::deque<std::string> output;
     std::string token;
@@ -87,7 +58,7 @@ std::deque<std::string> Calculator::infixToRPN(const std::string& infix) {
     return output;
 }
 
-double Calculator::evaluateRPN(std::deque<std::string> rpnQueue) {
+static double evaluateRPN(std::deque<std::string> rpnQueue) {
     std::stack<double> values;
 
     while (!rpnQueue.empty()) {
@@ -115,35 +86,72 @@ double Calculator::evaluateRPN(std::deque<std::string> rpnQueue) {
 
     return values.empty() ? 0 : values.top();
 }
-void Calculator::evaluateExpression() {
-    double result = computeFormula();
 
-    size_t formulaLen = strlen(formulaBuffer);
-    size_t maxAvailable = sizeof(formulaBuffer) - formulaLen - 1;
+static double computeFormula(Context* ctx) {
+    return evaluateRPN(infixToRPN(std::string(ctx->formulaBuffer)));
+}
+
+static void resetCalculator(Context* ctx) {
+    memset(ctx->formulaBuffer, 0, sizeof(ctx->formulaBuffer));
+    lv_label_set_text(ctx->displayLabel, "0");
+    lv_label_set_text(ctx->resultLabel, "");
+    ctx->newInput = true;
+}
+
+static void evaluateExpression(Context* ctx) {
+    double result = computeFormula(ctx);
+
+    size_t formulaLen = strlen(ctx->formulaBuffer);
+    size_t maxAvailable = sizeof(ctx->formulaBuffer) - formulaLen - 1;
 
     if (maxAvailable > 10) {
         char resultBuffer[32];
         snprintf(resultBuffer, sizeof(resultBuffer), " = %.8g", result);
-        strncat(formulaBuffer, resultBuffer, maxAvailable);
-    } else { snprintf(formulaBuffer, sizeof(formulaBuffer), "%.8g", result); }
+        strncat(ctx->formulaBuffer, resultBuffer, maxAvailable);
+    } else {
+        snprintf(ctx->formulaBuffer, sizeof(ctx->formulaBuffer), "%.8g", result);
+    }
 
-    lv_label_set_text(displayLabel, "0");
-    lv_label_set_text(resultLabel, formulaBuffer);
-    newInput = true;
+    lv_label_set_text(ctx->displayLabel, "0");
+    lv_label_set_text(ctx->resultLabel, ctx->formulaBuffer);
+    ctx->newInput = true;
 }
 
-double Calculator::computeFormula() {
-    return evaluateRPN(infixToRPN(std::string(formulaBuffer)));
+static void handleInput(Context* ctx, const char* txt) {
+    if (strcmp(txt, "C") == 0) {
+        resetCalculator(ctx);
+        return;
+    }
+
+    if (strcmp(txt, "=") == 0) {
+        evaluateExpression(ctx);
+        return;
+    }
+
+    if (strlen(ctx->formulaBuffer) + strlen(txt) < sizeof(ctx->formulaBuffer) - 1) {
+        if (ctx->newInput) {
+            memset(ctx->formulaBuffer, 0, sizeof(ctx->formulaBuffer));
+            ctx->newInput = false;
+        }
+        strcat(ctx->formulaBuffer, txt);
+        lv_label_set_text(ctx->displayLabel, ctx->formulaBuffer);
+    }
 }
 
-void Calculator::resetCalculator() {
-    memset(formulaBuffer, 0, sizeof(formulaBuffer));
-    lv_label_set_text(displayLabel, "0");
-    lv_label_set_text(resultLabel, "");
-    newInput = true;
+static void onButtonPressed(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    lv_obj_t* buttonmatrix = lv_event_get_current_target_obj(e);
+    lv_event_code_t event_code = lv_event_get_code(e);
+    uint32_t button_id = lv_buttonmatrix_get_selected_button(buttonmatrix);
+    const char* button_text = lv_buttonmatrix_get_button_text(buttonmatrix, button_id);
+    if (event_code == LV_EVENT_VALUE_CHANGED) {
+        handleInput(ctx, button_text);
+    }
 }
 
-void Calculator::onShow(AppHandle appHandle, lv_obj_t* parent) {
+void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
@@ -165,15 +173,15 @@ void Calculator::onShow(AppHandle appHandle, lv_obj_t* parent) {
     lv_obj_set_style_border_width(wrapper, 0, 0);
     lv_obj_remove_flag(wrapper, LV_OBJ_FLAG_SCROLLABLE);
 
-    displayLabel = lv_label_create(wrapper);
-    lv_label_set_text(displayLabel, "0");
-    lv_obj_set_width(displayLabel, LV_SIZE_CONTENT);
-    lv_obj_set_align(displayLabel, LV_ALIGN_LEFT_MID);
+    ctx->displayLabel = lv_label_create(wrapper);
+    lv_label_set_text(ctx->displayLabel, "0");
+    lv_obj_set_width(ctx->displayLabel, LV_SIZE_CONTENT);
+    lv_obj_set_align(ctx->displayLabel, LV_ALIGN_LEFT_MID);
 
-    resultLabel = lv_label_create(wrapper);
-    lv_label_set_text(resultLabel, "");
-    lv_obj_set_width(resultLabel, LV_SIZE_CONTENT);
-    lv_obj_set_align(resultLabel, LV_ALIGN_RIGHT_MID);
+    ctx->resultLabel = lv_label_create(wrapper);
+    lv_label_set_text(ctx->resultLabel, "");
+    lv_obj_set_width(ctx->resultLabel, LV_SIZE_CONTENT);
+    lv_obj_set_align(ctx->resultLabel, LV_ALIGN_RIGHT_MID);
 
     static const char* btn_map[] = {
         "(", ")", "C", "/", "\n",
@@ -201,5 +209,5 @@ void Calculator::onShow(AppHandle appHandle, lv_obj_t* parent) {
     }
     lv_obj_align(buttonmatrix, LV_ALIGN_BOTTOM_MID, 0, -5);
 
-    lv_obj_add_event_cb(buttonmatrix, button_event_cb, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(buttonmatrix, onButtonPressed, LV_EVENT_VALUE_CHANGED, ctx);
 }

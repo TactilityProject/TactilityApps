@@ -2,7 +2,6 @@
 #include <lvgl/widgets/toolbar.h>
 #include <tactility/filesystem/file_mutex.h>
 #include <tactility/log.h>
-#include <Tactility/kernel/Kernel.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/idf_additions.h>
@@ -17,11 +16,11 @@ static const char* TAG = "EpubReader";
 // freed in asyncOpenComplete (or in spawnOpenTask on task-create failure).
 // ---------------------------------------------------------------------------
 struct OpenArgs {
-    EpubReader*                  self;
+    Context*                     ctx;
     std::string                  filePath;      // path to .epub or .txt
     bool                         restore;       // true = keep currentSpineIndex_ (restore mode)
     int                          spineIndex;    // savedChapter / savedOffset for restore
-    uint32_t                     token;         // matches self->openToken_ at dispatch time
+    uint32_t                     token;         // matches ctx->openToken_ at dispatch time
     // Results filled by backgroundOpenTask:
     std::shared_ptr<EpubService> epub;          // null on failure
     std::string                  textContent;   // pre-read content for .txt files
@@ -33,74 +32,74 @@ struct OpenArgs {
 
 // Helper: allocate an OpenArgs, clean the wrapper, show a placeholder, and spawn
 // the background task.  Used by both asyncOpenEpub and asyncRestoreEpub.
-void EpubReader::spawnOpenTask(EpubReader* self, bool restore) {
+void spawnOpenTask(Context* ctx, bool restore) {
     auto* args       = new OpenArgs{};
-    args->self       = self;
-    args->filePath   = self->pendingFilePath_;
+    args->ctx        = ctx;
+    args->filePath   = ctx->pendingFilePath_;
     args->restore    = restore;
-    args->spineIndex = self->currentSpineIndex_;
-    args->token      = self->openToken_;
+    args->spineIndex = ctx->currentSpineIndex_;
+    args->token      = ctx->openToken_;
 
     // Show a brief placeholder so old content doesn't linger during the open
-    lv_obj_clean(self->wrapperWidget_);
-    lvgl_toolbar_clear_actions(self->toolbar_);
-    lv_obj_t* lbl = lv_label_create(self->wrapperWidget_);
+    lv_obj_clean(ctx->wrapperWidget_);
+    lvgl_toolbar_clear_actions(ctx->toolbar_);
+    lv_obj_t* lbl = lv_label_create(ctx->wrapperWidget_);
     lv_obj_set_style_pad_all(lbl, 8, 0);
     lv_label_set_text(lbl, restore ? "Loading..." : "Opening...");
 
-    if (xTaskCreateWithCaps(EpubReader::backgroundOpenTask, "epubOpen", 32768 /* 32 KB */, args, 3, nullptr, MALLOC_CAP_SPIRAM)
+    if (xTaskCreateWithCaps(backgroundOpenTask, "epubOpen", 32768 /* 32 KB */, args, 3, nullptr, MALLOC_CAP_SPIRAM)
             != pdPASS) {
         LOG_E(TAG, "Failed to create open task - out of memory");
         delete args;
-        self->epub_ = nullptr;
-        self->setBrowserToolbarButtons();
-        lv_obj_clean(self->wrapperWidget_);
-        self->buildBrowserUI(self->wrapperWidget_);
+        ctx->epub_ = nullptr;
+        setBrowserToolbarButtons(ctx);
+        lv_obj_clean(ctx->wrapperWidget_);
+        buildBrowserUI(ctx, ctx->wrapperWidget_);
     }
 }
 
 // Like asyncOpenEpub but keeps currentSpineIndex_ - used when restoring a saved session.
-void EpubReader::asyncRestoreEpub(void* data) {
-    auto* self = static_cast<EpubReader*>(data);
-    if (!self->wrapperWidget_ || !self->toolbar_) return;
-    self->textMode_ = false;
-    ++self->openToken_;
-    spawnOpenTask(self, /*restore=*/true);
+void asyncRestoreEpub(void* data) {
+    auto* ctx = static_cast<Context*>(data);
+    if (!ctx->wrapperWidget_ || !ctx->toolbar_) return;
+    ctx->textMode_ = false;
+    ++ctx->openToken_;
+    spawnOpenTask(ctx, /*restore=*/true);
 }
 
-void EpubReader::asyncNavigateBrowser(void* data) {
-    auto* self = static_cast<EpubReader*>(data);
-    if (!self->wrapperWidget_ || !self->toolbar_) return;
-    self->setBrowserToolbarButtons();
-    lv_obj_clean(self->wrapperWidget_);
-    self->buildBrowserUI(self->wrapperWidget_);
+void asyncNavigateBrowser(void* data) {
+    auto* ctx = static_cast<Context*>(data);
+    if (!ctx->wrapperWidget_ || !ctx->toolbar_) return;
+    setBrowserToolbarButtons(ctx);
+    lv_obj_clean(ctx->wrapperWidget_);
+    buildBrowserUI(ctx, ctx->wrapperWidget_);
 }
 
-void EpubReader::asyncOpenEpub(void* data) {
-    auto* self = static_cast<EpubReader*>(data);
-    if (!self->wrapperWidget_ || !self->toolbar_) return;
+void asyncOpenEpub(void* data) {
+    auto* ctx = static_cast<Context*>(data);
+    if (!ctx->wrapperWidget_ || !ctx->toolbar_) return;
 
-    self->currentSpineIndex_ = 0;
-    self->textMode_          = false;
-    ++self->openToken_;
+    ctx->currentSpineIndex_ = 0;
+    ctx->textMode_          = false;
+    ++ctx->openToken_;
 
-    spawnOpenTask(self, /*restore=*/false);
+    spawnOpenTask(ctx, /*restore=*/false);
 }
 
-void EpubReader::asyncSwitchToBrowser(void* data) {
-    auto* self = static_cast<EpubReader*>(data);
-    if (!self->wrapperWidget_ || !self->toolbar_) return;
+void asyncSwitchToBrowser(void* data) {
+    auto* ctx = static_cast<Context*>(data);
+    if (!ctx->wrapperWidget_ || !ctx->toolbar_) return;
 
-    self->epub_ = nullptr;
-    self->textMode_          = false;
-    self->currentSpineIndex_ = 0;
-    self->contentWidget_      = nullptr;
+    ctx->epub_ = nullptr;
+    ctx->textMode_          = false;
+    ctx->currentSpineIndex_ = 0;
+    ctx->contentWidget_      = nullptr;
 
     // Return to books folder (if set) so the user lands on their library
-    if (!self->booksPath_.empty()) self->browsePath_ = self->booksPath_;
-    self->setBrowserToolbarButtons();
-    lv_obj_clean(self->wrapperWidget_);
-    self->buildBrowserUI(self->wrapperWidget_);
+    if (!ctx->booksPath_.empty()) ctx->browsePath_ = ctx->booksPath_;
+    setBrowserToolbarButtons(ctx);
+    lv_obj_clean(ctx->wrapperWidget_);
+    buildBrowserUI(ctx, ctx->wrapperWidget_);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +109,7 @@ void EpubReader::asyncSwitchToBrowser(void* data) {
 // Runs on a FreeRTOS task with its own 32 KB stack.
 // Does all SD card I/O (epub parse or text file read) completely off the LVGL
 // task to prevent stack overflow and serialise SDMMC access.
-void EpubReader::backgroundOpenTask(void* data) {
+void backgroundOpenTask(void* data) {
     auto* a = static_cast<OpenArgs*>(data);
 
     // Acquire the filesystem lock before any SD card I/O - prevents concurrent
@@ -150,61 +149,61 @@ void EpubReader::backgroundOpenTask(void* data) {
 
 // Called back on the LVGL task (via lv_async_call from backgroundOpenTask).
 // Checks the open token, then either builds the reader UI or falls back to browser.
-void EpubReader::asyncOpenComplete(void* data) {
-    auto* a    = static_cast<OpenArgs*>(data);
-    auto* self = a->self;
+void asyncOpenComplete(void* data) {
+    auto* a   = static_cast<OpenArgs*>(data);
+    auto* ctx = a->ctx;
 
-    // Discard stale results if the app was hidden or a newer open was started
-    if (!self->wrapperWidget_ || !self->toolbar_ || a->token != self->openToken_) {
+    // Discard stale results if the app was closed or a newer open was started
+    if (!ctx->wrapperWidget_ || !ctx->toolbar_ || a->token != ctx->openToken_) {
         delete a;
         return;
     }
 
     if (isTextFile(a->filePath)) {
-        self->epub_              = nullptr;
-        self->textMode_          = false;
-        self->currentSpineIndex_ = a->restore ? a->spineIndex : 0;
+        ctx->epub_              = nullptr;
+        ctx->textMode_          = false;
+        ctx->currentSpineIndex_ = a->restore ? a->spineIndex : 0;
         if (!a->textContent.empty()) {
             // Content was pre-read in backgroundOpenTask (under the FS lock) -
             // no SD I/O needed here on the LVGL task.
-            self->pageContent_      = std::move(a->textContent);
-            self->textMode_         = true;
-            self->currentFilePath_  = a->filePath;
-            self->pageOffset_       = (self->currentSpineIndex_ > 0)
-                                         ? (size_t)self->currentSpineIndex_ : 0u;
-            self->currentSpineIndex_ = 0;
-            LOG_I(TAG, "Text file loaded: %zu bytes", self->pageContent_.size());
+            ctx->pageContent_      = std::move(a->textContent);
+            ctx->textMode_         = true;
+            ctx->currentFilePath_  = a->filePath;
+            ctx->pageOffset_       = (ctx->currentSpineIndex_ > 0)
+                                         ? (size_t)ctx->currentSpineIndex_ : 0u;
+            ctx->currentSpineIndex_ = 0;
+            LOG_I(TAG, "Text file loaded: %zu bytes", ctx->pageContent_.size());
         } else {
             // Text content empty (lock timeout or read error) - show error in browser
             LOG_E(TAG, "Text content empty; cannot display: %s", a->filePath.c_str());
-            lv_obj_clean(self->wrapperWidget_);
-            lv_obj_t* errLbl = lv_label_create(self->wrapperWidget_);
+            lv_obj_clean(ctx->wrapperWidget_);
+            lv_obj_t* errLbl = lv_label_create(ctx->wrapperWidget_);
             lv_obj_set_style_pad_all(errLbl, 8, 0);
             lv_label_set_text(errLbl, "Failed to open file.\nPlease try again.");
-            self->setBrowserToolbarButtons();
+            setBrowserToolbarButtons(ctx);
             delete a;
             return;
         }
-        self->setReaderToolbarButtons();
-        lv_obj_clean(self->wrapperWidget_);
-        self->buildReaderUI(self->wrapperWidget_);
+        setReaderToolbarButtons(ctx);
+        lv_obj_clean(ctx->wrapperWidget_);
+        buildReaderUI(ctx, ctx->wrapperWidget_);
         delete a;
         return;
     }
 
     if (a->epub && a->epub->isValid()) {
-        self->epub_            = a->epub;
-        self->currentFilePath_ = a->filePath;
-        self->setReaderToolbarButtons();
-        lv_obj_clean(self->wrapperWidget_);
-        self->buildReaderUI(self->wrapperWidget_);
+        ctx->epub_            = a->epub;
+        ctx->currentFilePath_ = a->filePath;
+        setReaderToolbarButtons(ctx);
+        lv_obj_clean(ctx->wrapperWidget_);
+        buildReaderUI(ctx, ctx->wrapperWidget_);
     } else {
         LOG_E(TAG, "Failed to open: %s", a->filePath.c_str());
-        self->epub_ = nullptr;
-        self->currentSpineIndex_ = 0;
-        self->setBrowserToolbarButtons();
-        lv_obj_clean(self->wrapperWidget_);
-        self->buildBrowserUI(self->wrapperWidget_);
+        ctx->epub_ = nullptr;
+        ctx->currentSpineIndex_ = 0;
+        setBrowserToolbarButtons(ctx);
+        lv_obj_clean(ctx->wrapperWidget_);
+        buildBrowserUI(ctx, ctx->wrapperWidget_);
     }
     delete a;
 }
@@ -216,15 +215,15 @@ void EpubReader::asyncOpenComplete(void* data) {
 // Fired via lv_async_call after renderPage() when loading a chapter backward (direction < 0).
 // By the time this runs LVGL has completed layout, so content height is known and we can
 // scroll to the very end - placing the user at the bottom of the chapter they backed into.
-void EpubReader::asyncScrollToEnd(void* data) {
-    auto* self = static_cast<EpubReader*>(data);
-    if (!self->contentWidget_ || !self->wrapperWidget_) return;
-    lv_obj_t* scroll = lv_obj_get_parent(self->contentWidget_);
+void asyncScrollToEnd(void* data) {
+    auto* ctx = static_cast<Context*>(data);
+    if (!ctx->contentWidget_ || !ctx->wrapperWidget_) return;
+    lv_obj_t* scroll = lv_obj_get_parent(ctx->contentWidget_);
     if (!scroll) return;
     lv_obj_scroll_to_y(scroll, LV_COORD_MAX, LV_ANIM_OFF);
     lv_coord_t sy = lv_obj_get_scroll_y(scroll);
-    self->pageOffset_ = (sy > 0) ? (size_t)sy : 0;
-    self->saveProgress();
+    ctx->pageOffset_ = (sy > 0) ? (size_t)sy : 0;
+    saveProgress(ctx);
 }
 
 // Snap a scroll step down to the nearest whole-line multiple so page turns
@@ -241,124 +240,122 @@ static lv_coord_t snapStep(lv_coord_t viewH) {
 // paragraph label Y positions are also multiples of lineH (zero label padding +
 // pad_row=lineH on contentWidget_) - pages always start on a clean line boundary.
 // At chapter boundaries (EPUB only) the adjacent chapter is loaded.
-void EpubReader::doPrev() {
-    if (!contentWidget_) return;
-    lv_obj_t* scroll = lv_obj_get_parent(contentWidget_);
+void doPrev(Context* ctx) {
+    if (!ctx->contentWidget_) return;
+    lv_obj_t* scroll = lv_obj_get_parent(ctx->contentWidget_);
     if (!scroll) return;
     lv_coord_t curY = lv_obj_get_scroll_y(scroll);
     lv_coord_t step = snapStep(lv_obj_get_height(scroll));
     lv_obj_scroll_to_y(scroll, curY > step ? curY - step : 0, LV_ANIM_OFF);
     lv_coord_t newY = lv_obj_get_scroll_y(scroll);
-    if (newY == curY && !textMode_) {
+    if (newY == curY && !ctx->textMode_) {
         // Scroll didn't move - already at the top; cross into the previous chapter.
-        if (currentSpineIndex_ > 0) loadChapter(currentSpineIndex_ - 1, -1);
+        if (ctx->currentSpineIndex_ > 0) loadChapter(ctx, ctx->currentSpineIndex_ - 1, -1);
     } else {
-        pageOffset_ = (newY > 0) ? (size_t)newY : 0;
-        saveProgress();
+        ctx->pageOffset_ = (newY > 0) ? (size_t)newY : 0;
+        saveProgress(ctx);
     }
 }
 
-void EpubReader::doNext() {
-    if (!contentWidget_) return;
-    lv_obj_t* scroll = lv_obj_get_parent(contentWidget_);
+void doNext(Context* ctx) {
+    if (!ctx->contentWidget_) return;
+    lv_obj_t* scroll = lv_obj_get_parent(ctx->contentWidget_);
     if (!scroll) return;
     lv_coord_t curY = lv_obj_get_scroll_y(scroll);
     lv_coord_t step = snapStep(lv_obj_get_height(scroll));
     lv_obj_scroll_to_y(scroll, curY + step, LV_ANIM_OFF);
     lv_coord_t newY = lv_obj_get_scroll_y(scroll);
-    if (newY == curY && !textMode_) {
+    if (newY == curY && !ctx->textMode_) {
         // Scroll position didn't move - content fits in the viewport or we've reached
         // the end. lv_obj_get_scroll_bottom() returns negative for short chapters so
         // checking == 0 is unreliable; this approach works for all chapter lengths.
-        loadChapter(currentSpineIndex_ + 1, +1);
+        loadChapter(ctx, ctx->currentSpineIndex_ + 1, +1);
     } else {
-        pageOffset_ = (newY > 0) ? (size_t)newY : 0;
-        saveProgress();
+        ctx->pageOffset_ = (newY > 0) ? (size_t)newY : 0;
+        saveProgress(ctx);
     }
 }
 
-void EpubReader::onPrevPressed(lv_event_t* e) {
-    static_cast<EpubReader*>(lv_event_get_user_data(e))->doPrev();
+void onPrevPressed(lv_event_t* e) {
+    doPrev(static_cast<Context*>(lv_event_get_user_data(e)));
 }
 
-void EpubReader::onNextPressed(lv_event_t* e) {
-    static_cast<EpubReader*>(lv_event_get_user_data(e))->doNext();
+void onNextPressed(lv_event_t* e) {
+    doNext(static_cast<Context*>(lv_event_get_user_data(e)));
 }
 
-void EpubReader::onReaderTap(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
+void onReaderTap(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     lv_indev_t* indev = lv_indev_active();
     if (!indev) return;
     lv_point_t pt;
     lv_indev_get_point(indev, &pt);
     lv_coord_t w = lv_display_get_horizontal_resolution(nullptr);
-    if (pt.x < w / 2) self->doPrev();
-    else               self->doNext();
+    if (pt.x < w / 2) doPrev(ctx);
+    else               doNext(ctx);
 }
 
-void EpubReader::onTocPressed(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    self->openTocDialog();
+void onTocPressed(lv_event_t* e) {
+    openTocDialog(static_cast<Context*>(lv_event_get_user_data(e)));
 }
 
-void EpubReader::onBrowsePressed(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    lv_async_call(asyncSwitchToBrowser, self);
+void onBrowsePressed(lv_event_t* e) {
+    lv_async_call(asyncSwitchToBrowser, lv_event_get_user_data(e));
 }
 
-void EpubReader::onBrowserBack(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    size_t pos = self->browsePath_.rfind('/');
-    if (pos != std::string::npos && self->browsePath_ != self->dataRoot_) {
-        self->browsePath_ = self->browsePath_.substr(0, pos);
+void onBrowserBack(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    size_t pos = ctx->browsePath_.rfind('/');
+    if (pos != std::string::npos && ctx->browsePath_ != ctx->dataRoot_) {
+        ctx->browsePath_ = ctx->browsePath_.substr(0, pos);
     }
-    lv_async_call(asyncNavigateBrowser, self);
+    lv_async_call(asyncNavigateBrowser, ctx);
 }
 
-void EpubReader::onBrowserItem(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
+void onBrowserItem(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     uintptr_t idx = (uintptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
-    if (idx >= self->browserEntries_.size()) return;
+    if (idx >= ctx->browserEntries_.size()) return;
 
-    const auto& [name, isDir] = self->browserEntries_[idx];
+    const auto& [name, isDir] = ctx->browserEntries_[idx];
     if (isDir) {
-        self->browsePath_ += "/" + name;
-        lv_async_call(asyncNavigateBrowser, self);
+        ctx->browsePath_ += "/" + name;
+        lv_async_call(asyncNavigateBrowser, ctx);
     } else {
-        self->pendingFilePath_ = self->browsePath_ + "/" + name;
-        lv_async_call(asyncOpenEpub, self);
+        ctx->pendingFilePath_ = ctx->browsePath_ + "/" + name;
+        lv_async_call(asyncOpenEpub, ctx);
     }
 }
 
 // "Use Folder" toolbar button - save the current browsePath_ as the books folder.
-void EpubReader::onSetBooksFolder(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    self->booksPath_ = self->browsePath_;
-    self->saveBooksPath();
-    lv_async_call(asyncNavigateBrowser, self);
+void onSetBooksFolder(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    ctx->booksPath_ = ctx->browsePath_;
+    saveBooksPath(ctx);
+    lv_async_call(asyncNavigateBrowser, ctx);
 }
 
 // Shelf page navigation callbacks
-void EpubReader::onShelfFirst(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    self->shelfPage_ = 0;
-    lv_async_call(asyncNavigateBrowser, self);
+void onShelfFirst(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    ctx->shelfPage_ = 0;
+    lv_async_call(asyncNavigateBrowser, ctx);
 }
 
-void EpubReader::onShelfPrev(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    if (self->shelfPage_ > 0) --self->shelfPage_;
-    lv_async_call(asyncNavigateBrowser, self);
+void onShelfPrev(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx->shelfPage_ > 0) --ctx->shelfPage_;
+    lv_async_call(asyncNavigateBrowser, ctx);
 }
 
-void EpubReader::onShelfNext(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    ++self->shelfPage_;  // clamped in buildShelfUI
-    lv_async_call(asyncNavigateBrowser, self);
+void onShelfNext(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    ++ctx->shelfPage_;  // clamped in buildShelfUI
+    lv_async_call(asyncNavigateBrowser, ctx);
 }
 
-void EpubReader::onShelfLast(lv_event_t* e) {
-    auto* self = static_cast<EpubReader*>(lv_event_get_user_data(e));
-    self->shelfPage_ = INT_MAX;  // clamped to totalPages-1 in buildShelfUI
-    lv_async_call(asyncNavigateBrowser, self);
+void onShelfLast(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    ctx->shelfPage_ = INT_MAX;  // clamped to totalPages-1 in buildShelfUI
+    lv_async_call(asyncNavigateBrowser, ctx);
 }

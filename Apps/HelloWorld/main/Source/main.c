@@ -1,11 +1,15 @@
-#include <tt_app.h>
+#include <app/event.h>
+#include <app/manager.h>
+#include <app/scheduler.h>
+
+#include <lvgl_window_manager/window_manager.h>
+
+#include <lvgl.h>
 #include <lvgl/widgets/toolbar.h>
 
-/**
- * Note: LVGL and Tactility methods need to be exposed manually from TactilityC/Source/tt_init.cpp
- * Only C is supported for now (C++ symbols fail to link)
- */
-static void onShowApp(AppHandle app, void* data, lv_obj_t* parent) {
+#include <stdbool.h>
+
+static void create_widgets(lv_obj_t* parent, void* userData) {
     lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Hello World");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
@@ -15,8 +19,27 @@ static void onShowApp(AppHandle app, void* data, lv_obj_t* parent) {
 }
 
 int main(int argc, char* argv[]) {
-    tt_app_register((AppRegistration) {
-        .onShow = onShowApp
-    });
+    AppInstanceId app_instance_id = app_scheduler_current_app_id();
+
+    struct AppEventSubscription sub = { .app_instance_id = app_instance_id };
+    app_event_subscribe(&sub);
+
+    WindowId window = window_manager_create(app_instance_id, create_widgets, NULL);
+
+    bool should_close = false;
+    while (!should_close) {
+        struct AppEvent event;
+        if (app_event_await(&sub, &event, portMAX_DELAY) != ERROR_NONE) {
+            break;
+        }
+        if (event.type == APP_EVENT_CLOSE) {
+            app_manager_finish(app_instance_id);
+            should_close = true;
+        }
+    }
+
+    window_manager_remove(window);
+    app_event_unsubscribe(&sub);
+
     return 0;
 }

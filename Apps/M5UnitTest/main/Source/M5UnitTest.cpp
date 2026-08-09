@@ -1,120 +1,120 @@
 #include "M5UnitTest.h"
 #include "TestListView.h"
-#include "TestViewBase.h"
 #include "TestUnit8Encoder.h"
 #include "TestUnitByteButton.h"
 #include "TestUnitJoystick2.h"
 #include "TestUnitScroll.h"
 #include "TestUnitPaHub.h"
 #include "TestUnitLcd.h"
+#include "TestUnitLcdGfx.h"
 #include "TestUnitDualButton.h"
 #include "TestUnitCardKB2.h"
 #include "TestUnitMidi.h"
 #include "TestUnitRfid2.h"
-#include "TestUnitLcdGfx.h"
 
-#include <tactility/device.h>
 #include <esp_log.h>
 
 constexpr auto* TAG = "M5UnitTest";
 
-M5UnitTest* M5UnitTest::s_instance = nullptr;
+namespace {
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+struct UnitEntry {
+    void* (*create)(lv_obj_t* parent, Context* app);
+    void  (*stop)(void* self);
+};
 
-void M5UnitTest::onShow(AppHandle handle, lv_obj_t* parent) {
-    s_instance  = this;
-    appHandle_  = handle;
+template<typename T, void (*Start)(T*, lv_obj_t*, Context*), void (*Stop)(T*)>
+void* createUnit(lv_obj_t* parent, Context* app) {
+    auto* self = new T();
+    Start(self, parent, app);
+    return self;
+}
+
+template<typename T, void (*Stop)(T*)>
+void stopUnit(void* p) {
+    auto* self = static_cast<T*>(p);
+    Stop(self);
+    delete self;
+}
+
+constexpr UnitEntry UNIT_ENTRIES[11] = {
+    { createUnit<TestUnit8Encoder,   testUnit8EncoderStart,   testUnit8EncoderStop>,   stopUnit<TestUnit8Encoder,   testUnit8EncoderStop> },
+    { createUnit<TestUnitByteButton, testUnitByteButtonStart, testUnitByteButtonStop>, stopUnit<TestUnitByteButton, testUnitByteButtonStop> },
+    { createUnit<TestUnitJoystick2,  testUnitJoystick2Start,  testUnitJoystick2Stop>,  stopUnit<TestUnitJoystick2,  testUnitJoystick2Stop> },
+    { createUnit<TestUnitScroll,     testUnitScrollStart,     testUnitScrollStop>,     stopUnit<TestUnitScroll,     testUnitScrollStop> },
+    { createUnit<TestUnitPaHub,      testUnitPaHubStart,      testUnitPaHubStop>,      stopUnit<TestUnitPaHub,      testUnitPaHubStop> },
+    { createUnit<TestUnitLcd,        testUnitLcdStart,        testUnitLcdStop>,        stopUnit<TestUnitLcd,        testUnitLcdStop> },
+    { createUnit<TestUnitLcdGfx,     testUnitLcdGfxStart,     testUnitLcdGfxStop>,     stopUnit<TestUnitLcdGfx,     testUnitLcdGfxStop> },
+    { createUnit<TestUnitDualButton, testUnitDualButtonStart, testUnitDualButtonStop>, stopUnit<TestUnitDualButton, testUnitDualButtonStop> },
+    { createUnit<TestUnitCardKB2,    testUnitCardKB2Start,    testUnitCardKB2Stop>,    stopUnit<TestUnitCardKB2,    testUnitCardKB2Stop> },
+    { createUnit<TestUnitMidi,       testUnitMidiStart,       testUnitMidiStop>,       stopUnit<TestUnitMidi,       testUnitMidiStop> },
+    { createUnit<TestUnitRfid2,      testUnitRfid2Start,      testUnitRfid2Stop>,      stopUnit<TestUnitRfid2,      testUnitRfid2Stop> },
+};
+constexpr int UNIT_COUNT = 11;
+
+void stopActiveTest(Context* ctx) {
+    if (ctx->activeTest && ctx->activeTestStop) {
+        ctx->activeTestStop(ctx->activeTest);
+    }
+    ctx->activeTest = nullptr;
+    ctx->activeTestStop = nullptr;
+    ctx->activeTestIndex = -1;
+}
+
+} // namespace
+
+void m5UnitTestCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
-    createWrapper(parent);
+    ctx->wrapper = lv_obj_create(parent);
+    lv_obj_set_width(ctx->wrapper, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->wrapper, 1);
+    lv_obj_set_layout(ctx->wrapper, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(ctx->wrapper, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(ctx->wrapper, 0, 0);
+    lv_obj_set_style_bg_opa(ctx->wrapper, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ctx->wrapper, 0, 0);
 
-    if (!listView_) {
-        listView_ = new TestListView();
-        listView_->onStart(wrapper_, handle, this);
+    // Resurfacing after being buried (e.g. another app was started on top): rebuild whichever
+    // test was active. The C++ state object itself already existed if so, but its widgets were
+    // just destroyed along with the rest of the window's tree, so we drop it and start fresh
+    // (matches this framework's create_widgets contract used for every other app).
+    if (ctx->activeTestIndex >= 0) {
+        int index = ctx->activeTestIndex;
+        stopActiveTest(ctx);
+        m5UnitTestShowTest(ctx, index);
+    } else {
+        testListViewCreate(ctx->wrapper, ctx);
     }
 }
 
-void M5UnitTest::onHide(AppHandle handle) {
-    if (activeTestView_) {
-        activeTestView_->onStop();
-        delete activeTestView_;
-        activeTestView_ = nullptr;
-    }
-    if (listView_) listView_->onStop();
-    delete listView_;
-    listView_   = nullptr;
-    wrapper_    = nullptr;
-    appHandle_  = nullptr;
-    s_instance  = nullptr;
+void m5UnitTestTeardown(Context* ctx) {
+    stopActiveTest(ctx);
+    ctx->wrapper = nullptr;
 }
 
-// ---------------------------------------------------------------------------
-// View switching
-// ---------------------------------------------------------------------------
+void m5UnitTestShowTest(Context* ctx, int unitIndex) {
+    stopActiveTest(ctx);
 
-template<typename T>
-static TestViewBase* makeTestView(lv_obj_t* wrapper, AppHandle handle, M5UnitTest* app) {
-    auto* v = new T();
-    v->onStart(wrapper, handle, app);
-    return v;
-}
-
-void M5UnitTest::createWrapper(lv_obj_t* parent) {
-    wrapper_ = lv_obj_create(parent);
-    lv_obj_set_width(wrapper_, LV_PCT(100));
-    lv_obj_set_flex_grow(wrapper_, 1);
-    lv_obj_set_layout(wrapper_, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(wrapper_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(wrapper_, 0, 0);
-    lv_obj_set_style_bg_opa(wrapper_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(wrapper_, 0, 0);
-}
-
-void M5UnitTest::showTest(int unitIndex) {
-    // Tear down any active test view and the list view, then clean the wrapper
-    if (activeTestView_) {
-        activeTestView_->onStop();
-        delete activeTestView_;
-        activeTestView_ = nullptr;
+    if (unitIndex < 0 || unitIndex >= UNIT_COUNT) {
+        m5UnitTestShowList(ctx);
+        return;
     }
-    if (listView_) {
-        listView_->onStop();
-        delete listView_;
-        listView_ = nullptr;
-    }
-    lv_obj_clean(wrapper_);
 
+    lv_obj_clean(ctx->wrapper);
     ESP_LOGI(TAG, "Opening test for unit %d", unitIndex);
 
-    switch (unitIndex) {
-        case 0:  activeTestView_ = makeTestView<TestUnit8Encoder>  (wrapper_, appHandle_, this); break;
-        case 1:  activeTestView_ = makeTestView<TestUnitByteButton>(wrapper_, appHandle_, this); break;
-        case 2:  activeTestView_ = makeTestView<TestUnitJoystick2> (wrapper_, appHandle_, this); break;
-        case 3:  activeTestView_ = makeTestView<TestUnitScroll>    (wrapper_, appHandle_, this); break;
-        case 4:  activeTestView_ = makeTestView<TestUnitPaHub>     (wrapper_, appHandle_, this); break;
-        case 5:  activeTestView_ = makeTestView<TestUnitLcd>       (wrapper_, appHandle_, this); break;
-        case 6:  activeTestView_ = makeTestView<TestUnitLcdGfx>    (wrapper_, appHandle_, this); break;
-        case 7:  activeTestView_ = makeTestView<TestUnitDualButton>(wrapper_, appHandle_, this); break;
-        case 8:  activeTestView_ = makeTestView<TestUnitCardKB2>   (wrapper_, appHandle_, this); break;
-        case 9:  activeTestView_ = makeTestView<TestUnitMidi>      (wrapper_, appHandle_, this); break;
-        case 10: activeTestView_ = makeTestView<TestUnitRfid2>     (wrapper_, appHandle_, this); break;
-        default: showList(); return;
-    }
+    const UnitEntry& entry = UNIT_ENTRIES[unitIndex];
+    ctx->activeTest = entry.create(ctx->wrapper, ctx);
+    ctx->activeTestStop = entry.stop;
+    ctx->activeTestIndex = unitIndex;
 }
 
-void M5UnitTest::showList() {
-    if (activeTestView_) {
-        activeTestView_->onStop();
-        delete activeTestView_;
-        activeTestView_ = nullptr;
-    }
-    lv_obj_clean(wrapper_);
-
-    listView_ = new TestListView();
-    listView_->onStart(wrapper_, appHandle_, this);
+void m5UnitTestShowList(Context* ctx) {
+    stopActiveTest(ctx);
+    lv_obj_clean(ctx->wrapper);
+    testListViewCreate(ctx->wrapper, ctx);
 }

@@ -1,11 +1,16 @@
 #include "Brainfuck.h"
-#include <tt_app.h>
+
+#include <app/paths.h>
 #include <lvgl/widgets/toolbar.h>
+
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+/** Must match manifest.properties' app.id */
+static constexpr const char* APP_ID = "one.tactility.brainfuck";
 
 /* ── Built-in examples ────────────────────────────────────────────── */
 
@@ -67,24 +72,20 @@ static const BfExample examples[] = {
 
 static constexpr int NUM_EXAMPLES = sizeof(examples) / sizeof(examples[0]);
 
-/* ── App handle for user data path ────────────────────────────────── */
-
-static AppHandle s_appHandle = nullptr;
+/** File-scope pointer to the current window's Context, for callbacks that only carry an
+ * index/path via lv_event's user_data (single-window app, same limitation as before). */
+static Context* g_ctx = nullptr;
 
 static bool getScriptDir(char* buf, size_t bufSize) {
-    if (!s_appHandle) return false;
-    size_t size = bufSize;
-    tt_app_get_user_data_path(s_appHandle, buf, &size);
-    if (size == 0) return false;
+    if (app_paths_get_user_data_directory(APP_ID, buf, bufSize) != ERROR_NONE) {
+        return false;
+    }
     for (char* p = buf + 1; *p; ++p) {
         if (*p == '/') { *p = '\0'; mkdir(buf, 0755); *p = '/'; }
     }
     mkdir(buf, 0755);
     return true;
 }
-
-static char** scriptPaths = nullptr;
-static int scriptCount = 0;
 
 static int ciStrcmp(const char* a, const char* b) {
     while (*a && *b) {
@@ -96,21 +97,18 @@ static int ciStrcmp(const char* a, const char* b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 
-static void freeScriptPaths() {
-    for (int i = 0; i < scriptCount; i++) {
-        free(scriptPaths[i]);
+static void freeScriptPaths(Context* ctx) {
+    for (int i = 0; i < ctx->scriptCount; i++) {
+        free(ctx->scriptPaths[i]);
     }
-    free(scriptPaths);
-    scriptPaths = nullptr;
-    scriptCount = 0;
+    free(ctx->scriptPaths);
+    ctx->scriptPaths = nullptr;
+    ctx->scriptCount = 0;
 }
-
-/* File-scope instance pointer for index-based and path-based callbacks */
-static Brainfuck* g_instance = nullptr;
 
 /* ── VM Logic ─────────────────────────────────────────────────────── */
 
-void Brainfuck::bfInit() {
+static void bfInit(BfVM& vm) {
     memset(&vm, 0, sizeof(BfVM));
 }
 
@@ -125,7 +123,7 @@ static int bfFindBracket(const char* code, int pos, int dir) {
     return pos;
 }
 
-void Brainfuck::bfRun(const char* code) {
+static void bfRun(BfVM& vm, const char* code) {
     int len = strlen(code);
 
     while (vm.pc < len && !vm.error) {
@@ -190,15 +188,15 @@ void Brainfuck::bfRun(const char* code) {
     }
 }
 
-void Brainfuck::runCode(const char* code) {
-    if (!outputTa) return;
-    bfInit();
-    bfRun(code);
+static void runCode(Context* ctx, const char* code) {
+    if (!ctx->outputTa) return;
+    bfInit(ctx->vm);
+    bfRun(ctx->vm, code);
 
     constexpr int resultSize = MAX_OUTPUT + 128;
     char* result = (char*)malloc(resultSize);
     if (!result) {
-        lv_textarea_set_text(outputTa, "Out of memory");
+        lv_textarea_set_text(ctx->outputTa, "Out of memory");
         return;
     }
     int pos = 0;
@@ -210,93 +208,94 @@ void Brainfuck::runCode(const char* code) {
         pos += (n < remaining) ? n : (remaining - 1);
     }
 
-    if (vm.outLen > 0) {
+    if (ctx->vm.outLen > 0) {
         remaining = resultSize - pos;
         if (remaining > 0) {
-            int n = snprintf(result + pos, remaining, "%s\n", vm.output);
+            int n = snprintf(result + pos, remaining, "%s\n", ctx->vm.output);
             pos += (n < remaining) ? n : (remaining - 1);
         }
     }
 
-    if (vm.error) {
+    if (ctx->vm.error) {
         remaining = resultSize - pos;
         if (remaining > 0) {
-            int n = snprintf(result + pos, remaining, "ERROR: %s\n", vm.errorMsg);
+            int n = snprintf(result + pos, remaining, "ERROR: %s\n", ctx->vm.errorMsg);
             pos += (n < remaining) ? n : (remaining - 1);
         }
     } else {
         remaining = resultSize - pos;
         if (remaining > 0) {
-            int n = snprintf(result + pos, remaining, "OK (%d cycles)\n", vm.cycles);
+            int n = snprintf(result + pos, remaining, "OK (%d cycles)\n", ctx->vm.cycles);
             pos += (n < remaining) ? n : (remaining - 1);
         }
     }
 
-    lv_textarea_set_text(outputTa, result);
-    lv_obj_scroll_to_y(outputTa, LV_COORD_MAX, LV_ANIM_ON);
+    lv_textarea_set_text(ctx->outputTa, result);
+    lv_obj_scroll_to_y(ctx->outputTa, LV_COORD_MAX, LV_ANIM_ON);
     free(result);
 }
 
 /* ── View management ──────────────────────────────────────────────── */
 
-void Brainfuck::showMainView() {
-    state = BfState::Main;
-    if (examplesList) lv_obj_add_flag(examplesList, LV_OBJ_FLAG_HIDDEN);
-    if (outputTa) lv_obj_remove_flag(outputTa, LV_OBJ_FLAG_HIDDEN);
-    if (inputRow) lv_obj_remove_flag(inputRow, LV_OBJ_FLAG_HIDDEN);
-    if (clrBtn) lv_obj_remove_flag(clrBtn, LV_OBJ_FLAG_HIDDEN);
+static void showMainView(Context* ctx) {
+    ctx->state = BfState::Main;
+    if (ctx->examplesList) lv_obj_add_flag(ctx->examplesList, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->outputTa) lv_obj_remove_flag(ctx->outputTa, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->inputRow) lv_obj_remove_flag(ctx->inputRow, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->clrBtn) lv_obj_remove_flag(ctx->clrBtn, LV_OBJ_FLAG_HIDDEN);
 }
 
-void Brainfuck::showExamplesView() {
-    state = BfState::Examples;
-    if (outputTa) lv_obj_add_flag(outputTa, LV_OBJ_FLAG_HIDDEN);
-    if (inputRow) lv_obj_add_flag(inputRow, LV_OBJ_FLAG_HIDDEN);
-    if (examplesList) lv_obj_remove_flag(examplesList, LV_OBJ_FLAG_HIDDEN);
-    if (clrBtn) lv_obj_add_flag(clrBtn, LV_OBJ_FLAG_HIDDEN);
+static void showExamplesView(Context* ctx) {
+    ctx->state = BfState::Examples;
+    if (ctx->outputTa) lv_obj_add_flag(ctx->outputTa, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->inputRow) lv_obj_add_flag(ctx->inputRow, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->examplesList) lv_obj_remove_flag(ctx->examplesList, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->clrBtn) lv_obj_add_flag(ctx->clrBtn, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* ── Callbacks ────────────────────────────────────────────────────── */
 
-void Brainfuck::onRunClicked(lv_event_t* e) {
-    if (!g_instance || !g_instance->inputTa) return;
-    const char* code = lv_textarea_get_text(g_instance->inputTa);
+static void onRunClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (!ctx->inputTa) return;
+    const char* code = lv_textarea_get_text(ctx->inputTa);
     if (code && code[0]) {
-        g_instance->runCode(code);
+        runCode(ctx, code);
     }
 }
 
-void Brainfuck::onClearClicked(lv_event_t* e) {
-    if (!g_instance) return;
-    if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "");
-    if (g_instance->inputTa) lv_textarea_set_text(g_instance->inputTa, "");
+static void onClearClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx->outputTa) lv_textarea_set_text(ctx->outputTa, "");
+    if (ctx->inputTa) lv_textarea_set_text(ctx->inputTa, "");
 }
 
-void Brainfuck::onExamplesClicked(lv_event_t* e) {
-    if (!g_instance) return;
-    if (g_instance->state == BfState::Examples) {
-        g_instance->showMainView();
+static void onExamplesClicked(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    if (ctx->state == BfState::Examples) {
+        showMainView(ctx);
     } else {
-        g_instance->showExamplesView();
+        showExamplesView(ctx);
     }
 }
 
-void Brainfuck::onExampleSelected(lv_event_t* e) {
-    if (!g_instance) return;
+static void onExampleSelected(lv_event_t* e) {
+    if (!g_ctx) return;
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx >= 0 && idx < NUM_EXAMPLES) {
-        if (g_instance->inputTa) lv_textarea_set_text(g_instance->inputTa, examples[idx].code);
-        g_instance->showMainView();
-        g_instance->runCode(examples[idx].code);
+        if (g_ctx->inputTa) lv_textarea_set_text(g_ctx->inputTa, examples[idx].code);
+        showMainView(g_ctx);
+        runCode(g_ctx, examples[idx].code);
     }
 }
 
-void Brainfuck::onFileSelected(lv_event_t* e) {
-    if (!g_instance) return;
+static void onFileSelected(lv_event_t* e) {
+    if (!g_ctx) return;
     const char* path = (const char*)lv_event_get_user_data(e);
     FILE* f = fopen(path, "rb");
     if (!f) {
-        if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "Cannot open file");
-        g_instance->showMainView();
+        if (g_ctx->outputTa) lv_textarea_set_text(g_ctx->outputTa, "Cannot open file");
+        showMainView(g_ctx);
         return;
     }
 
@@ -304,8 +303,8 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     long fsize = ftell(f);
     if (fsize <= 0 || fsize > 32768) {
         fclose(f);
-        if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "File too large or empty");
-        g_instance->showMainView();
+        if (g_ctx->outputTa) lv_textarea_set_text(g_ctx->outputTa, "File too large or empty");
+        showMainView(g_ctx);
         return;
     }
     fseek(f, 0, SEEK_SET);
@@ -313,8 +312,8 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     char* buf = (char*)malloc(fsize + 1);
     if (!buf) {
         fclose(f);
-        if (g_instance->outputTa) lv_textarea_set_text(g_instance->outputTa, "Out of memory");
-        g_instance->showMainView();
+        if (g_ctx->outputTa) lv_textarea_set_text(g_ctx->outputTa, "Out of memory");
+        showMainView(g_ctx);
         return;
     }
 
@@ -322,20 +321,20 @@ void Brainfuck::onFileSelected(lv_event_t* e) {
     fclose(f);
     buf[bytesRead] = '\0';
 
-    if (g_instance->inputTa) lv_textarea_set_text(g_instance->inputTa, buf);
-    g_instance->showMainView();
-    g_instance->runCode(buf);
+    if (g_ctx->inputTa) lv_textarea_set_text(g_ctx->inputTa, buf);
+    showMainView(g_ctx);
+    runCode(g_ctx, buf);
     free(buf);
 }
 
-void Brainfuck::onInputReady(lv_event_t* e) {
+static void onInputReady(lv_event_t* e) {
     onRunClicked(e);
 }
 
 /* ── Script list building ─────────────────────────────────────────── */
 
-void Brainfuck::buildScriptList(lv_obj_t* list) {
-    freeScriptPaths();
+static void buildScriptList(Context* ctx, lv_obj_t* list) {
+    freeScriptPaths(ctx);
 
     for (int i = 0; i < NUM_EXAMPLES; i++) {
         lv_obj_t* btn = lv_list_add_button(list, LV_SYMBOL_PLAY, examples[i].name);
@@ -373,37 +372,37 @@ void Brainfuck::buildScriptList(lv_obj_t* list) {
         if (!path) break;
         snprintf(path, pathLen, "%s/%s", scriptDir, name);
 
-        char** tmp = (char**)realloc(scriptPaths, sizeof(char*) * (scriptCount + 1));
+        char** tmp = (char**)realloc(ctx->scriptPaths, sizeof(char*) * (ctx->scriptCount + 1));
         if (!tmp) { free(path); break; }
-        scriptPaths = tmp;
-        scriptPaths[scriptCount] = path;
+        ctx->scriptPaths = tmp;
+        ctx->scriptPaths[ctx->scriptCount] = path;
 
         lv_obj_t* btn = lv_list_add_button(list, LV_SYMBOL_FILE, name);
         lv_obj_add_event_cb(btn, onFileSelected, LV_EVENT_CLICKED, path);
-        scriptCount++;
+        ctx->scriptCount++;
     }
     closedir(dir);
 
-    if (scriptCount == 0) {
+    if (ctx->scriptCount == 0) {
         lv_list_add_text(list, "No custom scripts found on storage");
     }
 }
 
-/* ── Lifecycle ────────────────────────────────────────────────────── */
+/* ── Widget creation ──────────────────────────────────────────────── */
 
-void Brainfuck::onShow(AppHandle app, lv_obj_t* parent) {
-    g_instance = this;
-    s_appHandle = app;
-    state = BfState::Examples;
+void brainfuckCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    g_ctx = ctx;
+    ctx->state = BfState::Examples;
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Brainfuck interpreter");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
-    clrBtn = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearClicked, nullptr);
-    lv_obj_add_flag(clrBtn, LV_OBJ_FLAG_HIDDEN);
-    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onExamplesClicked, nullptr);
+    ctx->clrBtn = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearClicked, ctx);
+    lv_obj_add_flag(ctx->clrBtn, LV_OBJ_FLAG_HIDDEN);
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onExamplesClicked, ctx);
 
     lv_obj_t* cont = lv_obj_create(parent);
     lv_obj_set_width(cont, LV_PCT(100));
@@ -414,51 +413,52 @@ void Brainfuck::onShow(AppHandle app, lv_obj_t* parent) {
     lv_obj_remove_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_border_width(cont, 0, 0);
 
-    outputTa = lv_textarea_create(cont);
-    lv_textarea_set_text(outputTa, "");
-    lv_textarea_set_cursor_click_pos(outputTa, false);
-    lv_obj_add_state(outputTa, LV_STATE_DISABLED);
-    lv_obj_set_width(outputTa, LV_PCT(100));
-    lv_obj_set_flex_grow(outputTa, 1);
-    lv_obj_set_style_text_font(outputTa, lv_font_get_default(), 0);
-    lv_obj_add_flag(outputTa, LV_OBJ_FLAG_HIDDEN);
+    ctx->outputTa = lv_textarea_create(cont);
+    lv_textarea_set_text(ctx->outputTa, "");
+    lv_textarea_set_cursor_click_pos(ctx->outputTa, false);
+    lv_obj_add_state(ctx->outputTa, LV_STATE_DISABLED);
+    lv_obj_set_width(ctx->outputTa, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->outputTa, 1);
+    lv_obj_set_style_text_font(ctx->outputTa, lv_font_get_default(), 0);
+    lv_obj_add_flag(ctx->outputTa, LV_OBJ_FLAG_HIDDEN);
 
-    inputRow = lv_obj_create(cont);
-    lv_obj_set_size(inputRow, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(inputRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(inputRow, 0, 0);
-    lv_obj_set_style_pad_gap(inputRow, 4, 0);
-    lv_obj_remove_flag(inputRow, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_border_width(inputRow, 0, 0);
-    lv_obj_add_flag(inputRow, LV_OBJ_FLAG_HIDDEN);
+    ctx->inputRow = lv_obj_create(cont);
+    lv_obj_set_size(ctx->inputRow, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ctx->inputRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ctx->inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(ctx->inputRow, 0, 0);
+    lv_obj_set_style_pad_gap(ctx->inputRow, 4, 0);
+    lv_obj_remove_flag(ctx->inputRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_border_width(ctx->inputRow, 0, 0);
+    lv_obj_add_flag(ctx->inputRow, LV_OBJ_FLAG_HIDDEN);
 
-    inputTa = lv_textarea_create(inputRow);
-    lv_textarea_set_placeholder_text(inputTa, "++++++[>++++++++++<-]>+++++.");
-    lv_textarea_set_one_line(inputTa, false);
-    lv_obj_set_flex_grow(inputTa, 1);
-    lv_obj_set_height(inputTa, 50);
-    lv_obj_set_style_text_font(inputTa, lv_font_get_default(), 0);
-    lv_obj_add_event_cb(inputTa, onInputReady, LV_EVENT_READY, nullptr);
+    ctx->inputTa = lv_textarea_create(ctx->inputRow);
+    lv_textarea_set_placeholder_text(ctx->inputTa, "++++++[>++++++++++<-]>+++++.");
+    lv_textarea_set_one_line(ctx->inputTa, false);
+    lv_obj_set_flex_grow(ctx->inputTa, 1);
+    lv_obj_set_height(ctx->inputTa, 50);
+    lv_obj_set_style_text_font(ctx->inputTa, lv_font_get_default(), 0);
+    lv_obj_add_event_cb(ctx->inputTa, onInputReady, LV_EVENT_READY, ctx);
 
-    lv_obj_t* runBtn = lv_button_create(inputRow);
+    lv_obj_t* runBtn = lv_button_create(ctx->inputRow);
     lv_obj_t* runLbl = lv_label_create(runBtn);
     lv_label_set_text(runLbl, LV_SYMBOL_PLAY);
-    lv_obj_add_event_cb(runBtn, onRunClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(runBtn, onRunClicked, LV_EVENT_CLICKED, ctx);
 
-    examplesList = lv_list_create(cont);
-    lv_obj_set_width(examplesList, LV_PCT(100));
-    lv_obj_set_flex_grow(examplesList, 1);
-    buildScriptList(examplesList);
+    ctx->examplesList = lv_list_create(cont);
+    lv_obj_set_width(ctx->examplesList, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->examplesList, 1);
+    buildScriptList(ctx, ctx->examplesList);
 }
 
-void Brainfuck::onHide(AppHandle app) {
-    freeScriptPaths();
-    outputTa = nullptr;
-    inputTa = nullptr;
-    inputRow = nullptr;
-    examplesList = nullptr;
-    clrBtn = nullptr;
-    g_instance = nullptr;
-    s_appHandle = nullptr;
+void brainfuckTeardown(Context* ctx) {
+    freeScriptPaths(ctx);
+    ctx->outputTa = nullptr;
+    ctx->inputTa = nullptr;
+    ctx->inputRow = nullptr;
+    ctx->examplesList = nullptr;
+    ctx->clrBtn = nullptr;
+    if (g_ctx == ctx) {
+        g_ctx = nullptr;
+    }
 }
