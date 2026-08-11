@@ -33,9 +33,6 @@ struct Context {
     lv_obj_t* gameObject = nullptr;
 
     // State tracking (persists across widget rebuilds)
-    int32_t pendingSelection = -1;
-    bool shouldExit = false;
-    bool showHelpOnShow = false;    // Show help dialog next time widgets are (re)built
     int32_t currentGridSize = -1;   // Which grid size is being played, -1 = none
     bool highScoresLoaded = false;
 
@@ -57,3 +54,30 @@ void twoElevenCreateWidgets(lv_obj_t* parent, void* userData);
 /** Nothing to release beyond widget-tracking state - call once, after the window has been torn
  *  down. */
 void twoElevenTeardown(Context* ctx);
+
+// The four functions below are driven directly by main.cpp - once at startup, and again after
+// each dialog's APP_EVENT_RESULT is processed. They must NOT be called from
+// twoElevenCreateWidgets: window_manager_create()'s docs warn that a window's create_widgets
+// callback can run on a *different app's* thread (here, whichever dialog we're resurfacing past,
+// inside its own window_manager_remove() call) - racing ahead of our own main() thread's
+// APP_EVENT_RESULT processing. Deciding "what's next" from inside create_widgets would act on
+// stale state and can open a duplicate dialog before the real result is even seen (this was a
+// real, always-on bug: every dialog close spawned a fresh duplicate SelectionDialog before its
+// own result was processed, snowballing into an unbounded start/stop loop).
+
+/** Opens the grid-size/help SelectionDialog. Doesn't touch any widgets - safe to call without
+ *  the LVGL lock. */
+void twoElevenShowSelectionDialog(Context* ctx);
+
+/** Opens the "How to Play" AlertDialog. Doesn't touch any widgets - safe to call without the
+ *  LVGL lock. */
+void twoElevenShowHelpDialog(Context* ctx);
+
+/** Tears down any previous game and starts a fresh one at @a gridSize (one of
+ *  TWOELEVEN_SELECTION_3X3..TWOELEVEN_SELECTION_6X6). Touches widgets - caller must hold the
+ *  LVGL lock. */
+void twoElevenStartGame(Context* ctx, int32_t gridSize);
+
+/** Tears down the current game (if any), leaving mainWrapper empty and currentGridSize back to
+ *  -1. Touches widgets - caller must hold the LVGL lock. */
+void twoElevenClearGame(Context* ctx);

@@ -9,7 +9,6 @@
 #include <lvgl/fonts.h>
 #include <lvgl/widgets/toolbar.h>
 
-#include <app/event.h>
 #include <app/manager.h>
 #include <tactility/paths.h>
 #include <tactility/preferences.h>
@@ -100,22 +99,6 @@ int32_t getHighScore(Context* ctx, int32_t difficulty) {
         case SNAKE_SELECTION_HELL: return ctx->highScoreHell;
         default: return 0;
     }
-}
-
-void showHelpDialog(Context* ctx) {
-    const char* argv[] = {
-        "How to Play",
-        "Swipe or use arrow keys to change direction.\n"
-        "Eat food to grow longer.\n"
-        "Don't hit yourself!",
-        "OK",
-    };
-    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
-}
-
-void showSelectionDialog(Context* ctx) {
-    const char* argv[] = { "Snake", "How to Play", "Easy", "Medium", "Hard", "Hell" };
-    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
 }
 
 void snakeEventCb(lv_event_t* e) {
@@ -229,17 +212,6 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t cell_size, bool wallCol
 void snakeCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    // Closed the selection dialog without picking anything - close self. Emit our own close
-    // event rather than calling app_manager_finish()/window_manager APIs directly from inside
-    // this callback (window_manager's own docs warn against that - it would deadlock); the main
-    // loop picks this up and does the actual finish.
-    if (ctx->shouldExit) {
-        ctx->shouldExit = false;
-        AppEvent event { .type = APP_EVENT_CLOSE, .timestamp = 0, .result = {} };
-        app_event_emit(ctx->appInstanceId, &event);
-        return;
-    }
-
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
@@ -263,31 +235,21 @@ void snakeCreateWidgets(lv_obj_t* parent, void* userData) {
         ctx->highScoresLoaded = true;
     }
 
-    if (ctx->showHelpOnShow) {
-        // A dialog we opened just closed, telling us to show help next.
-        ctx->showHelpOnShow = false;
-        showHelpDialog(ctx);
-    } else if (ctx->pendingSelection >= SNAKE_SELECTION_EASY && ctx->pendingSelection <= SNAKE_SELECTION_HELL) {
-        // A dialog we opened just closed, telling us to start a game at this difficulty.
-        lv_obj_update_layout(parent);
-        ctx->currentDifficulty = ctx->pendingSelection;
-        int32_t difficultyIndex = ctx->pendingSelection - SNAKE_SELECTION_EASY;
-        bool wallCollision = (ctx->pendingSelection == SNAKE_SELECTION_HELL);
-        createGame(ctx, ctx->mainWrapper, difficultySizes[difficultyIndex], wallCollision, ctx->toolbar);
-        ctx->pendingSelection = -1;
-    } else if (ctx->currentDifficulty >= SNAKE_SELECTION_EASY && ctx->currentDifficulty <= SNAKE_SELECTION_HELL) {
-        // Resurfacing while a game was already active, but not because one of our own dialogs
-        // closed (e.g. another app was briefly switched to and this window got buried, which
-        // destroys its whole widget tree). snake_create() owns all game state internally and
-        // that's gone now too, so there's no cheap way to resume the exact position - start a
-        // fresh game at the same difficulty instead of dropping back to the selection dialog.
+    // Rebuild whatever was already committed. A game in progress survives a resurface caused by
+    // burial from something other than our own dialogs (window_manager only ever destroys the
+    // widget tree - Context's state, including currentDifficulty, is untouched) - snake_create()
+    // owns all game state internally though, so there's no cheap way to resume the exact
+    // position; this starts a fresh game at the same difficulty instead.
+    //
+    // Deliberately never opens a dialog from here - see Snake.h's comment on
+    // snakeShowSelectionDialog()/snakeShowHelpDialog()/snakeStartGame()/snakeClearGame() for why:
+    // this callback can run on a different app's thread mid-resurface, racing ahead of main()'s
+    // own APP_EVENT_RESULT processing.
+    if (ctx->currentDifficulty >= SNAKE_SELECTION_EASY && ctx->currentDifficulty <= SNAKE_SELECTION_HELL) {
         lv_obj_update_layout(parent);
         int32_t difficultyIndex = ctx->currentDifficulty - SNAKE_SELECTION_EASY;
         bool wallCollision = (ctx->currentDifficulty == SNAKE_SELECTION_HELL);
         createGame(ctx, ctx->mainWrapper, difficultySizes[difficultyIndex], wallCollision, ctx->toolbar);
-    } else {
-        // First creation - show selection dialog
-        showSelectionDialog(ctx);
     }
 }
 
@@ -298,4 +260,40 @@ void snakeTeardown(Context* ctx) {
     ctx->mainWrapper = nullptr;
     ctx->newGameWrapper = nullptr;
     ctx->gameObject = nullptr;
+}
+
+void snakeShowSelectionDialog(Context* ctx) {
+    const char* argv[] = { "Snake", "How to Play", "Easy", "Medium", "Hard", "Hell" };
+    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+}
+
+void snakeShowHelpDialog(Context* ctx) {
+    const char* argv[] = {
+        "How to Play",
+        "Swipe or use arrow keys to change direction.\n"
+        "Eat food to grow longer.\n"
+        "Don't hit yourself!",
+        "OK",
+    };
+    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
+}
+
+void snakeClearGame(Context* ctx) {
+    if (ctx->scoreWrapper) { lv_obj_delete(ctx->scoreWrapper); ctx->scoreWrapper = nullptr; }
+    if (ctx->newGameWrapper) { lv_obj_delete(ctx->newGameWrapper); ctx->newGameWrapper = nullptr; }
+    if (ctx->mainWrapper) lv_obj_clean(ctx->mainWrapper);
+    ctx->scoreLabel = nullptr;
+    ctx->gameObject = nullptr;
+    ctx->currentDifficulty = -1;
+}
+
+void snakeStartGame(Context* ctx, int32_t difficulty) {
+    if (!ctx->mainWrapper || !ctx->toolbar) return;
+    snakeClearGame(ctx); // tear down any previous game's leftovers first (harmless if none)
+
+    lv_obj_update_layout(ctx->mainWrapper);
+    ctx->currentDifficulty = difficulty;
+    int32_t difficultyIndex = difficulty - SNAKE_SELECTION_EASY;
+    bool wallCollision = (difficulty == SNAKE_SELECTION_HELL);
+    createGame(ctx, ctx->mainWrapper, difficultySizes[difficultyIndex], wallCollision, ctx->toolbar);
 }

@@ -4,11 +4,14 @@
 #include <app/manager.h>
 #include <app/scheduler.h>
 
+#include <lvgl/lvgl.h>
 #include <lvgl_window_manager/window_manager.h>
 
 extern "C" {
 
 int main(int argc, char* argv[]) {
+    constexpr TickType_t LVGL_LOCK_TIMEOUT = 500;
+
     AppInstanceId app_instance_id = app_scheduler_current_app_id();
 
     Context ctx {};
@@ -20,6 +23,11 @@ int main(int argc, char* argv[]) {
 
     WindowId window = window_manager_create(app_instance_id, snakeCreateWidgets, &ctx);
     ctx.window = window;
+
+    // First launch: nothing active yet - open the selection dialog. Every later transition is
+    // likewise driven from here (APP_EVENT_RESULT below), never from snakeCreateWidgets - see
+    // Snake.h's comment on why.
+    snakeShowSelectionDialog(&ctx);
 
     bool should_close = false;
     while (!should_close) {
@@ -36,37 +44,39 @@ int main(int argc, char* argv[]) {
             case APP_EVENT_RESULT: {
                 uint32_t launch_id = event.result.launch_id;
 
-                // Don't manipulate LVGL objects here - they may be invalid (this window may
-                // still be buried, or mid-rebuild). Just store state for snakeCreateWidgets to
-                // handle once it runs again.
                 if (launch_id == ctx.selectionDialogId && ctx.selectionDialogId != 0) {
                     ctx.selectionDialogId = 0;
                     int32_t selection = event.result.result;
+                    app_manager_stop(launch_id);
 
                     if (selection == SNAKE_SELECTION_HOW_TO_PLAY) {
-                        ctx.showHelpOnShow = true;
+                        snakeShowHelpDialog(&ctx);
                     } else if (selection >= SNAKE_SELECTION_EASY && selection <= SNAKE_SELECTION_HELL) {
-                        ctx.pendingSelection = selection;
+                        if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
+                            snakeStartGame(&ctx, selection);
+                            lvgl_unlock();
+                        }
                     } else {
-                        // Closed without selecting
-                        ctx.shouldExit = true;
+                        // Closed without selecting - close self.
+                        app_manager_finish(app_instance_id);
+                        should_close = true;
                     }
-                    app_manager_stop(launch_id);
 
                 } else if (launch_id == ctx.helpDialogId && ctx.helpDialogId != 0) {
                     ctx.helpDialogId = 0;
-                    // Return to selection dialog
-                    ctx.pendingSelection = -1;
                     app_manager_stop(launch_id);
+                    // Return to selection dialog
+                    snakeShowSelectionDialog(&ctx);
 
                 } else if (launch_id == ctx.gameOverDialogId && ctx.gameOverDialogId != 0) {
                     ctx.gameOverDialogId = 0;
-                    // Game has genuinely ended - return to selection dialog rather than letting
-                    // snakeCreateWidgets' resurface handling start a fresh game at the same
-                    // difficulty (that path is only for burial by something else entirely).
-                    ctx.pendingSelection = -1;
-                    ctx.currentDifficulty = -1;
                     app_manager_stop(launch_id);
+                    // Game has genuinely ended - clear it and return to the selection dialog.
+                    if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
+                        snakeClearGame(&ctx);
+                        lvgl_unlock();
+                    }
+                    snakeShowSelectionDialog(&ctx);
                 }
                 break;
             }

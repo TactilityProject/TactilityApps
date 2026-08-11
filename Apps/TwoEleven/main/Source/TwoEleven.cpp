@@ -7,7 +7,6 @@
 #include <inttypes.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
-#include <app/event.h>
 #include <app/manager.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
@@ -90,22 +89,6 @@ int32_t getHighScore(Context* ctx, int32_t gridSize) {
         case TWOELEVEN_SELECTION_6X6: return ctx->highScore6x6;
         default: return 0;
     }
-}
-
-void showHelpDialog(Context* ctx) {
-    const char* argv[] = {
-        "How to Play",
-        "Swipe or use arrow keys to move tiles.\n"
-        "Tiles with the same number merge.\n"
-        "Reach 2048 to win!",
-        "OK",
-    };
-    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
-}
-
-void showSelectionDialog(Context* ctx) {
-    const char* argv[] = { "2048", "How to Play", "3x3", "4x4", "5x5", "6x6" };
-    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
 }
 
 void twoElevenEventCb(lv_event_t* e) {
@@ -233,17 +216,6 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
 void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    // Closed the selection dialog without picking anything - close self. Emit our own close
-    // event rather than calling app_manager_finish()/window_manager APIs directly from inside
-    // this callback (window_manager's own docs warn against that - it would deadlock); the main
-    // loop picks this up and does the actual finish.
-    if (ctx->shouldExit) {
-        ctx->shouldExit = false;
-        AppEvent event { .type = APP_EVENT_CLOSE, .timestamp = 0, .result = {} };
-        app_event_emit(ctx->appInstanceId, &event);
-        return;
-    }
-
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
@@ -267,29 +239,20 @@ void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
         ctx->highScoresLoaded = true;
     }
 
-    if (ctx->showHelpOnShow) {
-        // A dialog we opened just closed, telling us to show help next.
-        ctx->showHelpOnShow = false;
-        showHelpDialog(ctx);
-    } else if (ctx->pendingSelection >= TWOELEVEN_SELECTION_3X3 && ctx->pendingSelection <= TWOELEVEN_SELECTION_6X6) {
-        // A dialog we opened just closed, telling us to start a game at this grid size.
-        lv_obj_update_layout(parent);
-        ctx->currentGridSize = ctx->pendingSelection;
-        int32_t sizeIndex = ctx->pendingSelection - TWOELEVEN_SELECTION_3X3;
-        createGame(ctx, ctx->mainWrapper, gridSizes[sizeIndex], ctx->toolbar);
-        ctx->pendingSelection = -1;
-    } else if (ctx->currentGridSize >= TWOELEVEN_SELECTION_3X3 && ctx->currentGridSize <= TWOELEVEN_SELECTION_6X6) {
-        // Resurfacing while a game was already active, but not because one of our own dialogs
-        // closed (e.g. another app was briefly switched to and this window got buried, which
-        // destroys its whole widget tree). twoeleven_create() owns all game state internally
-        // and that's gone now too, so there's no cheap way to resume the exact position - start
-        // a fresh game at the same grid size instead of dropping back to the selection dialog.
+    // Rebuild whatever was already committed. A game in progress survives a resurface caused by
+    // burial from something other than our own dialogs (window_manager only ever destroys the
+    // widget tree - Context's state, including currentGridSize, is untouched) - twoeleven_create()
+    // owns all game state internally though, so there's no cheap way to resume the exact
+    // position; this starts a fresh game at the same grid size instead.
+    //
+    // Deliberately never opens a dialog from here - see TwoEleven.h's comment on
+    // twoElevenShowSelectionDialog()/twoElevenShowHelpDialog()/twoElevenStartGame()/
+    // twoElevenClearGame() for why: this callback can run on a different app's thread
+    // mid-resurface, racing ahead of main()'s own APP_EVENT_RESULT processing.
+    if (ctx->currentGridSize >= TWOELEVEN_SELECTION_3X3 && ctx->currentGridSize <= TWOELEVEN_SELECTION_6X6) {
         lv_obj_update_layout(parent);
         int32_t sizeIndex = ctx->currentGridSize - TWOELEVEN_SELECTION_3X3;
         createGame(ctx, ctx->mainWrapper, gridSizes[sizeIndex], ctx->toolbar);
-    } else {
-        // First creation - show selection dialog
-        showSelectionDialog(ctx);
     }
 }
 
@@ -300,4 +263,39 @@ void twoElevenTeardown(Context* ctx) {
     ctx->mainWrapper = nullptr;
     ctx->newGameWrapper = nullptr;
     ctx->gameObject = nullptr;
+}
+
+void twoElevenShowSelectionDialog(Context* ctx) {
+    const char* argv[] = { "2048", "How to Play", "3x3", "4x4", "5x5", "6x6" };
+    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+}
+
+void twoElevenShowHelpDialog(Context* ctx) {
+    const char* argv[] = {
+        "How to Play",
+        "Swipe or use arrow keys to move tiles.\n"
+        "Tiles with the same number merge.\n"
+        "Reach 2048 to win!",
+        "OK",
+    };
+    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
+}
+
+void twoElevenClearGame(Context* ctx) {
+    if (ctx->scoreWrapper) { lv_obj_delete(ctx->scoreWrapper); ctx->scoreWrapper = nullptr; }
+    if (ctx->newGameWrapper) { lv_obj_delete(ctx->newGameWrapper); ctx->newGameWrapper = nullptr; }
+    if (ctx->mainWrapper) lv_obj_clean(ctx->mainWrapper);
+    ctx->scoreLabel = nullptr;
+    ctx->gameObject = nullptr;
+    ctx->currentGridSize = -1;
+}
+
+void twoElevenStartGame(Context* ctx, int32_t gridSize) {
+    if (!ctx->mainWrapper || !ctx->toolbar) return;
+    twoElevenClearGame(ctx); // tear down any previous game's leftovers first (harmless if none)
+
+    lv_obj_update_layout(ctx->mainWrapper);
+    ctx->currentGridSize = gridSize;
+    int32_t sizeIndex = gridSize - TWOELEVEN_SELECTION_3X3;
+    createGame(ctx, ctx->mainWrapper, gridSizes[sizeIndex], ctx->toolbar);
 }
