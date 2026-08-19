@@ -5,12 +5,13 @@
 #include "TwoEleven.h"
 
 #include <inttypes.h>
+#include <esp_log.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <app/manager.h>
+#include <app/paths.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
-#include <tactility/paths.h>
 #include <tactility/preferences.h>
 #include <string>
 
@@ -22,11 +23,11 @@ constexpr size_t SIZE_COUNT = 4;
 constexpr uint16_t gridSizes[SIZE_COUNT] = { 3, 4, 5, 6 };
 
 bool getPreferencesPath(std::string& outPath) {
-    char root[128];
-    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+    char path[128];
+    if (app_paths_get_user_data_path("tactility.twoeleven", "two_eleven.properties", path, sizeof(path)) != ERROR_NONE) {
         return false;
     }
-    outPath = std::string(root) + "/two_eleven.properties";
+    outPath = std::string(path);
     return true;
 }
 
@@ -214,6 +215,7 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
 } // namespace
 
 void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
+    ESP_LOGI("TwoEleven", "twoElevenCreateWidgets called, parent=%p", parent);
     auto* ctx = static_cast<Context*>(userData);
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
@@ -267,7 +269,7 @@ void twoElevenTeardown(Context* ctx) {
 
 void twoElevenShowSelectionDialog(Context* ctx) {
     const char* argv[] = { "2048", "How to Play", "3x3", "4x4", "5x5", "6x6" };
-    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+    app_manager_start_for_result("tactility.selectiondialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
 }
 
 void twoElevenShowHelpDialog(Context* ctx) {
@@ -278,7 +280,7 @@ void twoElevenShowHelpDialog(Context* ctx) {
         "Reach 2048 to win!",
         "OK",
     };
-    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
+    app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
 }
 
 void twoElevenClearGame(Context* ctx) {

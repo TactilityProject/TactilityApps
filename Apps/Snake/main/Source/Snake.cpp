@@ -10,7 +10,7 @@
 #include <lvgl/widgets/toolbar.h>
 
 #include <app/manager.h>
-#include <tactility/paths.h>
+#include <app/paths.h>
 #include <tactility/preferences.h>
 
 #include <string>
@@ -45,11 +45,11 @@ uint32_t getActionIconPadding(UiDensity uiDensity) {
 }
 
 bool getPreferencesPath(std::string& outPath) {
-    char root[128];
-    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+    char path[128];
+    if (app_paths_get_user_data_path("tactility.snake", "snake.properties", path, sizeof(path)) != ERROR_NONE) {
         return false;
     }
-    outPath = std::string(root) + "/snake.properties";
+    outPath = std::string(path);
     return true;
 }
 
@@ -264,7 +264,7 @@ void snakeTeardown(Context* ctx) {
 
 void snakeShowSelectionDialog(Context* ctx) {
     const char* argv[] = { "Snake", "How to Play", "Easy", "Medium", "Hard", "Hell" };
-    app_manager_start_for_result("SelectionDialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+    app_manager_start_for_result("tactility.selectiondialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
 }
 
 void snakeShowHelpDialog(Context* ctx) {
@@ -275,7 +275,7 @@ void snakeShowHelpDialog(Context* ctx) {
         "Don't hit yourself!",
         "OK",
     };
-    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
+    app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
 }
 
 void snakeClearGame(Context* ctx) {

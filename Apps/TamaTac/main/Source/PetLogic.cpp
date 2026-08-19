@@ -4,7 +4,7 @@
  */
 
 #include "PetLogic.h"
-#include <tactility/paths.h>
+#include <app/paths.h>
 #include <tactility/preferences.h>
 #include <cstdlib>
 #include <algorithm>
@@ -13,11 +13,11 @@
 namespace {
 
 bool getPreferencesPath(std::string& outPath) {
-    char root[128];
-    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+    char path[128];
+    if (app_paths_get_user_data_path("tactility.tamatac", "pet.properties", path, sizeof(path)) != ERROR_NONE) {
         return false;
     }
-    outPath = std::string(root) + "/tamatac_pet.properties";
+    outPath = std::string(path);
     return true;
 }
 

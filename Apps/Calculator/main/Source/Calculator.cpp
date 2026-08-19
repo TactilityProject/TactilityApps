@@ -17,28 +17,31 @@ static int precedence(char op) {
     return 0;
 }
 
-static std::deque<std::string> infixToRPN(const std::string& infix) {
+static bool infixToRPN(const std::string& infix, std::deque<std::string>& output) {
     std::stack<char> opStack;
-    std::deque<std::string> output;
+    output.clear();
     std::string token;
     size_t i = 0;
 
     while (i < infix.length()) {
         char ch = infix[i];
 
-        if (isdigit(ch)) {
+        if (isdigit((unsigned char)ch)) {
             token.clear();
-            while (i < infix.length() && (isdigit(infix[i]) || infix[i] == '.')) { token += infix[i++]; }
+            while (i < infix.length() && (isdigit((unsigned char)infix[i]) || infix[i] == '.')) { token += infix[i++]; }
             output.push_back(token);
             continue;
         }
 
-        if (ch == '(') { opStack.push(ch); } else if (ch == ')') {
+        if (ch == '(') {
+            opStack.push(ch);
+        } else if (ch == ')') {
             while (!opStack.empty() && opStack.top() != '(') {
                 output.push_back(std::string(1, opStack.top()));
                 opStack.pop();
             }
-            opStack.pop();
+            if (opStack.empty()) return false; // unmatched ')'
+            opStack.pop(); // remove matching '('
         } else if (strchr("+-*/", ch)) {
             while (!opStack.empty() && precedence(opStack.top()) >= precedence(ch)) {
                 output.push_back(std::string(1, opStack.top()));
@@ -51,26 +54,27 @@ static std::deque<std::string> infixToRPN(const std::string& infix) {
     }
 
     while (!opStack.empty()) {
+        if (opStack.top() == '(') return false; // unmatched '('
         output.push_back(std::string(1, opStack.top()));
         opStack.pop();
     }
 
-    return output;
+    return true;
 }
 
-static double evaluateRPN(std::deque<std::string> rpnQueue) {
+static bool evaluateRPN(std::deque<std::string> rpnQueue, double& result) {
     std::stack<double> values;
 
     while (!rpnQueue.empty()) {
         std::string token = rpnQueue.front();
         rpnQueue.pop_front();
 
-        if (isdigit(token[0])) {
+        if (isdigit((unsigned char)token[0])) {
             double d;
             sscanf(token.c_str(), "%lf", &d);
             values.push(d);
         } else if (strchr("+-*/", token[0])) {
-            if (values.size() < 2) return 0;
+            if (values.size() < 2) return false;
 
             double b = values.top();
             values.pop();
@@ -80,15 +84,22 @@ static double evaluateRPN(std::deque<std::string> rpnQueue) {
             if (token[0] == '+') values.push(a + b);
             else if (token[0] == '-') values.push(a - b);
             else if (token[0] == '*') values.push(a * b);
-            else if (token[0] == '/' && b != 0) values.push(a / b);
+            else if (token[0] == '/') {
+                if (b == 0) return false;
+                values.push(a / b);
+            }
         }
     }
 
-    return values.empty() ? 0 : values.top();
+    if (values.size() != 1) return false;
+    result = values.top();
+    return true;
 }
 
-static double computeFormula(Context* ctx) {
-    return evaluateRPN(infixToRPN(std::string(ctx->formulaBuffer)));
+static bool computeFormula(Context* ctx, double& result) {
+    std::deque<std::string> rpn;
+    if (!infixToRPN(std::string(ctx->formulaBuffer), rpn) || rpn.empty()) return false;
+    return evaluateRPN(std::move(rpn), result);
 }
 
 static void resetCalculator(Context* ctx) {
@@ -99,7 +110,13 @@ static void resetCalculator(Context* ctx) {
 }
 
 static void evaluateExpression(Context* ctx) {
-    double result = computeFormula(ctx);
+    double result;
+    if (!computeFormula(ctx, result)) {
+        lv_label_set_text(ctx->displayLabel, "Error");
+        lv_label_set_text(ctx->resultLabel, ctx->formulaBuffer);
+        ctx->newInput = true;
+        return;
+    }
 
     size_t formulaLen = strlen(ctx->formulaBuffer);
     size_t maxAvailable = sizeof(ctx->formulaBuffer) - formulaLen - 1;

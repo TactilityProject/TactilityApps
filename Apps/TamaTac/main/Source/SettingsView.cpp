@@ -5,18 +5,18 @@
 
 #include "SettingsView.h"
 #include "TamaTac.h"
-#include <tactility/paths.h>
+#include <app/paths.h>
 #include <tactility/preferences.h>
 #include <string>
 
 namespace {
 
 bool getPreferencesPath(std::string& outPath) {
-    char root[128];
-    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+    char path[128];
+    if (app_paths_get_user_data_path("tactility.tamatac", "tamatac.properties", path, sizeof(path)) != ERROR_NONE) {
         return false;
     }
-    outPath = std::string(root) + "/tamatac_settings.properties";
+    outPath = std::string(path);
     return true;
 }
 

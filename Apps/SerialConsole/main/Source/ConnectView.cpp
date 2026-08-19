@@ -6,9 +6,9 @@
 #include <lvgl_window_manager/window_manager.h>
 
 #include <app/manager.h>
+#include <app/paths.h>
 #include <tactility/device.h>
 #include <tactility/drivers/uart_controller.h>
-#include <tactility/paths.h>
 #include <tactility/preferences.h>
 
 #include <cstdlib>
@@ -19,11 +19,11 @@ namespace {
 constexpr TickType_t LVGL_DEFAULT_LOCK_TIME = 500; // 500 ticks = 500 ms
 
 bool getPreferencesPath(std::string& outPath) {
-    char root[128];
-    if (paths_get_user_data_path(root, sizeof(root)) != ERROR_NONE) {
+    char path[128];
+    if (app_paths_get_user_data_path("tactility.serialconsole", "serial_console.properties", path, sizeof(path)) != ERROR_NONE) {
         return false;
     }
-    outPath = std::string(root) + "/serial_console.properties";
+    outPath = std::string(path);
     return true;
 }
 
