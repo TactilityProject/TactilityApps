@@ -117,7 +117,7 @@ void twoElevenEventCb(lv_event_t* e) {
                 snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
             const char* argv[] = { title, message, "OK" };
-            app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
+            app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
         } else if (ctx->gameOverDialogId == 0 && twoeleven_get_status(ctx->gameObject)) {
             int32_t prevHighScore = getHighScore(ctx, ctx->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
@@ -137,7 +137,7 @@ void twoElevenEventCb(lv_event_t* e) {
                 snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
             const char* argv[] = { title, message, "OK" };
-            app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
+            app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
         } else {
             // Update score display
             lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %" PRId32, score);

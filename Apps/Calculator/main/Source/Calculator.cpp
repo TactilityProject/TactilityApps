@@ -26,9 +26,23 @@ static bool infixToRPN(const std::string& infix, std::deque<std::string>& output
     while (i < infix.length()) {
         char ch = infix[i];
 
-        if (isdigit((unsigned char)ch)) {
+        if (isdigit((unsigned char)ch) || ch == '.') {
             token.clear();
-            while (i < infix.length() && (isdigit((unsigned char)infix[i]) || infix[i] == '.')) { token += infix[i++]; }
+            bool hasDecimalPoint = false;
+            while (i < infix.length()) {
+                char current = infix[i];
+                if (isdigit((unsigned char)current)) {
+                    token += current;
+                } else if (current == '.' && !hasDecimalPoint) {
+                    hasDecimalPoint = true;
+                    token += current;
+                } else {
+                    break;
+                }
+                ++i;
+            }
+            if (i < infix.length() && infix[i] == '.') return false;
+            if (token.find_first_of("0123456789") == std::string::npos) return false; // no digits, e.g. "."
             output.push_back(token);
             continue;
         }
@@ -69,7 +83,7 @@ static bool evaluateRPN(std::deque<std::string> rpnQueue, double& result) {
         std::string token = rpnQueue.front();
         rpnQueue.pop_front();
 
-        if (isdigit((unsigned char)token[0])) {
+        if (isdigit((unsigned char)token[0]) || token[0] == '.') {
             double d;
             sscanf(token.c_str(), "%lf", &d);
             values.push(d);
@@ -107,6 +121,7 @@ static void resetCalculator(Context* ctx) {
     lv_label_set_text(ctx->displayLabel, "0");
     lv_label_set_text(ctx->resultLabel, "");
     ctx->newInput = true;
+    ctx->hasLastResult = false;
 }
 
 static void evaluateExpression(Context* ctx) {
@@ -118,19 +133,15 @@ static void evaluateExpression(Context* ctx) {
         return;
     }
 
-    size_t formulaLen = strlen(ctx->formulaBuffer);
-    size_t maxAvailable = sizeof(ctx->formulaBuffer) - formulaLen - 1;
+    char equationBuffer[192];
+    snprintf(equationBuffer, sizeof(equationBuffer), "%s = %.8g", ctx->formulaBuffer, result);
 
-    if (maxAvailable > 10) {
-        char resultBuffer[32];
-        snprintf(resultBuffer, sizeof(resultBuffer), " = %.8g", result);
-        strncat(ctx->formulaBuffer, resultBuffer, maxAvailable);
-    } else {
-        snprintf(ctx->formulaBuffer, sizeof(ctx->formulaBuffer), "%.8g", result);
-    }
+    snprintf(ctx->formulaBuffer, sizeof(ctx->formulaBuffer), "%.8g", result);
+    snprintf(ctx->lastResult, sizeof(ctx->lastResult), "%.8g", result);
+    ctx->hasLastResult = true;
 
     lv_label_set_text(ctx->displayLabel, "0");
-    lv_label_set_text(ctx->resultLabel, ctx->formulaBuffer);
+    lv_label_set_text(ctx->resultLabel, equationBuffer);
     ctx->newInput = true;
 }
 
@@ -143,6 +154,11 @@ static void handleInput(Context* ctx, const char* txt) {
     if (strcmp(txt, "=") == 0) {
         evaluateExpression(ctx);
         return;
+    }
+
+    if (strcmp(txt, "RES") == 0) {
+        if (!ctx->hasLastResult) return;
+        txt = ctx->lastResult;
     }
 
     if (strlen(ctx->formulaBuffer) + strlen(txt) < sizeof(ctx->formulaBuffer) - 1) {
@@ -205,7 +221,7 @@ void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
         "7", "8", "9", "*", "\n",
         "4", "5", "6", "-", "\n",
         "1", "2", "3", "+", "\n",
-        "0", "=", "", "", ""
+        "0", ".", "RES", "=", ""
     };
 
     lv_obj_t* buttonmatrix = lv_buttonmatrix_create(parent);
