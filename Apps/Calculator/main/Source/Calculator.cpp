@@ -14,6 +14,7 @@ constexpr auto* TAG = "Calculator";
 static int precedence(char op) {
     if (op == '+' || op == '-') return 1;
     if (op == '*' || op == '/') return 2;
+    if (op == '~') return 3; // unary minus marker, binds tighter than * and /
     return 0;
 }
 
@@ -22,6 +23,7 @@ static bool infixToRPN(const std::string& infix, std::deque<std::string>& output
     output.clear();
     std::string token;
     size_t i = 0;
+    bool expectOperand = true; // true at start, after '(', or after a binary/unary operator
 
     while (i < infix.length()) {
         char ch = infix[i];
@@ -44,11 +46,13 @@ static bool infixToRPN(const std::string& infix, std::deque<std::string>& output
             if (i < infix.length() && infix[i] == '.') return false;
             if (token.find_first_of("0123456789") == std::string::npos) return false; // no digits, e.g. "."
             output.push_back(token);
+            expectOperand = false;
             continue;
         }
 
         if (ch == '(') {
             opStack.push(ch);
+            expectOperand = true;
         } else if (ch == ')') {
             while (!opStack.empty() && opStack.top() != '(') {
                 output.push_back(std::string(1, opStack.top()));
@@ -56,12 +60,18 @@ static bool infixToRPN(const std::string& infix, std::deque<std::string>& output
             }
             if (opStack.empty()) return false; // unmatched ')'
             opStack.pop(); // remove matching '('
+            expectOperand = false;
+        } else if (ch == '-' && expectOperand) {
+            // unary minus: push a marker that binds only to the next operand
+            opStack.push('~');
+            expectOperand = true;
         } else if (strchr("+-*/", ch)) {
             while (!opStack.empty() && precedence(opStack.top()) >= precedence(ch)) {
                 output.push_back(std::string(1, opStack.top()));
                 opStack.pop();
             }
             opStack.push(ch);
+            expectOperand = true;
         }
 
         i++;
@@ -87,6 +97,11 @@ static bool evaluateRPN(std::deque<std::string> rpnQueue, double& result) {
             double d;
             sscanf(token.c_str(), "%lf", &d);
             values.push(d);
+        } else if (token[0] == '~') {
+            if (values.empty()) return false;
+            double a = values.top();
+            values.pop();
+            values.push(-a);
         } else if (strchr("+-*/", token[0])) {
             if (values.size() < 2) return false;
 
@@ -156,9 +171,15 @@ static void handleInput(Context* ctx, const char* txt) {
         return;
     }
 
+    char resToken[sizeof(ctx->lastResult) + 2];
     if (strcmp(txt, "RES") == 0) {
         if (!ctx->hasLastResult) return;
-        txt = ctx->lastResult;
+        if (ctx->lastResult[0] == '-') {
+            snprintf(resToken, sizeof(resToken), "(%s)", ctx->lastResult);
+        } else {
+            snprintf(resToken, sizeof(resToken), "%s", ctx->lastResult);
+        }
+        txt = resToken;
     }
 
     if (strlen(ctx->formulaBuffer) + strlen(txt) < sizeof(ctx->formulaBuffer) - 1) {
