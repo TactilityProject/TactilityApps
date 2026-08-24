@@ -6,6 +6,8 @@
 
 #include <lvgl_window_manager/window_manager.h>
 
+#include <tactility/check.h>
+
 #include <tt_app_fileselection.h>
 
 #include <memory>
@@ -22,44 +24,49 @@ int main(int argc, char* argv[]) {
     ctx->appInstanceId = app_instance_id;
     espNowBridgeInit(ctx.get());
 
+    struct TaskEventGroup event_group {};
+    task_event_group_construct(&event_group);
+
     struct AppEventSubscription sub {};
-    sub.app_instance_id = app_instance_id;
-    app_event_subscribe(&sub);
+    check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
     WindowId window = window_manager_create(app_instance_id, espNowBridgeCreateWidgets, ctx.get());
 
     bool should_close = false;
     while (!should_close) {
-        struct AppEvent event;
-        if (app_event_await(&sub, &event, portMAX_DELAY) != ERROR_NONE) {
-            break;
-        }
-        switch (event.type) {
-            case APP_EVENT_CLOSE:
-                should_close = true;
-                break;
+        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
 
-            case APP_EVENT_RESULT:
-                if (event.result.launch_id == ctx->pickFileLaunchId) {
-                    ctx->pickFileLaunchId = 0;
-                    if (event.result.result == 0) { // 0 = Ok (see FileSelection.h)
-                        char pathBuf[256] = {};
-                        if (tt_app_fileselection_get_result_path(pathBuf, sizeof(pathBuf))) {
-                            ctx->pendingUpdateFilePath = pathBuf;
-                            espNowBridgeApplyPendingUpdate(ctx.get());
+        struct AppEvent event;
+        while (app_event_poll(&sub, &event) == ERROR_NONE) {
+            switch (event.type) {
+                case APP_EVENT_CLOSE:
+                    should_close = true;
+                    break;
+
+                case APP_EVENT_RESULT:
+                    if (event.result.launch_id == ctx->pickFileLaunchId) {
+                        ctx->pickFileLaunchId = 0;
+                        if (event.result.result == 0) { // 0 = Ok (see FileSelection.h)
+                            char pathBuf[256] = {};
+                            if (tt_app_fileselection_get_result_path(pathBuf, sizeof(pathBuf))) {
+                                ctx->pendingUpdateFilePath = pathBuf;
+                                espNowBridgeApplyPendingUpdate(ctx.get());
+                            }
                         }
                     }
-                }
-                app_manager_stop(event.result.launch_id);
-                break;
+                    app_manager_stop(event.result.launch_id);
+                    break;
 
-            default:
-                break;
+                default:
+                    break;
+            }
+            if (should_close) break;
         }
     }
 
     window_manager_remove(window);
-    app_event_unsubscribe(&sub);
+    check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_destruct(&event_group);
     espNowBridgeTeardown(ctx.get());
 
     return 0;

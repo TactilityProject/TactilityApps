@@ -7,6 +7,8 @@
 #include <lvgl/lvgl.h>
 #include <lvgl_window_manager/window_manager.h>
 
+#include <tactility/check.h>
+
 extern "C" {
 
 int main(int argc, char* argv[]) {
@@ -17,9 +19,11 @@ int main(int argc, char* argv[]) {
     Context ctx {};
     ctx.appInstanceId = app_instance_id;
 
+    struct TaskEventGroup event_group {};
+    task_event_group_construct(&event_group);
+
     struct AppEventSubscription sub {};
-    sub.app_instance_id = app_instance_id;
-    app_event_subscribe(&sub);
+    check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
     WindowId window = window_manager_create(app_instance_id, twoElevenCreateWidgets, &ctx);
     ctx.window = window;
@@ -31,61 +35,64 @@ int main(int argc, char* argv[]) {
 
     bool should_close = false;
     while (!should_close) {
+        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
+
         struct AppEvent event;
-        if (app_event_await(&sub, &event, portMAX_DELAY) != ERROR_NONE) {
-            break;
-        }
-        switch (event.type) {
-            case APP_EVENT_CLOSE:
-                should_close = true;
-                break;
+        while (app_event_poll(&sub, &event) == ERROR_NONE) {
+            switch (event.type) {
+                case APP_EVENT_CLOSE:
+                    should_close = true;
+                    break;
 
-            case APP_EVENT_RESULT: {
-                uint32_t launch_id = event.result.launch_id;
+                case APP_EVENT_RESULT: {
+                    uint32_t launch_id = event.result.launch_id;
 
-                if (launch_id == ctx.selectionDialogId && ctx.selectionDialogId != 0) {
-                    ctx.selectionDialogId = 0;
-                    int32_t selection = event.result.result;
-                    app_manager_stop(launch_id);
+                    if (launch_id == ctx.selectionDialogId && ctx.selectionDialogId != 0) {
+                        ctx.selectionDialogId = 0;
+                        int32_t selection = event.result.result;
+                        app_manager_stop(launch_id);
 
-                    if (selection == TWOELEVEN_SELECTION_HOW_TO_PLAY) {
-                        twoElevenShowHelpDialog(&ctx);
-                    } else if (selection >= TWOELEVEN_SELECTION_3X3 && selection <= TWOELEVEN_SELECTION_6X6) {
+                        if (selection == TWOELEVEN_SELECTION_HOW_TO_PLAY) {
+                            twoElevenShowHelpDialog(&ctx);
+                        } else if (selection >= TWOELEVEN_SELECTION_3X3 && selection <= TWOELEVEN_SELECTION_6X6) {
+                            if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
+                                twoElevenStartGame(&ctx, selection);
+                                lvgl_unlock();
+                            }
+                        } else {
+                            // Closed without selecting - close self.
+                            should_close = true;
+                        }
+
+                    } else if (launch_id == ctx.helpDialogId && ctx.helpDialogId != 0) {
+                        ctx.helpDialogId = 0;
+                        app_manager_stop(launch_id);
+                        // Return to selection dialog
+                        twoElevenShowSelectionDialog(&ctx);
+
+                    } else if (launch_id == ctx.gameOverDialogId && ctx.gameOverDialogId != 0) {
+                        ctx.gameOverDialogId = 0;
+                        app_manager_stop(launch_id);
+                        // Game has genuinely ended - clear it and return to the selection dialog.
                         if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
-                            twoElevenStartGame(&ctx, selection);
+                            twoElevenClearGame(&ctx);
                             lvgl_unlock();
                         }
-                    } else {
-                        // Closed without selecting - close self.
-                        should_close = true;
+                        twoElevenShowSelectionDialog(&ctx);
                     }
-
-                } else if (launch_id == ctx.helpDialogId && ctx.helpDialogId != 0) {
-                    ctx.helpDialogId = 0;
-                    app_manager_stop(launch_id);
-                    // Return to selection dialog
-                    twoElevenShowSelectionDialog(&ctx);
-
-                } else if (launch_id == ctx.gameOverDialogId && ctx.gameOverDialogId != 0) {
-                    ctx.gameOverDialogId = 0;
-                    app_manager_stop(launch_id);
-                    // Game has genuinely ended - clear it and return to the selection dialog.
-                    if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
-                        twoElevenClearGame(&ctx);
-                        lvgl_unlock();
-                    }
-                    twoElevenShowSelectionDialog(&ctx);
+                    break;
                 }
-                break;
-            }
 
-            default:
-                break;
+                default:
+                    break;
+            }
+            if (should_close) break;
         }
     }
 
     window_manager_remove(window);
-    app_event_unsubscribe(&sub);
+    check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_destruct(&event_group);
     twoElevenTeardown(&ctx);
 
     return 0;

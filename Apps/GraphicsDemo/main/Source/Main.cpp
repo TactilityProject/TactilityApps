@@ -8,6 +8,7 @@
 #include <app/manager.h>
 #include <app/scheduler.h>
 
+#include <tactility/check.h>
 #include <tactility/device.h>
 #include <tactility/drivers/display.h>
 #include <tactility/drivers/pointer.h>
@@ -28,22 +29,29 @@ static void showErrorAndWait(AppInstanceId appInstanceId, const char* message) {
         return;
     }
 
+    struct TaskEventGroup event_group {};
+    task_event_group_construct(&event_group);
+
     struct AppEventSubscription sub {};
-    sub.app_instance_id = appInstanceId;
-    app_event_subscribe(&sub);
+    check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
     while (true) {
+        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
+
+        bool done = false;
         struct AppEvent event {};
-        if (app_event_await(&sub, &event, portMAX_DELAY) != ERROR_NONE) {
-            break;
+        while (app_event_poll(&sub, &event) == ERROR_NONE) {
+            if (event.type == APP_EVENT_RESULT && event.result.launch_id == dialogInstanceId) {
+                app_manager_stop(dialogInstanceId);
+                done = true;
+                break;
+            }
         }
-        if (event.type == APP_EVENT_RESULT && event.result.launch_id == dialogInstanceId) {
-            app_manager_stop(dialogInstanceId);
-            break;
-        }
+        if (done) break;
     }
 
-    app_event_unsubscribe(&sub);
+    check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_destruct(&event_group);
 }
 
 extern "C" {
