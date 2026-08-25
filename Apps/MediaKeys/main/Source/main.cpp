@@ -15,17 +15,22 @@ extern "C" {
 int main(int argc, char* argv[]) {
     AppInstanceId app_instance_id = app_scheduler_current_app_id();
 
-    // Heap-allocated: the BT event callback (bluetooth_add_event_callback) captures ctx's
-    // address for a background BT-stack thread to call back into, so it can't be a stack frame
-    // that goes away while that callback might still fire.
+    // Heap-allocated: BT event subscription/HID background work holds a raw Context* across the
+    // whole app instance lifetime, well past any single stack frame here.
     auto ctx = std::make_unique<Context>();
     ctx->appInstanceId = app_instance_id;
 
     struct TaskEventGroup event_group {};
     task_event_group_construct(&event_group);
+    ctx->eventGroup = &event_group;
 
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
+
+    // Must happen before window_manager_create() (which synchronously builds widgets and may
+    // auto-enable BT) and before the wait loop below makes its first task_event_group_wait_any()
+    // call - see mediaKeysInitBt()'s doc comment.
+    mediaKeysInitBt(ctx.get());
 
     WindowId window = window_manager_create(app_instance_id, mediaKeysCreateWidgets, ctx.get());
     ctx->window = window;
@@ -41,12 +46,16 @@ int main(int argc, char* argv[]) {
             }
             if (should_close) break;
         }
+
+        mediaKeysProcessBtEvents(ctx.get());
     }
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
-    task_event_group_destruct(&event_group);
+    // Must unsubscribe from the BT event group (inside mediaKeysTeardown()) before destructing
+    // it below - releasing a subscription's bit needs the group to still be alive.
     mediaKeysTeardown(ctx.get());
+    task_event_group_destruct(&event_group);
 
     return 0;
 }

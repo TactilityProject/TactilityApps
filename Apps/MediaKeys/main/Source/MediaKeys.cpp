@@ -73,7 +73,7 @@ void onSwitchToggled(lv_event_t* event);
 void onButtonPressed(lv_event_t* event);
 void onKeyEvent(lv_event_t* event);
 void onKeyHighlightTimer(lv_timer_t* t);
-void btEventCallback(struct Device* device, void* context, struct BtEvent event);
+void handleBtEvent(Context* ctx, const BtEvent& event);
 void handleSwitchToggle(Context* ctx, bool enabled);
 
 void onSwitchToggled(lv_event_t* event) {
@@ -164,10 +164,7 @@ void onKeyHighlightTimer(lv_timer_t* t) {
     lv_timer_pause(t);
 }
 
-void btEventCallback(struct Device* /*device*/, void* context, struct BtEvent event) {
-    auto* ctx = static_cast<Context*>(context);
-    if (!ctx) return;
-
+void handleBtEvent(Context* ctx, const BtEvent& event) {
     if (event.type == BT_EVENT_RADIO_STATE_CHANGED) {
         LOG_I(TAG, "BT radio state: %d", (int)event.radio_state);
 
@@ -207,17 +204,12 @@ void btEventCallback(struct Device* /*device*/, void* context, struct BtEvent ev
 
 void startHid(Context* ctx) {
     // Called once the BT radio is confirmed ON (either already was, or just came up).
-    // May be called from the BT event callback thread - LVGL must already be locked by caller.
+    // May be called from handleBtEvent() on the app's own task - LVGL must already be locked by caller.
     ctx->radioEnabling = false;
 
     ctx->hidDevice = bluetooth_hid_device_get_device();
     if (!ctx->hidDevice) {
         LOG_E(TAG, "BLE HID device unavailable after radio on");
-        if (ctx->btDevice) {
-            bluetooth_remove_event_callback(ctx->btDevice, btEventCallback);
-            device_put(ctx->btDevice);
-            ctx->btDevice = nullptr;
-        }
         ctx->isEnabled = false;
         if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
         return;
@@ -226,11 +218,6 @@ void startHid(Context* ctx) {
     error_t err = bluetooth_hid_device_start(ctx->hidDevice, BT_HID_DEVICE_MODE_KEYBOARD);
     if (err != ERROR_NONE) {
         LOG_E(TAG, "Failed to start HID device: %d", (int)err);
-        if (ctx->btDevice) {
-            bluetooth_remove_event_callback(ctx->btDevice, btEventCallback);
-            device_put(ctx->btDevice);
-            ctx->btDevice = nullptr;
-        }
         ctx->hidDevice = nullptr;
         ctx->isEnabled = false;
         if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
@@ -241,22 +228,28 @@ void startHid(Context* ctx) {
     if (device_has_active_by_type(&KEYBOARD_TYPE)) enterKeyMode(ctx);
 }
 
+// Restores the radio to the state we found it in when we turned it on ourselves. Does not touch
+// the BT event subscription - that's app-lifetime, set up by mediaKeysInitBt()/torn down by
+// teardownBt() at app exit, not per toggle.
+void restoreRadioIfNeeded(Context* ctx) {
+    if (ctx->btDevice && ctx->radioWasOff) bluetooth_set_radio_enabled(ctx->btDevice, false);
+    ctx->radioWasOff = false;
+}
+
 void teardownBt(Context* ctx) {
-    // Remove callback FIRST - stops any in-flight BT events from firing against
-    // our (possibly already freed) UI widget pointers after this returns.
-    if (ctx->btDevice) bluetooth_remove_event_callback(ctx->btDevice, btEventCallback);
+    // Unsubscribe FIRST - stops any in-flight BT events from firing against our (possibly
+    // already freed) UI widget pointers after this returns.
+    if (ctx->btDevice) bluetooth_event_unsubscribe(ctx->btDevice, &ctx->btEventSub);
     // Do NOT call bluetooth_hid_device_stop here: it calls ble_gatts_reset() /
     // ble_gatts_start() which corrupts NimBLE heap while the host task is still
     // running. HID device is a persistent kernel device; hid_device_start() cleans
     // up stale context on next use. Explicit stop is handled by handleSwitchToggle.
-    // Restore the radio/device to the state we found them in.
-    if (ctx->btDevice && ctx->radioWasOff) bluetooth_set_radio_enabled(ctx->btDevice, false);
-    if (ctx->btDevice && ctx->deviceWasStarted) device_stop(ctx->btDevice);
+    // The device itself is never stopped, it's started for the process lifetime (see
+    // Documentation/bluetooth-app-migration.md) - just restore the radio and drop our ref.
+    restoreRadioIfNeeded(ctx);
     if (ctx->btDevice) device_put(ctx->btDevice);
     ctx->btDevice = nullptr;
     ctx->hidDevice = nullptr;
-    ctx->radioWasOff = false;
-    ctx->deviceWasStarted = false;
 }
 
 void handleSwitchToggle(Context* ctx, bool enabled) {
@@ -264,32 +257,14 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
     ctx->isEnabled = enabled;
 
     if (enabled) {
-        if (device_get_first_by_type(&BLUETOOTH_TYPE, &ctx->btDevice) != ERROR_NONE) {
+        if (!ctx->btDevice) {
             LOG_E(TAG, "No Bluetooth device found");
-            ctx->btDevice = nullptr;
             ctx->isEnabled = false;
             if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
             return;
         }
 
-        // Device may not be started yet (BT disabled in DTS by default to save memory).
-        if (!device_is_ready(ctx->btDevice)) {
-            LOG_I(TAG, "BT device not started, starting now");
-            if (device_start(ctx->btDevice) != ERROR_NONE) {
-                LOG_E(TAG, "Failed to start BT device");
-                device_put(ctx->btDevice);
-                ctx->btDevice = nullptr;
-                ctx->isEnabled = false;
-                if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
-                return;
-            }
-            ctx->deviceWasStarted = true;
-        }
-
         bluetooth_set_device_name(ctx->btDevice, "Tactility Media Keys");
-
-        // Register callback before enabling radio so we don't miss the state-change event.
-        bluetooth_add_event_callback(ctx->btDevice, ctx, btEventCallback);
 
         enum BtRadioState radioState;
         bluetooth_get_radio_state(ctx->btDevice, &radioState);
@@ -299,8 +274,10 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
             ctx->radioWasOff = false;
             startHid(ctx);
         } else {
-            // Turn the radio on; startHid() will be called from btEventCallback
-            // once BT_RADIO_STATE_ON fires.
+            // Turn the radio on; startHid() will be called from handleBtEvent()
+            // once BT_RADIO_STATE_ON fires. Our BT event subscription (mediaKeysInitBt())
+            // was already claimed before the app's main loop started waiting, so that
+            // wakeup won't be missed.
             LOG_I(TAG, "BT radio not on (state=%d), enabling...", (int)radioState);
             ctx->radioWasOff = true;
             ctx->radioEnabling = true;
@@ -312,7 +289,8 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
         // Explicit user toggle-off: stop HID cleanly (safe here since we're on the
         // LVGL task and the user intentionally disabled, so no race with app teardown).
         if (ctx->hidDevice) bluetooth_hid_device_stop(ctx->hidDevice);
-        teardownBt(ctx);
+        ctx->hidDevice = nullptr;
+        restoreRadioIfNeeded(ctx);
         if (ctx->mainWrapper) lv_obj_add_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -335,6 +313,34 @@ void handleButtonPress(Context* ctx, uint32_t buttonId) {
 }
 
 } // namespace
+
+bool mediaKeysInitBt(Context* ctx) {
+    // ble0 is started for the process lifetime once enabled in the devicetree - just look it up,
+    // no device_start() needed (see Documentation/bluetooth-app-migration.md).
+    if (device_get_first_by_type(&BLUETOOTH_TYPE, &ctx->btDevice) != ERROR_NONE) {
+        LOG_E(TAG, "No Bluetooth device found");
+        ctx->btDevice = nullptr;
+        return false;
+    }
+    // Must claim this subscription's bit before the app's main loop makes its first
+    // task_event_group_wait_any() call - a bit claimed mid-wait isn't included until the next
+    // call, so a radio-on event fired right after a late subscribe could go unnoticed forever.
+    if (bluetooth_event_subscribe(ctx->btDevice, &ctx->btEventSub, ctx->eventGroup) != ERROR_NONE) {
+        LOG_E(TAG, "Failed to subscribe to BT events");
+        device_put(ctx->btDevice);
+        ctx->btDevice = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void mediaKeysProcessBtEvents(Context* ctx) {
+    if (ctx->btDevice == nullptr) return;
+    BtEvent event {};
+    while (bluetooth_event_poll(&ctx->btEventSub, &event) == ERROR_NONE) {
+        handleBtEvent(ctx, event);
+    }
+}
 
 void mediaKeysCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
@@ -386,17 +392,13 @@ void mediaKeysCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_add_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
 
     // Auto-enable if BT is already on (turned on via QuickPanel/Settings before opening app).
-    // Transient lookup only - handleSwitchToggle() acquires its own reference into ctx->btDevice.
-    struct Device* btDev = nullptr;
-    if (device_get_first_by_type(&BLUETOOTH_TYPE, &btDev) == ERROR_NONE) {
-        if (device_is_ready(btDev)) {
-            enum BtRadioState radioState;
-            if (bluetooth_get_radio_state(btDev, &radioState) == ERROR_NONE && radioState == BT_RADIO_STATE_ON) {
-                lv_obj_add_state(ctx->switchWidget, LV_STATE_CHECKED);
-                handleSwitchToggle(ctx, true);
-            }
+    // ctx->btDevice was already acquired by mediaKeysInitBt() before this ran.
+    if (ctx->btDevice && device_is_ready(ctx->btDevice)) {
+        enum BtRadioState radioState;
+        if (bluetooth_get_radio_state(ctx->btDevice, &radioState) == ERROR_NONE && radioState == BT_RADIO_STATE_ON) {
+            lv_obj_add_state(ctx->switchWidget, LV_STATE_CHECKED);
+            handleSwitchToggle(ctx, true);
         }
-        device_put(btDev);
     }
 }
 
