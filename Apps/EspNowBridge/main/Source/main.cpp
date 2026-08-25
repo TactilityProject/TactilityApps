@@ -69,8 +69,10 @@ int main(int argc, char* argv[]) {
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
-    task_event_group_destruct(&event_group);
+    // Must unsubscribe from the WiFi event group (inside espNowBridgeTeardown()) before
+    // destructing it below - releasing a subscription's bit needs the group to still be alive.
     espNowBridgeTeardown(ctx.get());
+    task_event_group_destruct(&event_group);
 
     return 0;
 }
