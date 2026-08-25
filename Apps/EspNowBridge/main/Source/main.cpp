@@ -22,10 +22,11 @@ int main(int argc, char* argv[]) {
     // stack frame here.
     auto ctx = std::make_unique<Context>();
     ctx->appInstanceId = app_instance_id;
-    espNowBridgeInit(ctx.get());
 
     struct TaskEventGroup event_group {};
     task_event_group_construct(&event_group);
+
+    espNowBridgeInit(ctx.get(), &event_group);
 
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
@@ -62,6 +63,8 @@ int main(int argc, char* argv[]) {
             }
             if (should_close) break;
         }
+
+        espNowBridgeProcessWifiEvents(ctx.get());
     }
 
     window_manager_remove(window);

@@ -28,6 +28,7 @@ struct Context {
     uint32_t pickFileLaunchId = 0;
     std::string pendingUpdateFilePath;
     Device* wifiDevice = nullptr;
+    WifiEventSubscription wifiEventSub {};
 
     // Resolved once per createWidgets() call via wifi_get_firmware_ops() - null on a WiFi
     // device with no updatable co-processor (e.g. a native, non-hosted chip). All OTA/
@@ -38,7 +39,7 @@ struct Context {
 
     // Set once widgets exist (end of espNowBridgeCreateWidgets()), false again the moment
     // they don't (start of a rebuild, or final teardown) - checked (via dispatchToUi(), below)
-    // before touching any lv_obj_t*, since the OTA worker task and the WiFi-event callback can
+    // before touching any lv_obj_t*, since the OTA worker task and WiFi event processing can
     // both outlive the window being buried by a modal child (e.g. the file picker) or the app
     // closing entirely.
     std::atomic<bool> isShown{false};
@@ -65,8 +66,14 @@ struct Context {
 };
 
 /** Sets up state that must exist for the whole app instance lifetime, regardless of how many
- *  times the window is (re)built. Call once, right after constructing the Context. */
-void espNowBridgeInit(Context* ctx);
+ *  times the window is (re)built. Call once, right after constructing the Context.
+ *  @param eventGroup subscribes ctx's WiFi event subscription into this group; must outlive ctx
+ *  (destructed only after espNowBridgeTeardown()). */
+void espNowBridgeInit(Context* ctx, TaskEventGroup* eventGroup);
+
+/** Drains any WiFi events queued for ctx and reacts to them (radio/station state changes).
+ *  Call from the app's main loop after task_event_group_wait_any() returns. */
+void espNowBridgeProcessWifiEvents(Context* ctx);
 
 /** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
 void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData);

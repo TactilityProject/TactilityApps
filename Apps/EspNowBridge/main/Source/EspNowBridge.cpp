@@ -592,8 +592,7 @@ static void waitForTransportTaskEntry(void* arg) {
     vTaskDelete(nullptr);
 }
 
-static void onWifiEvent(Device* /*device*/, void* callbackContext, WifiEvent /*event*/) {
-    auto* ctx = static_cast<Context*>(callbackContext);
+static void handleWifiEvent(Context* ctx, const WifiEvent& /*event*/) {
     if (liveInstance.load() != ctx) {
         return;
     }
@@ -603,26 +602,34 @@ static void onWifiEvent(Device* /*device*/, void* callbackContext, WifiEvent /*e
     }, nullptr, nullptr);
 }
 
+void espNowBridgeProcessWifiEvents(Context* ctx) {
+    if (ctx->wifiDevice == nullptr) {
+        return;
+    }
+    WifiEvent event {};
+    while (wifi_event_poll(&ctx->wifiEventSub, &event) == ERROR_NONE) {
+        handleWifiEvent(ctx, event);
+    }
+}
+
 static void onEnableWifiButtonClicked(lv_event_t* /*event*/) {
     auto* ctx = liveInstance.load();
     if (ctx == nullptr || ctx->wifiDevice == nullptr) {
         return;
     }
-    device_start(ctx->wifiDevice);
-    // start_device() allocates a fresh driver context (Platforms/platform-esp32's
-    // esp32_wifi.cpp), which wipes any event callback registered before the device was started -
-    // re-register now that it's actually running. Also refresh once directly rather than relying
-    // solely on the next WifiEvent, so the "WiFi on" prompt updates immediately even though the
+    // The subscription set up in espNowBridgeInit() stays live across radio on/off - only the
+    // radio itself needs toggling here. Also refresh once directly rather than relying solely on
+    // the next WifiEvent, so the "WiFi on" prompt updates immediately even though the
     // co-processor firmware version below isn't available yet.
-    wifi_add_event_callback(ctx->wifiDevice, ctx, onWifiEvent);
+    wifi_set_radio_on(ctx->wifiDevice);
     refreshWifiPrompt(ctx);
     refreshCurrentVersion(ctx);
 
-    // The co-processor RPC transport isn't up the instant device_start() returns - it comes up
-    // asynchronously (~1-2s later) - so firmwareOps->get_info() above reliably fails right after
-    // enabling WiFi. Nothing else reliably re-triggers a version refresh once the transport
-    // actually comes up (the WiFi event callback only covers radio/station state, not transport
-    // readiness), so wait for it explicitly on a background task and refresh once it's ready.
+    // The co-processor RPC transport isn't up the instant wifi_set_radio_on() returns - it comes
+    // up asynchronously (~1-2s later) - so firmwareOps->get_info() above reliably fails right
+    // after enabling WiFi. Nothing else reliably re-triggers a version refresh once the transport
+    // actually comes up (WiFi events only cover radio/station state, not transport readiness), so
+    // wait for it explicitly on a background task and refresh once it's ready.
     if (ctx->firmwareOps != nullptr) {
         ctx->outstandingTasks.fetch_add(1);
         if (xTaskCreate(waitForTransportTaskEntry, "espnow_bridge_wait", 4096 / sizeof(StackType_t), ctx, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
@@ -631,23 +638,24 @@ static void onEnableWifiButtonClicked(lv_event_t* /*event*/) {
     }
 }
 
-void espNowBridgeInit(Context* ctx) {
+void espNowBridgeInit(Context* ctx, TaskEventGroup* eventGroup) {
     ctx->taskDoneSemaphore = xSemaphoreCreateBinary();
     liveInstance = ctx;
+
+    Device* wifiDevice = nullptr;
+    if (device_get_first_by_type(&WIFI_TYPE, &wifiDevice) == ERROR_NONE) {
+        if (wifi_event_subscribe(wifiDevice, &ctx->wifiEventSub, eventGroup) == ERROR_NONE) {
+            ctx->wifiDevice = wifiDevice;
+        } else {
+            device_put(wifiDevice);
+        }
+    }
 }
 
 void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    // Tear down whatever the previous build wired up. The first call has nothing to tear down
-    // (wifiDevice is null); a rebuild - after e.g. the file picker (a modal child) closes and
-    // this window resurfaces - does, since there's no separate "window buried" callback in this
-    // app framework to have done it already (unlike the old one's onHide()).
     ctx->isShown = false;
-    if (ctx->wifiDevice != nullptr) {
-        wifi_remove_event_callback(ctx->wifiDevice, onWifiEvent);
-        ctx->wifiDevice = nullptr;
-    }
 
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
@@ -691,13 +699,12 @@ void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData) {
     ctx->statusLabel = lv_label_create(wrapper);
     lv_label_set_text(ctx->statusLabel, "Ready");
 
-    ctx->wifiDevice = wifi_find_first_registered_device();
-    if (ctx->wifiDevice != nullptr) {
-        wifi_add_event_callback(ctx->wifiDevice, ctx, onWifiEvent);
-        if (wifi_get_firmware_ops(ctx->wifiDevice, &ctx->firmwareOps, &ctx->firmwareCtx) != ERROR_NONE) {
-            ctx->firmwareOps = nullptr;
-            ctx->firmwareCtx = nullptr;
-        }
+    // wifiDevice is resolved once in espNowBridgeInit() and stays subscribed for the whole app
+    // instance lifetime - only firmwareOps needs refreshing here, since the co-processor RPC
+    // transport can come and go independently of the WiFi radio.
+    if (ctx->wifiDevice != nullptr && wifi_get_firmware_ops(ctx->wifiDevice, &ctx->firmwareOps, &ctx->firmwareCtx) != ERROR_NONE) {
+        ctx->firmwareOps = nullptr;
+        ctx->firmwareCtx = nullptr;
     }
 
     refreshCurrentVersion(ctx);
@@ -723,7 +730,8 @@ void espNowBridgeApplyPendingUpdate(Context* ctx) {
 void espNowBridgeTeardown(Context* ctx) {
     ctx->isShown = false;
     if (ctx->wifiDevice != nullptr) {
-        wifi_remove_event_callback(ctx->wifiDevice, onWifiEvent);
+        wifi_event_unsubscribe(ctx->wifiDevice, &ctx->wifiEventSub);
+        device_put(ctx->wifiDevice);
         ctx->wifiDevice = nullptr;
     }
 
