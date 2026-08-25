@@ -41,6 +41,10 @@ static void showErrorAndWait(AppInstanceId appInstanceId, const char* message) {
         bool done = false;
         struct AppEvent event {};
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
+            if (event.type == APP_EVENT_CLOSE) {
+                done = true;
+                break;
+            }
             if (event.type == APP_EVENT_RESULT && event.result.launch_id == dialogInstanceId) {
                 app_manager_stop(dialogInstanceId);
                 done = true;
