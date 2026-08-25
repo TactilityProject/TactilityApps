@@ -82,7 +82,7 @@ def main() -> int:
     for manifest in manifests:
         process_manifest(manifest, component)
 
-    print(f"\nDone.")
+    print("\nDone.")
     return 0
 
 
