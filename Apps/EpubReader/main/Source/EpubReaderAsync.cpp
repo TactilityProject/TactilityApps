@@ -1,6 +1,5 @@
 #include "EpubReader.h"
 #include <lvgl/widgets/toolbar.h>
-#include <tactility/filesystem/file_mutex.h>
 #include <tactility/log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -112,15 +111,9 @@ void asyncSwitchToBrowser(void* data) {
 void backgroundOpenTask(void* data) {
     auto* a = static_cast<OpenArgs*>(data);
 
-    // Acquire the filesystem lock before any SD card I/O - prevents concurrent
-    // SDMMC access from the background and LVGL tasks (bus errors 0x107/0x108).
-    struct FileMutex mutex;
-    file_mutex_get(&mutex, a->filePath.c_str());
-    file_mutex_lock(&mutex);
-
     if (isTextFile(a->filePath)) {
-        // Read the entire text file here (under the lock) so asyncOpenComplete
-        // only needs to update UI state - no SD I/O on the LVGL task.
+        // Read the entire text file here so asyncOpenComplete only needs to
+        // update UI state - no SD I/O on the LVGL task.
         FILE* f = fopen(a->filePath.c_str(), "r");
         if (f) {
             char buf[512];
@@ -139,8 +132,6 @@ void backgroundOpenTask(void* data) {
         // Open the epub (ZIP directory scan + OPF/NCX XML parse)
         a->epub = EpubService::open(a->filePath);
     }
-
-    file_mutex_unlock(&mutex);
 
     // Signal the LVGL task that the work is done
     lv_async_call(asyncOpenComplete, a);

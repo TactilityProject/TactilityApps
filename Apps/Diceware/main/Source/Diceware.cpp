@@ -4,7 +4,6 @@
 #include <app/paths.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/widgets/toolbar.h>
-#include <tactility/filesystem/file_mutex.h>
 
 #include <esp_random.h>
 #include <esp_log.h>
@@ -39,17 +38,13 @@ static std::string readWordAtLine(const int lineIndex) {
         return "";
     }
 
-    struct FileMutex mutex;
-    file_mutex_get(&mutex, path);
     std::string word;
-    file_mutex_lock(&mutex);
     FILE* file = fopen(path, "r");
     if (file != nullptr) {
         skipNewlines(file, lineIndex);
         word = readWord(file);
         fclose(file);
     } else { ESP_LOGE(TAG, "Failed to open %s", path); }
-    file_mutex_unlock(&mutex);
     return word;
 }
 

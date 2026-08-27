@@ -1,7 +1,6 @@
 #include "TodoList.h"
 #include <app/paths.h>
 #include <lvgl_window_manager/window_manager.h>
-#include <tactility/filesystem/file_mutex.h>
 #include <Tactility/kernel/Kernel.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl/lvgl.h>
@@ -62,9 +61,6 @@ void saveTodos(Context* ctx) {
     char savePath[256];
     if (!getSaveFilePath(savePath, sizeof(savePath))) return;
 
-    struct FileMutex mutex;
-    file_mutex_get(&mutex, savePath);
-    file_mutex_lock(&mutex);
     FILE* f = fopen(savePath, "w");
     if (f) {
         for (int i = 0; i < ctx->count; i++) {
@@ -72,17 +68,12 @@ void saveTodos(Context* ctx) {
         }
         fclose(f);
     }
-    file_mutex_unlock(&mutex);
 }
 
 void loadTodos(Context* ctx) {
     char savePath[256];
     if (!getSaveFilePath(savePath, sizeof(savePath))) return;
 
-    struct FileMutex mutex;
-    file_mutex_get(&mutex, savePath);
-
-    file_mutex_lock(&mutex);
     ctx->count = 0;
     FILE* f = fopen(savePath, "r");
     if (f) {
@@ -103,7 +94,6 @@ void loadTodos(Context* ctx) {
         }
         fclose(f);
     }
-    file_mutex_unlock(&mutex);
 }
 
 /* ── UI Helpers ───────────────────────────────────────────────────── */
