@@ -1,5 +1,3 @@
-include("$ENV{TACTILITY_SDK_PATH}/TactilitySDK.cmake")
-
 file(GLOB_RECURSE SOURCE_FILES Source/*.c*)
 file(GLOB_RECURSE SFX_ENGINE_FILES ../../../Libraries/SfxEngine/Source/*.c*)
 
