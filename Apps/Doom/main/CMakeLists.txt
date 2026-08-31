@@ -1,3 +1,5 @@
+include("$ENV{TACTILITY_SDK_PATH}/TactilitySDK.cmake")
+
 # App sources
 file(GLOB_RECURSE APP_SOURCES Source/*.c*)
 
@@ -101,7 +103,7 @@ set(DOOM_SOURCES
     ${DOOMGENERIC_DIR}/doomgeneric_tactility.c
 )
 
-idf_component_register(
+tactility_component_register(
     SRCS ${APP_SOURCES} ${DOOM_SOURCES}
     INCLUDE_DIRS "Source" "${DOOMGENERIC_DIR}/doomgeneric"
     REQUIRES TactilitySDK driver esp_driver_ppa esp_mm
