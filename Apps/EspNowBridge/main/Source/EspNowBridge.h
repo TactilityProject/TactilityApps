@@ -9,6 +9,8 @@
 
 #include <lvgl.h>
 
+#include <app/stream.h>
+
 #include <tactility/drivers/wifi.h>
 
 /** RAII guard: pauses WifiService's background auto-connect scan for the guard's lifetime. See
@@ -25,7 +27,13 @@ public:
 struct Context {
     uint32_t appInstanceId;
 
+    // Set once in espNowBridgeInit(), reused by onUpdateButtonClicked() to bind pickFileStream
+    // when launching the file-selection app - must outlive ctx (see espNowBridgeInit()'s doc).
+    TaskEventGroup* eventGroup = nullptr;
+
     uint32_t pickFileLaunchId = 0;
+    AppStream pickFileStream {};
+    uint8_t pickFileBuffer[256] {};
     std::string pendingUpdateFilePath;
     Device* wifiDevice = nullptr;
     WifiEventSubscription wifiEventSub {};
@@ -67,16 +75,23 @@ struct Context {
 
 /** Sets up state that must exist for the whole app instance lifetime, regardless of how many
  *  times the window is (re)built. Call once, right after constructing the Context.
- *  @param eventGroup subscribes ctx's WiFi event subscription into this group; must outlive ctx
- *  (destructed only after espNowBridgeTeardown()). */
+ *  @param eventGroup stored on ctx (also used for the file-selection app's stream binding) and
+ *  subscribes ctx's WiFi event subscription into this group; must outlive ctx (destructed only
+ *  after espNowBridgeTeardown()). */
 void espNowBridgeInit(Context* ctx, TaskEventGroup* eventGroup);
 
 /** Drains any WiFi events queued for ctx and reacts to them (radio/station state changes).
  *  Call from the app's main loop after task_event_group_wait_any() returns. */
 void espNowBridgeProcessWifiEvents(Context* ctx);
 
-/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+/** window_manager_create_ext()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
 void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData);
+
+/** window_manager_create_ext()'s WindowDestroyWidgetsFn - @a userData is the Context* for this
+ *  instance. Clears isShown so dispatchToUi() stops touching this window's (now-deleted)
+ *  lv_obj_t*s - fires whenever this window is buried (e.g. the file-selection dialog opening as
+ *  a modal child), not just on final teardown. */
+void espNowBridgeDestroyWidgets(void* userData);
 
 /** Starts the update task if ctx->pendingUpdateFilePath is set (consuming it). Called both from
  *  within espNowBridgeCreateWidgets() and directly by main()'s event loop right after a picked

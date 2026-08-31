@@ -3,12 +3,11 @@
 #include <app/event.h>
 #include <app/manager.h>
 #include <app/scheduler.h>
+#include <app/stream.h>
 
 #include <lvgl_window_manager/window_manager.h>
 
 #include <tactility/check.h>
-
-#include <tt_app_fileselection.h>
 
 #include <memory>
 
@@ -31,7 +30,7 @@ int main(int argc, char* argv[]) {
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
-    WindowId window = window_manager_create(app_instance_id, espNowBridgeCreateWidgets, ctx.get());
+    WindowId window = window_manager_create_ext(app_instance_id, espNowBridgeCreateWidgets, espNowBridgeDestroyWidgets, ctx.get());
 
     bool should_close = false;
     while (!should_close) {
@@ -48,11 +47,18 @@ int main(int argc, char* argv[]) {
                     if (event.result.launch_id == ctx->pickFileLaunchId) {
                         ctx->pickFileLaunchId = 0;
                         if (event.result.result == 0) { // 0 = Ok (see FileSelection.h)
-                            char pathBuf[256] = {};
-                            if (tt_app_fileselection_get_result_path(pathBuf, sizeof(pathBuf))) {
-                                ctx->pendingUpdateFilePath = pathBuf;
+                            // ctx->pickFileBuffer is the stream's own backing storage (see
+                            // onUpdateButtonClicked()'s AppStreamBinding), so it can't double as
+                            // the read destination too.
+                            char destination[sizeof(ctx->pickFileBuffer)];
+                            size_t length = app_stream_read(&ctx->pickFileStream, destination, sizeof(destination));
+                            app_stream_unsubscribe(&ctx->pickFileStream);
+                            if (length > 0) {
+                                ctx->pendingUpdateFilePath.assign(destination, length);
                                 espNowBridgeApplyPendingUpdate(ctx.get());
                             }
+                        } else {
+                            app_stream_unsubscribe(&ctx->pickFileStream);
                         }
                     }
                     app_manager_stop(event.result.launch_id);

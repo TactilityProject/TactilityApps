@@ -207,7 +207,7 @@ void startHid(Context* ctx) {
     // May be called from handleBtEvent() on the app's own task - LVGL must already be locked by caller.
     ctx->radioEnabling = false;
 
-    ctx->hidDevice = bluetooth_hid_device_get_device();
+    ctx->hidDevice = bluetooth_hid_device_get();
     if (!ctx->hidDevice) {
         LOG_E(TAG, "BLE HID device unavailable after radio on");
         ctx->isEnabled = false;
@@ -248,6 +248,7 @@ void teardownBt(Context* ctx) {
     // Documentation/bluetooth-app-migration.md) - just restore the radio and drop our ref.
     restoreRadioIfNeeded(ctx);
     if (ctx->btDevice) device_put(ctx->btDevice);
+    if (ctx->hidDevice) device_put(ctx->hidDevice);
     ctx->btDevice = nullptr;
     ctx->hidDevice = nullptr;
 }

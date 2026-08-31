@@ -1,8 +1,4 @@
-file(GLOB_RECURSE SOURCE_FILES
-    Source/*.c*
-)
+include("$ENV{TACTILITY_SDK_PATH}/TactilitySDK.cmake")
 
-idf_component_register(
-    SRCS ${SOURCE_FILES}
-    REQUIRES TactilitySDK bootloader_support esp_app_format
-)
+file(GLOB_RECURSE SOURCE_FILES Source/*.c*)
+tactility_component_register(SRCS ${SOURCE_FILES} REQUIRES bootloader_support esp_app_format)

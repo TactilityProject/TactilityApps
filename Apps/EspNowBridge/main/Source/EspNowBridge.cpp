@@ -1,12 +1,13 @@
 #include "EspNowBridge.h"
 
+#include <app/manager.h>
 #include <app/paths.h>
+#include <app/stream.h>
 #include <tactility/device.h>
 #include <tactility/drivers/wifi.h>
 #include <tactility/wifi_auto_scan.h>
 #include <tactility/firmware/firmware.h>
 
-#include <tt_app_fileselection.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/widgets/toolbar.h>
 
@@ -22,9 +23,11 @@ constexpr TickType_t LVGL_DEFAULT_LOCK_TIME = 500; // 500 ticks = 500 ms
 #include <freertos/task.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 static constexpr auto* TAG = "EspNowBridge";
 static constexpr size_t CHUNK_SIZE = 1500;
@@ -344,6 +347,7 @@ static void performUpdate(Context* ctx, const std::string& filePath) {
 
     FILE* file = fopen(filePath.c_str(), "rb");
     if (file == nullptr) {
+        LOG_E(TAG, "Failed to open '%s' (len=%zu): %s", filePath.c_str(), filePath.size(), strerror(errno));
         dispatchToUi(ctx, [](Context& app, void*) {
             setStatus(&app, "Failed to open selected file");
             setUpdateButtonsDisabled(&app, false);
@@ -546,12 +550,37 @@ static void startUpdateTask(Context* ctx, const std::string& filePath) {
     }
 }
 
+// Matches Tactility's own built-in file-selection system app (Tactility/Source/app/fileselection/
+// FileSelection.cpp) - its manifest id and argv convention aren't part of any public app-module
+// header (that app isn't generic app-module framework, just one particular app shipped by
+// Tactility), so external apps reach it by calling app_manager_start_for_result_with_streams()
+// against these directly, the same way Tactility's own built-in apps (e.g. Notes) do internally.
+static constexpr auto* FILE_SELECTION_APP_ID = "tactility.fileselection";
+static constexpr auto* FILE_SELECTION_MODE_EXISTING = "--existing";
+
 static void onUpdateButtonClicked(lv_event_t* /*event*/) {
     auto* ctx = liveInstance.load();
     if (ctx == nullptr || !isWifiRadioOn(ctx)) {
         return;
     }
-    ctx->pickFileLaunchId = tt_app_fileselection_start_for_existing_file(ctx->appInstanceId);
+    if (ctx->pickFileLaunchId != 0) {
+        // A second tap (e.g. before the dialog has visibly opened) would overwrite
+        // pickFileLaunchId with the new instance's id, so the first dialog's eventual
+        // APP_EVENT_RESULT would never match it and its picked path would be silently dropped.
+        return;
+    }
+    const char* argv[] = { FILE_SELECTION_MODE_EXISTING };
+    AppStreamBinding binding = {
+        .producer_fd = STDOUT_FILENO,
+        .stream = &ctx->pickFileStream,
+        .buffer = ctx->pickFileBuffer,
+        .buffer_capacity = sizeof(ctx->pickFileBuffer),
+        .event_group = ctx->eventGroup,
+    };
+    uint32_t instanceId = 0;
+    if (app_manager_start_for_result_with_streams(FILE_SELECTION_APP_ID, ctx->appInstanceId, 1, argv, &binding, 1, &instanceId) == ERROR_NONE) {
+        ctx->pickFileLaunchId = instanceId;
+    }
 }
 
 // Name of the slave bridge firmware bundled in this app's assets/ folder
@@ -640,6 +669,7 @@ static void onEnableWifiButtonClicked(lv_event_t* /*event*/) {
 
 void espNowBridgeInit(Context* ctx, TaskEventGroup* eventGroup) {
     ctx->taskDoneSemaphore = xSemaphoreCreateBinary();
+    ctx->eventGroup = eventGroup;
     liveInstance = ctx;
 
     Device* wifiDevice = nullptr;
@@ -716,6 +746,14 @@ void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData) {
     // valid again. In practice this rarely fires - see espNowBridgeApplyPendingUpdate()'s doc
     // comment - but it's a harmless no-op otherwise and stays as a defensive fallback.
     espNowBridgeApplyPendingUpdate(ctx);
+}
+
+void espNowBridgeDestroyWidgets(void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    // Per WindowDestroyWidgetsFn's contract: only touch memory that needs no other
+    // synchronization. isShown is exactly that - dispatchToUi() only ever reads it under this
+    // same flag, never a lock this callback could deadlock against.
+    ctx->isShown = false;
 }
 
 void espNowBridgeApplyPendingUpdate(Context* ctx) {
