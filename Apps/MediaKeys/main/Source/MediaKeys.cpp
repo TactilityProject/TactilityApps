@@ -65,6 +65,7 @@ void sendKeyTask(void* param) {
     uint8_t release[2] = {0, 0};
     bluetooth_hid_device_send_consumer(data->hidDevice, release, 2);
 
+    device_put(data->hidDevice);
     delete data;
     vTaskDelete(nullptr);
 }
@@ -189,6 +190,7 @@ void handleBtEvent(Context* ctx, const BtEvent& event) {
                     if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
                     if (ctx->mainWrapper) lv_obj_add_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
                 }
+                if (ctx->hidDevice) device_put(ctx->hidDevice);
                 ctx->hidDevice = nullptr;
                 ctx->isEnabled = false;
                 ctx->radioEnabling = false;
@@ -218,6 +220,7 @@ void startHid(Context* ctx) {
     error_t err = bluetooth_hid_device_start(ctx->hidDevice, BT_HID_DEVICE_MODE_KEYBOARD);
     if (err != ERROR_NONE) {
         LOG_E(TAG, "Failed to start HID device: %d", (int)err);
+        device_put(ctx->hidDevice);
         ctx->hidDevice = nullptr;
         ctx->isEnabled = false;
         if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
@@ -289,7 +292,10 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
         if (device_has_active_by_type(&KEYBOARD_TYPE)) exitKeyMode(ctx);
         // Explicit user toggle-off: stop HID cleanly (safe here since we're on the
         // LVGL task and the user intentionally disabled, so no race with app teardown).
-        if (ctx->hidDevice) bluetooth_hid_device_stop(ctx->hidDevice);
+        if (ctx->hidDevice) {
+            bluetooth_hid_device_stop(ctx->hidDevice);
+            device_put(ctx->hidDevice);
+        }
         ctx->hidDevice = nullptr;
         restoreRadioIfNeeded(ctx);
         if (ctx->mainWrapper) lv_obj_add_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
@@ -306,9 +312,17 @@ void handleButtonPress(Context* ctx, uint32_t buttonId) {
 
     LOG_I(TAG, "Button %lu pressed", buttonId);
 
+    // The task runs across a 50ms delay outside the caller's stack frame - it needs its own
+    // reference so teardownBt()'s device_put() can't invalidate ctx->hidDevice out from under it.
+    if (device_get(ctx->hidDevice) != ERROR_NONE) {
+        LOG_E(TAG, "Failed to acquire HID device reference for send task");
+        return;
+    }
+
     SendKeyData* data = new SendKeyData {ctx->hidDevice, CONSUMER_USAGE[buttonId]};
     if (xTaskCreate(sendKeyTask, "bt_key", 4096, data, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
         LOG_E(TAG, "Failed to create send task");
+        device_put(data->hidDevice);
         delete data;
     }
 }
