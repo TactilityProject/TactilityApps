@@ -23,6 +23,8 @@ runs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.app_name }}
-        path: Apps/${{ inputs.app_name}}/build/${{ inputs.app_name }}.app
+        # The built package is named after the app's manifest app.id (e.g. tactility.helloworld),
+        # not the app directory name - glob instead of assuming they match.
+        path: Apps/${{ inputs.app_name }}/build/*.app
         retention-days: 30
 
