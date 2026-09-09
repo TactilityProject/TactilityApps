@@ -1,8 +1,8 @@
 #include "EspNowBridge.h"
 
-#include <app/manager.h>
 #include <app/paths.h>
 #include <app/stream.h>
+#include <app/start.h>
 #include <tactility/device.h>
 #include <tactility/drivers/wifi.h>
 #include <tactility/wifi_auto_scan.h>
@@ -550,11 +550,6 @@ static void startUpdateTask(Context* ctx, const std::string& filePath) {
     }
 }
 
-// Matches Tactility's own built-in file-selection system app (Tactility/Source/app/fileselection/
-// FileSelection.cpp) - its manifest id and argv convention aren't part of any public app-module
-// header (that app isn't generic app-module framework, just one particular app shipped by
-// Tactility), so external apps reach it by calling app_manager_start_for_result_with_streams()
-// against these directly, the same way Tactility's own built-in apps (e.g. Notes) do internally.
 static constexpr auto* FILE_SELECTION_APP_ID = "tactility.fileselection";
 static constexpr auto* FILE_SELECTION_MODE_EXISTING = "--existing";
 
@@ -578,7 +573,7 @@ static void onUpdateButtonClicked(lv_event_t* /*event*/) {
         .event_group = ctx->eventGroup,
     };
     uint32_t instanceId = 0;
-    if (app_manager_start_for_result_with_streams(FILE_SELECTION_APP_ID, ctx->appInstanceId, 1, argv, &binding, 1, &instanceId) == ERROR_NONE) {
+    if (app_start_for_result_with_streams(FILE_SELECTION_APP_ID, 1, argv, &binding, 1, ctx->appInstanceId, &instanceId) == ERROR_NONE) {
         ctx->pickFileLaunchId = instanceId;
     }
 }

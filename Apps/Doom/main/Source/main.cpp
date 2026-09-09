@@ -5,6 +5,7 @@
 #include <app/event.h>
 #include <app/manager.h>
 #include <app/scheduler.h>
+#include <app/start.h>
 
 #include <tactility/check.h>
 #include <tactility/device.h>
@@ -22,7 +23,7 @@ constexpr auto* TAG = "Doom";
 static void showErrorAndWait(AppInstanceId appInstanceId, const char* message) {
     const char* argv[] = { "Error", message, "OK" };
     uint32_t dialogInstanceId = 0;
-    app_manager_start_for_result("tactility.alertdialog", appInstanceId, 3, argv, &dialogInstanceId);
+    app_start_for_result("tactility.alertdialog", 3, argv, appInstanceId, &dialogInstanceId);
     if (dialogInstanceId == 0) {
         return;
     }

@@ -5,8 +5,8 @@
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
 
-#include <app/manager.h>
 #include <app/paths.h>
+#include <app/start.h>
 #include <tactility/device.h>
 #include <tactility/drivers/uart_controller.h>
 #include <tactility/preferences.h>
@@ -53,7 +53,7 @@ lv_obj_t* createRowWrapper(lv_obj_t* parent) {
 void showError(Context* app, const char* message) {
     const char* argv[] = { "Error", message, "OK" };
     uint32_t dialogInstanceId = 0;
-    app_manager_start_for_result("AlertDialog", app->appInstanceId, 3, argv, &dialogInstanceId);
+    app_start_for_result("AlertDialog", 3, argv, app->appInstanceId, &dialogInstanceId);
 }
 
 void onConnect(Context* app) {

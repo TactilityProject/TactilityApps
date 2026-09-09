@@ -1,6 +1,6 @@
 #include "Diceware.h"
 
-#include <app/manager.h>
+#include <app/start.h>
 #include <app/paths.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/widgets/toolbar.h>
@@ -115,7 +115,7 @@ static void onHelpClicked(lv_event_t* e) {
         "The hardware random number generator can use the Wi-Fi radio to improve randomness. There's no need to connect to a Wi-Fi network for this to work.",
         "OK",
     };
-    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->pendingHelpDialogId);
+    app_start_for_result("AlertDialog", 3, argv, ctx->appInstanceId, &ctx->pendingHelpDialogId);
 }
 
 void dicewareCreateWidgets(lv_obj_t* parent, void* userData) {

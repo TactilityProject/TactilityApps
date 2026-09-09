@@ -8,8 +8,8 @@
 #include <esp_log.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
-#include <app/manager.h>
 #include <app/paths.h>
+#include <app/start.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
 #include <tactility/preferences.h>
@@ -117,7 +117,7 @@ void twoElevenEventCb(lv_event_t* e) {
                 snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
             const char* argv[] = { title, message, "OK" };
-            app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
+            app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->gameOverDialogId);
         } else if (ctx->gameOverDialogId == 0 && twoeleven_get_status(ctx->gameObject)) {
             int32_t prevHighScore = getHighScore(ctx, ctx->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
@@ -137,7 +137,7 @@ void twoElevenEventCb(lv_event_t* e) {
                 snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
             const char* argv[] = { title, message, "OK" };
-            app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
+            app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->gameOverDialogId);
         } else {
             // Update score display
             lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %" PRId32, score);
@@ -269,7 +269,7 @@ void twoElevenTeardown(Context* ctx) {
 
 void twoElevenShowSelectionDialog(Context* ctx) {
     const char* argv[] = { "2048", "How to Play", "3x3", "4x4", "5x5", "6x6" };
-    app_manager_start_for_result("tactility.selectiondialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+    app_start_for_result("tactility.selectiondialog", 6, argv, ctx->appInstanceId, &ctx->selectionDialogId);
 }
 
 void twoElevenShowHelpDialog(Context* ctx) {
@@ -280,7 +280,7 @@ void twoElevenShowHelpDialog(Context* ctx) {
         "Reach 2048 to win!",
         "OK",
     };
-    app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
+    app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->helpDialogId);
 }
 
 void twoElevenClearGame(Context* ctx) {

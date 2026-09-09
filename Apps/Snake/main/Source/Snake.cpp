@@ -9,8 +9,8 @@
 #include <lvgl/fonts.h>
 #include <lvgl/widgets/toolbar.h>
 
-#include <app/manager.h>
 #include <app/paths.h>
+#include <app/start.h>
 #include <tactility/preferences.h>
 
 #include <string>
@@ -128,7 +128,7 @@ void snakeEventCb(lv_event_t* e) {
                         score, length, getHighScore(ctx, ctx->currentDifficulty));
             }
             const char* argv[] = { alertTitle, message, "OK" };
-            app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 3, argv, &ctx->gameOverDialogId);
+            app_start_for_result("AlertDialog", 3, argv, ctx->appInstanceId, &ctx->gameOverDialogId);
         } else {
             // Update score display
             lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %u", snake_get_score(ctx->gameObject));
@@ -264,7 +264,7 @@ void snakeTeardown(Context* ctx) {
 
 void snakeShowSelectionDialog(Context* ctx) {
     const char* argv[] = { "Snake", "How to Play", "Easy", "Medium", "Hard", "Hell" };
-    app_manager_start_for_result("tactility.selectiondialog", ctx->appInstanceId, 6, argv, &ctx->selectionDialogId);
+    app_start_for_result("tactility.selectiondialog", 6, argv, ctx->appInstanceId, &ctx->selectionDialogId);
 }
 
 void snakeShowHelpDialog(Context* ctx) {
@@ -275,7 +275,7 @@ void snakeShowHelpDialog(Context* ctx) {
         "Don't hit yourself!",
         "OK",
     };
-    app_manager_start_for_result("tactility.alertdialog", ctx->appInstanceId, 3, argv, &ctx->helpDialogId);
+    app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->helpDialogId);
 }
 
 void snakeClearGame(Context* ctx) {

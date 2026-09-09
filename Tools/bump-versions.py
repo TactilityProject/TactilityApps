@@ -14,8 +14,8 @@ from pathlib import Path
 
 APPS_DIR = Path(__file__).resolve().parent.parent / "Apps"
 MANIFEST = "manifest.properties"
-VERSION_NAME_KEY = "app.version.name"
-VERSION_CODE_KEY = "app.version.code"
+VERSION_NAME_KEY = "version.name"
+VERSION_CODE_KEY = "version.code"
 
 
 def parse_version(name: str) -> list[int]:

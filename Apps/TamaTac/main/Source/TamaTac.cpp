@@ -7,7 +7,7 @@
 #include "SpriteData.h"
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
-#include <app/manager.h>
+#include <app/start.h>
 #include <Tactility/kernel/Kernel.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
@@ -113,7 +113,7 @@ void onResetClicked([[maybe_unused]] lv_event_t* e) {
         "Reset",
         "Cancel",
     };
-    app_manager_start_for_result("AlertDialog", ctx->appInstanceId, 4, argv, &ctx->resetDialogId);
+    app_start_for_result("AlertDialog", 4, argv, ctx->appInstanceId, &ctx->resetDialogId);
 }
 
 void onTimerUpdate(TimerHandle_t timer) {
