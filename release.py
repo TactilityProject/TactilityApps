@@ -71,8 +71,8 @@ def get_manifest(appPath):
     return None
 
 def get_versioned_file_name(manifest):
-    app_id = manifest["app.id"]
-    version_code = manifest["app.version.code"]
+    app_id = manifest["id"]
+    version_code = manifest["version.code"]
     return f"{app_id}-{version_code}.app"
 
 def get_os_version(manifest):
@@ -98,22 +98,22 @@ def manifest_config_to_flat_json(manifest):
     """Convert a flat (V2) manifest dict into a flat JSON-like dict.
 
     Expected keys:
-        app.id -> appId
-        app.version.name -> appVersionName
-        app.version.code -> appVersionCode (int)
-        app.name -> appName
-        app.description -> appDescription (optional; default "")
+        id -> appId
+        version.name -> appVersionName
+        version.code -> appVersionCode (int)
+        name -> appName
+        description -> appDescription (optional; default "")
         target.sdk -> targetSdk
         target.platforms -> targetPlatforms (comma-separated list)
 
     Unknown/missing values fall back to sensible defaults per requirements.
     """
     # Map values
-    app_id = manifest.get("app.id", "")
-    app_version_name = manifest.get("app.version.name", "")
-    app_version_code_raw = manifest.get("app.version.code", "0")
-    app_name = manifest.get("app.name", "")
-    app_description = manifest.get("app.description", "") or ""
+    app_id = manifest.get("id", "")
+    app_version_name = manifest.get("version.name", "")
+    app_version_code_raw = manifest.get("version.code", "0")
+    app_name = manifest.get("name", "")
+    app_description = manifest.get("description", "") or ""
 
     # Coerce version code to int safely
     try:
