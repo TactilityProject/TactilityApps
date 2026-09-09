@@ -18,7 +18,7 @@ runs:
         path: .
         # The export reset prevents an error when building other targets
         # The default environment variable is set to "esp32" by the GitHub Action
-        command: 'export IDF_TARGET= && python tactility.py Apps/${{ inputs.app_name }} build'
+        command: 'export IDF_TARGET= && python tactility.py build -p Apps/${{ inputs.app_name }}'
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
