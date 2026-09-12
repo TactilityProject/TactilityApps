@@ -80,7 +80,7 @@
 
 typedef bool boolean;
 
-#else
+#elif !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
 
 typedef enum 
 {
@@ -88,6 +88,13 @@ typedef enum
     true	= 1,
 	undef	= 0xFFFFFFFF
 } boolean;
+
+#else
+
+// C23 makes false/true reserved keywords, so this enum can no longer declare them as
+// enumerator names. C23 already has a real bool, so alias boolean to it directly.
+typedef bool boolean;
+#define undef 0xFFFFFFFF
 
 #endif
 

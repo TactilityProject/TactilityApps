@@ -74,7 +74,7 @@ static constexpr const char* APP_ID = "tactility.doom";
 // to resolve the user data path degrades to M_SetConfigDir's own "no config
 // dir" handling rather than silently writing into the WAD folder, which is what
 // the old "/sdcard/doom" default did.
-extern "C" char doomEsp_savedir[128] = "";
+extern "C" { char doomEsp_savedir[128] = ""; }
 
 // Doom's native render resolution (set via DOOMGENERIC_RESX/RESY)
 constexpr int DOOM_W = DOOMGENERIC_RESX;
@@ -243,6 +243,8 @@ extern "C" void doom_draw_frame(const uint32_t* buffer) {
             .block_offset_x = 0,
             .block_offset_y = 0,
             .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+            .yuv_range = PPA_COLOR_RANGE_LIMIT,
+            .yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601,
         },
         .out = {
             .buffer = outputBuffer,
@@ -252,10 +254,20 @@ extern "C" void doom_draw_frame(const uint32_t* buffer) {
             .block_offset_x = 0,
             .block_offset_y = 0,
             .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+            .yuv_range = PPA_COLOR_RANGE_LIMIT,
+            .yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601,
         },
         .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
         .scale_x = (float)scaledH / (float)DOOM_W,
         .scale_y = (float)scaledW / (float)DOOM_H,
+        .mirror_x = false,
+        .mirror_y = false,
+        .rgb_swap = false,
+        .byte_swap = false,
+        .alpha_update_mode = PPA_ALPHA_NO_CHANGE,
+        .alpha_fix_val = 0,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+        .user_data = nullptr,
     };
 
     ppa_do_scale_rotate_mirror(ppaClient, &srmConfig);
@@ -485,7 +497,12 @@ void doomEsp_Run(Device* display) {
     }
 
     // 3. Register the PPA client
-    ppa_client_config_t ppaConfig = { .oper_type = PPA_OPERATION_SRM };
+    ppa_client_config_t ppaConfig = {
+        .oper_type = PPA_OPERATION_SRM,
+        .max_pending_trans_num = 1,
+        .data_burst_length = PPA_DATA_BURST_LENGTH_128,
+        .flags = { .allow_pd = 0 },
+    };
     ESP_ERROR_CHECK(ppa_register_client(&ppaConfig, &ppaClient));
 
     // 3b. Discover all keyboard devices (best-effort - Doom runs fine without them)

@@ -392,7 +392,12 @@ typedef struct
     // If false use 0 for any position.
     // Note: as eight entries are available,
     //  we might as well insert the same name eight times.
-    boolean	rotate;
+    // Not `boolean`: R_InstallSpriteLump (r_things.c) needs a third state, distinct from both
+    // false and true, to detect "not yet installed" after this struct is memset(-1). A real
+    // (C23) 1-byte `bool` can only ever compare equal to 0 or 1 - reading back the memset(-1)
+    // sentinel through one triggers undefined behavior instead of correctly comparing unequal
+    // to both.
+    byte	rotate;
 
     // Lump to use for view angles 0-7.
     short	lump[8];
