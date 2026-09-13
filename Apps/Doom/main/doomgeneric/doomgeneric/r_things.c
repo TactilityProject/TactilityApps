@@ -242,8 +242,8 @@ void R_InitSpriteDefs (char** namelist)
 	{
 	    switch ((int)sprtemp[frame].rotate)
 	    {
-	      case -1:
 		// no rotations were found for that frame at all
+	      case 0xff:
 		I_Error ("R_InitSprites: No patches found "
 			 "for %s frame %c", spritename, frame+'A');
 		break;
