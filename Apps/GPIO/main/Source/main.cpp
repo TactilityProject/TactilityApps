@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
 
     WindowId window = window_manager_create(app_instance_id, gpioCreateWidgets, &ctx);
     ctx.window = window;
-    ctx.timer->start();
+    timer_start(ctx.timer);
 
     bool should_close = false;
     while (!should_close) {
