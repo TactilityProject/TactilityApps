@@ -14,7 +14,7 @@ runs:
     - name: 'Build'
       uses: espressif/esp-idf-ci-action@v1
       with:
-        esp_idf_version: v5.5
+        esp_idf_version: v6.1
         path: .
         # The export reset prevents an error when building other targets
         # The default environment variable is set to "esp32" by the GitHub Action
