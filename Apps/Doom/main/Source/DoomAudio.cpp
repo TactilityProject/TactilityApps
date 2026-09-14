@@ -382,15 +382,17 @@ void Sound_CacheSounds(sfxinfo_t* /*sounds*/, int /*num_sounds*/) {}
 // i_sound.c's I_BindSoundVariables() binds these as config variables under
 // FEATURE_SOUND, but they are normally defined by i_sdlsound.c / i_allegrosound.c,
 // neither of which is built here.
-extern "C" int use_libsamplerate = 0;
-extern "C" float libsamplerate_scale = 1.0f;
+extern "C" {
+int use_libsamplerate = 0;
+float libsamplerate_scale = 1.0f;
 
-extern "C" sound_module_t DG_sound_module = {
+sound_module_t DG_sound_module = {
     soundDevices, 3,
     Sound_Init, Sound_Shutdown, Sound_GetSfxLumpNum,
     Sound_Update, Sound_UpdateSoundParams, Sound_StartSound,
     Sound_StopSound, Sound_SoundIsPlaying, Sound_CacheSounds
 };
+}
 
 void doomAudio_Init() {
     // i_oplmusic.c opens the OPL chip at snd_samplerate, and the mixer renders

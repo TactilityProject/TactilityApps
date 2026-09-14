@@ -1,24 +1,32 @@
 #include "Gpio.h"
 
+#include <lvgl/fonts.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl/lvgl.h>
 #include <lvgl_window_manager/window_manager.h>
 
-#include <esp_log.h>
-#include <driver/gpio.h>
+#include <tactility/device.h>
+#include <tactility/drivers/gpio.h>
+#include <tactility/log.h>
+
+#include <cstdio>
 
 constexpr auto* TAG = "GPIO";
 
 static void updatePinStates(Context* ctx) {
     // Update pin states
-    for (size_t i = 0; i < ctx->pinStates.size(); ++i) {
-        ctx->pinStates[i] = gpio_get_level((gpio_num_t)i);
+    for (uint32_t i = 0; i < ctx->pinCount; ++i) {
+        bool high = false;
+        if (ctx->gpioController != nullptr) {
+            gpio_controller_get_level(ctx->gpioController, (gpio_pin_t)i, &high);
+        }
+        ctx->pinStates[i] = high;
     }
 }
 
 static void updatePinWidgets(Context* ctx) {
     lvgl_lock();
-    for (size_t j = 0; j < ctx->pinStates.size(); ++j) {
+    for (size_t j = 0; j < ctx->pinCount; ++j) {
         int level = ctx->pinStates[j];
         lv_obj_t* label = ctx->pinWidgets[j];
         void* label_user_data = lv_obj_get_user_data(label);
@@ -26,9 +34,9 @@ static void updatePinWidgets(Context* ctx) {
         if (reinterpret_cast<void*>(level) != label_user_data) {
             lv_obj_set_user_data(label, reinterpret_cast<void*>(level));
             if (level == 0) {
-                lv_obj_set_style_text_color(label, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_color(label, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
             } else {
-                lv_obj_set_style_text_color(label, lv_color_make(0, 200, 0), LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_color(label, lv_color_make(0, 200, 0), LV_STATE_DEFAULT);
             }
         }
     }
@@ -59,15 +67,11 @@ static void gpioOnTimer(Context* ctx) {
     ctx->mutex.unlock();
 }
 
-// endregion Task
-
-static int getSquareSpacing(UiDensity density) {
-    if (density == LVGL_UI_DENSITY_COMPACT) {
-        return 0;
-    } else {
-        return 4;
-    }
+static void gpioOnTimerCallback(void* context) {
+    gpioOnTimer(static_cast<Context*>(context));
 }
+
+// endregion Task
 
 void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
@@ -96,36 +100,50 @@ void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
     auto vertical_px = lv_display_get_vertical_resolution(display);
     bool is_landscape_display = horizontal_px > vertical_px;
 
-    constexpr auto block_width = 16;
-    auto ui_density = lvgl_get_ui_density();
-    const auto square_spacing = getSquareSpacing(ui_density);
-    int32_t x_spacing = block_width + square_spacing;
+    auto block_size = lvgl_get_text_font_height(FONT_SIZE_DEFAULT);
+    auto lvgl_density = lvgl_get_ui_density();
+    const int32_t square_spacing = (lvgl_density == LVGL_UI_DENSITY_COMPACT) ? 0 : 4;
+    int32_t x_spacing = block_size + square_spacing;
     uint8_t column = 0;
     const uint8_t column_limit = is_landscape_display ? 10 : 5;
 
     auto* row_wrapper = createGpioRowWrapper(centering_wrapper);
     lv_obj_align(row_wrapper, LV_ALIGN_TOP_MID, 0, 0);
 
+    // Measure the widest number label ("00".."<pinCount-1>") once, so the status squares are
+    // offset far enough to never overlap it, regardless of the display's font/DPI.
+    const int32_t label_gap = (lvgl_density == LVGL_UI_DENSITY_COMPACT) ? 2 : (block_size / 2);
+    char max_label_text[8];
+    snprintf(max_label_text, sizeof(max_label_text), "%02lu", static_cast<unsigned long>(ctx->pinCount > 0 ? ctx->pinCount - 1 : 0));
+    auto* measuring_label = lv_label_create(row_wrapper);
+    lv_label_set_text(measuring_label, max_label_text);
+    lv_obj_update_layout(measuring_label);
+    int32_t offset_from_left_label = lv_obj_get_width(measuring_label) + label_gap;
+    lv_obj_del(measuring_label);
+
     ctx->mutex.lock();
 
-    ctx->pinStates.resize(GPIO_PIN_COUNT);
-    ctx->pinWidgets.resize(GPIO_PIN_COUNT);
+    ctx->pinStates.reset(new uint8_t[ctx->pinCount]());
+    ctx->pinWidgets.reset(new lv_obj_t*[ctx->pinCount]());
 
-    for (int i = 0; i < GPIO_PIN_COUNT; ++i) {
-        constexpr uint8_t offset_from_left_label = 4;
-
+    for (uint32_t i = 0; i < ctx->pinCount; ++i) {
         // Add the GPIO number before the first item on a row
         if (column == 0) {
             auto* prefix = lv_label_create(row_wrapper);
-            lv_label_set_text_fmt(prefix, "%02d", i);
+            lv_label_set_text_fmt(prefix, "%02lu", static_cast<unsigned long>(i));
         }
 
         // Add a new GPIO status indicator
-        auto* status_label = lv_label_create(row_wrapper);
-        lv_obj_set_pos(status_label, (column+1) * x_spacing + offset_from_left_label, 0);
-        lv_label_set_text_fmt(status_label, "%s", LV_SYMBOL_STOP);
-        lv_obj_set_style_text_color(status_label, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
-        ctx->pinWidgets[i] = status_label;
+        auto* status_square = lv_obj_create(row_wrapper);
+        lv_obj_set_pos(status_square, column * x_spacing + offset_from_left_label, 0);
+        lv_obj_set_size(status_square, block_size, block_size);
+        lv_obj_set_style_pad_all(status_square, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_margin_all(status_square, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(status_square, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(status_square, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(status_square, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(status_square, LV_OPA_COVER, LV_STATE_DEFAULT);
+        ctx->pinWidgets[i] = status_square;
         ctx->pinStates[i] = false;
 
         column++;
@@ -133,8 +151,8 @@ void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
         if (column >= column_limit) {
             // Add the GPIO number after the last item on a row
             auto* postfix = lv_label_create(row_wrapper);
-            lv_label_set_text_fmt(postfix, "%02d", i);
-            lv_obj_set_pos(postfix, (column + 1) * x_spacing + offset_from_left_label, 0);
+            lv_label_set_text_fmt(postfix, "%02lu", static_cast<unsigned long>(i));
+            lv_obj_set_pos(postfix, column * x_spacing + offset_from_left_label + label_gap, 0);
 
             // Add a new row wrapper underneath the last one
             auto* new_row_wrapper = createGpioRowWrapper(centering_wrapper);
@@ -149,17 +167,27 @@ void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
 }
 
 void gpioInit(Context* ctx) {
-    ctx->timer = std::make_unique<tt::Timer>(tt::Timer::Type::Periodic, pdMS_TO_TICKS(100), [ctx] {
-        gpioOnTimer(ctx);
-    });
+    if (device_get_first_active_by_type(&GPIO_CONTROLLER_TYPE, &ctx->gpioController) == ERROR_NONE) {
+        gpio_controller_get_pin_count(ctx->gpioController, &ctx->pinCount);
+    } else {
+        LOG_E(TAG, "No active GPIO controller found");
+    }
+
+    ctx->timer = timer_alloc(TIMER_TYPE_PERIODIC, pdMS_TO_TICKS(100), gpioOnTimerCallback, ctx);
 }
 
 void gpioTeardown(Context* ctx) {
     ctx->mutex.lock();
-    if (ctx->timer) {
-        ctx->timer->stop();
+    if (ctx->timer != nullptr) {
+        timer_stop(ctx->timer);
+        timer_free(ctx->timer);
+        ctx->timer = nullptr;
     }
-    ctx->pinWidgets.clear();
-    ctx->pinStates.clear();
+    if (ctx->gpioController != nullptr) {
+        device_put(ctx->gpioController);
+        ctx->gpioController = nullptr;
+    }
+    ctx->pinWidgets.reset();
+    ctx->pinStates.reset();
     ctx->mutex.unlock();
 }
