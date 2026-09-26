@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - id: set-matrix
-        run: python3 Tools/gh-generate-app-matrix.py
+        run: python3 Scripts/gh-generate-app-matrix.py
   Build:
     runs-on: ubuntu-latest
     needs: GenerateAppMatrix

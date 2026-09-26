@@ -2,9 +2,9 @@
 """Bump app.version.name and app.version.code in all app manifests.
 
 Usage:
-    python Tools/bump-versions.py major   # 0.10.0 -> 1.0.0
-    python Tools/bump-versions.py minor   # 0.10.0 -> 0.11.0
-    python Tools/bump-versions.py patch   # 0.10.0 -> 0.10.1
+    python Scripts/bump-versions.py major   # 0.10.0 -> 1.0.0
+    python Scripts/bump-versions.py minor   # 0.10.0 -> 0.11.0
+    python Scripts/bump-versions.py patch   # 0.10.0 -> 0.10.1
 
 Regardless of the argument, app.version.code is incremented by 1.
 """

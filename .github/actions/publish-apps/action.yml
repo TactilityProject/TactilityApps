@@ -18,4 +18,4 @@ runs:
       run: pip install boto3
     - name: 'Upload files'
       shell: bash
-      run: python Buildscripts/CDN/upload-app-files.py cdn_files ${{ inputs.sdk_version }} ${{ env.CDN_ID }} ${{ env.CDN_TOKEN_NAME }} ${{ env.CDN_TOKEN_VALUE }}
+      run: python Scripts/CDN/upload-app-files.py cdn_files ${{ inputs.sdk_version }} ${{ env.CDN_ID }} ${{ env.CDN_TOKEN_NAME }} ${{ env.CDN_TOKEN_VALUE }}
