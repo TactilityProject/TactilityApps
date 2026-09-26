@@ -571,6 +571,8 @@ static void onUpdateButtonClicked(lv_event_t* /*event*/) {
         .buffer = ctx->pickFileBuffer,
         .buffer_capacity = sizeof(ctx->pickFileBuffer),
         .event_group = ctx->eventGroup,
+        .window_size = {},
+        .alias_fd = -1,
     };
     uint32_t instanceId = 0;
     if (app_start_for_result_with_streams(FILE_SELECTION_APP_ID, 1, argv, &binding, 1, ctx->appInstanceId, &instanceId) == ERROR_NONE) {
