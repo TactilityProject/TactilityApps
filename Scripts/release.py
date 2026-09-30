@@ -94,6 +94,17 @@ def check_and_get_sdk_version(manifest_map):
 def get_git_commit_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
 
+def get_requires_ram(manifest):
+    """Parse "requires.ram" (whole megabytes with an "M" suffix, e.g. "2M") into megabytes. Absent means 0."""
+    value = manifest.get("requires.ram")
+    if value is None:
+        return 0
+    value = value.strip()
+    if len(value) < 2 or not value.endswith("M") or not value[:-1].isdigit() or int(value[:-1]) > 255:
+        print(f"ERROR: Invalid requires.ram \"{value}\" in {manifest.get('id', '?')}: expected whole megabytes with an M suffix (e.g. 2M), at most 255M")
+        sys.exit(1)
+    return int(value[:-1])
+
 def manifest_config_to_flat_json(manifest):
     """Convert a flat (V2) manifest dict into a flat JSON-like dict.
 
@@ -105,6 +116,8 @@ def manifest_config_to_flat_json(manifest):
         description -> appDescription (optional; default "")
         target.sdk -> targetSdk
         target.platforms -> targetPlatforms (comma-separated list)
+        requires.device.id -> requiresDeviceId (comma-separated list, optional; default [])
+        requires.ram -> requiresRam (megabytes, optional; default 0)
 
     Unknown/missing values fall back to sensible defaults per requirements.
     """
@@ -125,6 +138,10 @@ def manifest_config_to_flat_json(manifest):
     platforms_raw = manifest.get("target.platforms", "")
     target_platforms = [p.strip() for p in str(platforms_raw).split(",") if p.strip()] if platforms_raw is not None else []
 
+    requires_device_id_raw = manifest.get("requires.device.id", "")
+    requires_device_id = [d.strip() for d in str(requires_device_id_raw).split(",") if d.strip()]
+    requires_ram = get_requires_ram(manifest)
+
     filename = get_versioned_file_name(manifest)
     return {
         "appId": app_id,
@@ -134,6 +151,8 @@ def manifest_config_to_flat_json(manifest):
         "appDescription": app_description,
         "targetSdk": target_sdk,
         "targetPlatforms": target_platforms,
+        "requiresDeviceId": requires_device_id,
+        "requiresRam": requires_ram,
         "file": filename
     }
 
