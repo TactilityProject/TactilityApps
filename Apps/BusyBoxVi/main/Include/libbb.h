@@ -122,12 +122,18 @@ void* llist_pop(llist_t** elm);
 
 /* region Memory and strings */
 
+/* Allocations from the x*() functions are tracked, see bb_free_all() */
 void* xmalloc(size_t size);
 void* xzalloc(size_t size);
 void* xrealloc(void* old, size_t size);
 char* xstrdup(const char* s);
 char* xstrndup(const char* s, int n);
 char* xasprintf(const char* format, ...) __attribute__((format(printf, 1, 2)));
+/* vi frees x*() allocations with plain free() */
+void bb_free(void* ptr);
+#define free bb_free
+/* Frees every x*() allocation that is still live */
+void bb_free_all(void);
 
 char* skip_whitespace(const char* s);
 char* skip_non_whitespace(const char* s);

@@ -7,6 +7,9 @@
  */
 #include "libbb.h"
 
+/* This file implements bb_free() itself, so free() means libc's own below */
+#undef free
+
 struct globals* ptr_to_globals;
 const char* applet_name = "vi";
 
@@ -27,7 +30,7 @@ void* llist_pop(llist_t** head) {
     }
     void* data = temp->data;
     *head = temp->link;
-    free(temp);
+    bb_free(temp);
     return data;
 }
 
@@ -35,12 +38,49 @@ void* llist_pop(llist_t** head) {
 
 /* region Memory and strings */
 
+/*
+ * Every block handed out below is tracked, so bb_free_all() can release what vi itself never frees
+ * (it relies on process exit, which an app instance doesn't have).
+ */
+typedef union AllocHeader {
+    struct {
+        union AllocHeader* prev;
+        union AllocHeader* next;
+    } links;
+    max_align_t alignment;
+} AllocHeader;
+
+static AllocHeader* allocations = NULL;
+
+static void* track(AllocHeader* header) {
+    header->links.prev = NULL;
+    header->links.next = allocations;
+    if (allocations != NULL) {
+        allocations->links.prev = header;
+    }
+    allocations = header;
+    return header + 1;
+}
+
+static AllocHeader* untrack(void* ptr) {
+    AllocHeader* header = (AllocHeader*)ptr - 1;
+    if (header->links.prev != NULL) {
+        header->links.prev->links.next = header->links.next;
+    } else {
+        allocations = header->links.next;
+    }
+    if (header->links.next != NULL) {
+        header->links.next->links.prev = header->links.prev;
+    }
+    return header;
+}
+
 void* xmalloc(size_t size) {
-    void* ptr = malloc(size);
-    if (ptr == NULL && size != 0) {
+    AllocHeader* header = malloc(sizeof(AllocHeader) + size);
+    if (header == NULL) {
         bb_simple_error_msg_and_die("out of memory");
     }
-    return ptr;
+    return track(header);
 }
 
 void* xzalloc(size_t size) {
@@ -50,18 +90,34 @@ void* xzalloc(size_t size) {
 }
 
 void* xrealloc(void* old, size_t size) {
-    void* ptr = realloc(old, size);
-    if (ptr == NULL && size != 0) {
+    if (old == NULL) {
+        return xmalloc(size);
+    }
+    AllocHeader* header = realloc(untrack(old), sizeof(AllocHeader) + size);
+    if (header == NULL) {
         bb_simple_error_msg_and_die("out of memory");
     }
-    return ptr;
+    return track(header);
+}
+
+void bb_free(void* ptr) {
+    if (ptr != NULL) {
+        free(untrack(ptr));
+    }
+}
+
+void bb_free_all(void) {
+    while (allocations != NULL) {
+        AllocHeader* next = allocations->links.next;
+        free(allocations);
+        allocations = next;
+    }
 }
 
 char* xstrdup(const char* s) {
-    char* t = strdup(s);
-    if (t == NULL) {
-        bb_simple_error_msg_and_die("out of memory");
-    }
+    size_t size = strlen(s) + 1;
+    char* t = xmalloc(size);
+    memcpy(t, s, size);
     return t;
 }
 
@@ -257,7 +313,7 @@ void* xmalloc_open_read_close(const char* filename, size_t* maxsz_p) {
         }
         ssize_t n = safe_read(fd, buf + size, capacity - size - 1);
         if (n < 0) {
-            free(buf);
+            bb_free(buf);
             close(fd);
             return NULL;
         }
