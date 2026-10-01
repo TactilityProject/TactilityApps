@@ -626,16 +626,27 @@ static int mysleep(int hund)
 }
 
 //----- Set terminal attributes --------------------------------
+static bool termios_saved;
+
 static void rawmode(void)
 {
 	// no TERMIOS_CLEAR_ISIG: leave ISIG on - allow signals
 	set_termios_to_raw(STDIN_FILENO, &term_orig, TERMIOS_RAW_CRNL);
+	termios_saved = true;
 }
 
 static void cookmode(void)
 {
+	if (!termios_saved)
+		return;
 	fflush_all();
 	tcsetattr_stdin_TCSANOW(&term_orig);
+	termios_saved = false;
+}
+
+void vi_cleanup(void)
+{
+	cookmode();
 }
 
 //----- Terminal Drawing ---------------------------------------
