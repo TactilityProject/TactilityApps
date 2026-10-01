@@ -338,14 +338,17 @@ void bb_putchar(int ch) {
 
 /* region Errors */
 
+/* exit() would terminate the whole device, so dying unwinds to main() instead */
+jmp_buf bb_die_jmp;
+
 void bb_show_usage(void) {
     fputs("Usage: vi [-c CMD] [-R] [-H] [FILE]...\n", stderr);
-    exit(EXIT_FAILURE);
+    longjmp(bb_die_jmp, 1);
 }
 
 void bb_simple_error_msg_and_die(const char* s) {
     fprintf(stderr, "%s: %s\n", applet_name, s);
-    exit(EXIT_FAILURE);
+    longjmp(bb_die_jmp, 1);
 }
 
 /* endregion */

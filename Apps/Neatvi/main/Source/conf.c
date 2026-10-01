@@ -176,7 +176,13 @@ void kmap_def(int id, int key, char *def)
 {
 	static char defs[512];
 	static int defs_pos;
-	int len = strlen(def) + 1;
+	int len;
+	if (!def) {
+		if (id >= 0 && id < LEN(kmaps) && key >= 0 && key < 256)
+			kmaps[id][key] = NULL;
+		return;
+	}
+	len = strlen(def) + 1;
 	if (id >= 0 && id < LEN(kmaps) && key >= 0 && key < 256) {
 		if (len < sizeof(defs) - defs_pos) {
 			memcpy(defs + defs_pos, def, len);

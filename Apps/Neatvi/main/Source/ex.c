@@ -956,6 +956,8 @@ static int ec_highlight(char *loc, char *cmd, char *arg, char *txt)
 	int mode = 0;
 	if (!name)
 		return 1;
+	if (!attr)
+		attr = "";
 	if (strchr(attr, 'b'))
 		mode |= SYN_BD;
 	if (strchr(attr, 'i'))
@@ -1335,7 +1337,7 @@ static int ec_source(char *loc, char *cmd, char *arg, char *txt)
 	char *path = arg[0] ? ex_pathexpand(arg, 1) : ex_path();
 	char buf[1 << 10];
 	struct sbuf sb = {0};
-	int fd = path[0] ? open(path, O_RDONLY) : -1;
+	int fd = path && path[0] ? open(path, O_RDONLY) : -1;
 	long nr;
 	if (fd < 0)
 		return 1;
