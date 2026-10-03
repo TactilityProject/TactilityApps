@@ -644,8 +644,16 @@ static void cookmode(void)
 	termios_saved = false;
 }
 
+// Set while the alternate screen buffer is in use, so vi_cleanup() can leave it
+static smallint alt_screen_active;
+
 void vi_cleanup(void)
 {
+	if (alt_screen_active) {
+		// "Use normal screen buffer, restore cursor"
+		write1(ESC"[?1049l");
+		alt_screen_active = 0;
+	}
 	cookmode();
 }
 
@@ -5048,6 +5056,7 @@ int vi_main(int argc, char **argv)
 #endif
 	// "Save cursor, use alternate screen buffer, clear screen"
 	write1(ESC"[?1049h");
+	alt_screen_active = 1;
 	// This is the main file handling loop
 	optind = 0;
 	while (1) {
@@ -5059,6 +5068,7 @@ int vi_main(int argc, char **argv)
 	}
 	// "Use normal screen buffer, restore cursor"
 	write1(ESC"[?1049l");
+	alt_screen_active = 0;
 
 	return 0;
 }
