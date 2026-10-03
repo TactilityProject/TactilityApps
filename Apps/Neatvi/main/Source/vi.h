@@ -1,4 +1,5 @@
 /* neatvi main header */
+#include <signal.h>
 
 /* helper macros */
 #define LEN(a)		(sizeof(a) / sizeof((a)[0]))
@@ -222,7 +223,7 @@ extern int xoff;
 extern int xtop;
 extern int xleft;
 extern int xvis;
-extern int xquit;
+extern volatile sig_atomic_t xquit;
 extern int xic;
 extern int xai;
 extern int xtd;

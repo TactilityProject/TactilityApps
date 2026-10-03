@@ -175,6 +175,8 @@ int term_read(int buffered)
 {
 	struct pollfd ufds[1];
 	int n, c;
+	if (xquit)		/* a signal asked to quit: do not block */
+		return -1;
 	if (!buffered && ibuf_pos >= ibuf_cnt && istd_pos >= istd_cnt) {
 		ufds[0].fd = 0;
 		ufds[0].events = POLLIN;
