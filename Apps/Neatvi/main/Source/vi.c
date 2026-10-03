@@ -1771,6 +1771,12 @@ static void sigwinch(int signo)
 	vi_back(TK_CTL('c'));
 }
 
+/* the terminal went away: leave the editing loop, so cleanup runs */
+static void sighup(int signo)
+{
+	xquit = 1;
+}
+
 static void vi(void)
 {
 	int xcol;
@@ -2217,6 +2223,8 @@ int main(int argc, char *argv[])
 	if (xvis)
 		term_init();
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGHUP, sighup);
+	signal(SIGTERM, sighup);
 	if (!ex_init(argv + i)) {
 		if (xvis)
 			vi();
