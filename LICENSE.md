@@ -1,7 +1,7 @@
 # Tactility Apps
 
-The Tactility Apps project is available under the [GNU General Public License v3](Documentation/license-apps.md).
-Distributions and forks must adhere to the license terms.
+Unless otherwise specified, the subprojects in the TactilityApps project are available under the [GNU General Public License v3](Documentation/license-apps.md).
+Some applications have a different license, which is specified by a `LICENSE` or `LICENSE.md` file in their folder.
 
 # Libraries
 
