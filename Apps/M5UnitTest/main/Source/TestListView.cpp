@@ -67,6 +67,6 @@ void testListViewCreate(lv_obj_t* parent, Context* app) {
         lv_obj_t* textLbl = lv_obj_get_child(btn, 1);
         if (textLbl) lv_obj_set_style_text_font(textLbl, font, 0);
         lv_obj_t* iconLbl = lv_obj_get_child(btn, 0);
-        if (iconLbl) lv_obj_set_style_text_font(iconLbl, lvgl_get_shared_icon_font(), 0);
+        if (iconLbl) lv_obj_set_style_text_font(iconLbl, lvgl_get_shared_icon_default_font(), 0);
     }
 }
