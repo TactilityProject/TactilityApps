@@ -131,5 +131,5 @@ struct Context {
 /** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
 void breakoutCreateWidgets(lv_obj_t* parent, void* userData);
 
-/** Releases resources acquired while the window was shown (sfx engine, LVGL group/timer). Call once the window is torn down. */
+/** Releases the sfx engine. Call once the window is torn down. */
 void breakoutTeardown(Context* ctx);

@@ -167,6 +167,7 @@ static uint32_t getActionIconPadding(UiDensity uiDensity) {
 /* ── Event Callbacks (declared here so createWidgets can wire them up) ── */
 
 static void onTick(lv_timer_t* timer);
+static void onGameAreaDeleted(lv_event_t* e);
 static void onPressed(lv_event_t* e);
 static void onClicked(lv_event_t* e);
 static void onKey(lv_event_t* e);
@@ -404,6 +405,7 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_add_event_cb(ctx->gameArea, onClicked, LV_EVENT_SHORT_CLICKED, ctx);
     lv_obj_add_event_cb(ctx->gameArea, onKey, LV_EVENT_KEY, ctx);
     lv_obj_add_event_cb(ctx->gameArea, onReenterKeyMode, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(ctx->gameArea, onGameAreaDeleted, LV_EVENT_DELETE, ctx);
 
     // Keyboard focus - explicit enter/exit, no focus/defocus handlers
     lv_group_t* group = lv_group_get_default();
@@ -417,16 +419,16 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     ctx->gameTimer = lv_timer_create(onTick, TICK_MS, ctx);
 }
 
-void breakoutTeardown(Context* ctx) {
+// The window manager deletes the widgets when the app closes, and when another window covers it.
+// The game timer moves the widgets, so it must stop with them.
+static void onGameAreaDeleted(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     if (ctx->gameTimer) {
         lv_timer_delete(ctx->gameTimer);
         ctx->gameTimer = nullptr;
     }
-    if (ctx->gameArea) {
-        lv_group_t* group = lv_group_get_default();
-        if (group) lv_group_set_editing(group, false);
-        lv_group_remove_obj(ctx->gameArea);
-    }
+    lv_group_t* group = lv_group_get_default();
+    if (group) lv_group_set_editing(group, false);
     ctx->gameArea = nullptr;
     ctx->paddle = nullptr;
     for (int i = 0; i < MAX_BRICKS; i++) ctx->bricks[i] = nullptr;
@@ -441,7 +443,9 @@ void breakoutTeardown(Context* ctx) {
     ctx->livesLabel = nullptr;
     ctx->messageLabel = nullptr;
     ctx->soundBtnIcon = nullptr;
+}
 
+void breakoutTeardown(Context* ctx) {
     // Clean up sfx engine
     if (ctx->sfxEngine) {
         ctx->sfxEngine->stop();

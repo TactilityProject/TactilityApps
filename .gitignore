@@ -15,3 +15,5 @@ sdkconfig.old
 .tactility/
 
 dependencies.lock
+
+__pycache__
