@@ -5,7 +5,7 @@
 #include <tactility/freertos/freertos.h>
 #include <tactility/log.h>
 
-#include <new>
+#include <cstdlib>
 
 namespace {
 
@@ -14,6 +14,7 @@ constexpr auto* TAG = "tone_playback";
 constexpr uint16_t CHUNK_FRAMES = 512;
 constexpr uint16_t MAX_CHANNELS = 2;
 constexpr uint32_t FADE_SAMPLES = tone_synth::SAMPLE_RATE * 5 / 1000;
+constexpr float INVERSE_FADE_SAMPLES = 1.0f / FADE_SAMPLES;
 constexpr int16_t AMPLITUDE = 8000; // ~25% of full scale
 
 constexpr uint16_t PLAYBACK_TASK_STACK_BYTES = 4096;
@@ -25,7 +26,7 @@ void playbackTask(void* argument) {
 
     const uint8_t channels = playback->channels;
     const size_t samplesPerChunk = CHUNK_FRAMES * channels;
-    auto* chunk = new (std::nothrow) int16_t[samplesPerChunk];
+    auto* chunk = static_cast<int16_t*>(malloc(samplesPerChunk * sizeof(int16_t)));
     if (chunk == nullptr) {
         LOG_E(TAG, "Out of memory for chunk buffer");
         playback->playing.store(false);
@@ -50,7 +51,8 @@ void playbackTask(void* argument) {
         }
 
         const uint32_t sweepPeriodMs = playback->sweepPeriodMs.load();
-        const uint32_t sweepPeriodSamples = sweepPeriodMs * tone_synth::SAMPLE_RATE / 1000;
+        // SAMPLE_RATE is a multiple of 1000, so this is exact without an overflowing multiply.
+        const uint32_t sweepPeriodSamples = sweepPeriodMs * (tone_synth::SAMPLE_RATE / 1000);
         const bool sweep = playback->sweep.load();
         const uint32_t fixedHz = playback->fixedHz.load();
         const uint32_t sweepMinHz = playback->sweepMinHz.load();
@@ -59,16 +61,16 @@ void playbackTask(void* argument) {
 
         for (uint16_t frame = 0; frame < CHUNK_FRAMES; frame++) {
             const uint32_t frequency = tone_synth::frequency_at(
-                synthState.sampleIndex, fixedHz, sweep, sweepMinHz, sweepMaxHz, sweepPeriodSamples);
+                fixedHz, sweep, sweepMinHz, sweepMaxHz, sweepPeriodSamples, synthState);
             const float sample = tone_synth::next_sample(waveform, frequency, synthState);
             lastFrequency = frequency;
 
             float gain = 1.0f;
             if (synthState.sampleIndex < FADE_SAMPLES) {
-                gain = static_cast<float>(synthState.sampleIndex) / FADE_SAMPLES;
+                gain = static_cast<float>(synthState.sampleIndex) * INVERSE_FADE_SAMPLES;
             }
             if (stopping) {
-                gain *= static_cast<float>(fadeOutRemaining) / FADE_SAMPLES;
+                gain *= static_cast<float>(fadeOutRemaining) * INVERSE_FADE_SAMPLES;
             }
 
             const int16_t value = static_cast<int16_t>(sample * AMPLITUDE * gain);
@@ -101,7 +103,7 @@ void playbackTask(void* argument) {
     playback->currentHz.store(0);
     playback->task.store(nullptr);
 
-    delete[] chunk;
+    free(chunk);
     vTaskDelete(nullptr);
 }
 

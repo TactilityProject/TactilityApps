@@ -105,12 +105,20 @@ bool parsePositiveInteger(lv_obj_t* textarea, uint32_t* out) {
     if (text == nullptr || *text == '\0') {
         return false;
     }
-    char* end = nullptr;
-    const unsigned long value = strtoul(text, &end, 10);
-    if (end == text || *end != '\0' || value == 0 || value > 100000) {
+    uint32_t value = 0;
+    for (const char* c = text; *c != '\0'; c++) {
+        if (*c < '0' || *c > '9') {
+            return false;
+        }
+        value = value * 10 + static_cast<uint32_t>(*c - '0');
+        if (value > 100000) {
+            return false;
+        }
+    }
+    if (value == 0) {
         return false;
     }
-    *out = static_cast<uint32_t>(value);
+    *out = value;
     return true;
 }
 
@@ -308,22 +316,47 @@ void onChannelPressed(lv_event_t* event) {
     updateReadout(ctx);
 }
 
-// Accepts a non-zero value up to one decimal place; returns the clamped millisecond period.
-bool resolveSweepPeriodText(lv_obj_t* textarea, uint32_t fallbackMs, std::atomic<uint32_t>* target) {
-    const char* text = lv_textarea_get_text(textarea);
+// Parses a seconds value with up to three decimal places (e.g. "4.5") into milliseconds.
+bool parsePeriodMs(const char* text, uint32_t* outMs) {
     if (text == nullptr || *text == '\0') {
-        target->store(fallbackMs);
         return false;
     }
-    char* end = nullptr;
-    const float seconds = strtof(text, &end);
-    if (end == text || *end != '\0' || !(seconds > 0.0f)) {
-        target->store(fallbackMs);
+    uint32_t intPart = 0;
+    uint32_t fracMs = 0;
+    uint32_t fracDigits = 0;
+    bool pointSeen = false;
+    for (const char* c = text; *c != '\0'; c++) {
+        if (*c == '.') {
+            if (pointSeen) {
+                return false;
+            }
+            pointSeen = true;
+            continue;
+        }
+        if (*c < '0' || *c > '9') {
+            return false;
+        }
+        if (pointSeen) {
+            if (fracDigits == 3) {
+                return false;
+            }
+            fracMs = fracMs * 10 + static_cast<uint32_t>(*c - '0');
+            fracDigits++;
+        } else {
+            intPart = intPart * 10 + static_cast<uint32_t>(*c - '0');
+            if (intPart > 600) {
+                return false;
+            }
+        }
+    }
+    while (fracDigits < 3) {
+        fracMs *= 10;
+        fracDigits++;
+    }
+    if (intPart == 0 && fracMs == 0) {
         return false;
     }
-    uint32_t ms = static_cast<uint32_t>(seconds * 1000.0f + 0.5f);
-    ms = std::max<uint32_t>(250u, std::min<uint32_t>(ms, 600000u));
-    target->store(ms);
+    *outMs = std::max<uint32_t>(250u, std::min<uint32_t>(intPart * 1000 + fracMs, 600000u));
     return true;
 }
 
@@ -345,7 +378,12 @@ void onSweepMaxChanged(lv_event_t* event) {
 
 void onSweepPeriodChanged(lv_event_t* event) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
-    resolveSweepPeriodText(ctx->sweepPeriodInput, DEFAULT_SWEEP_PERIOD_MS, &ctx->playback.sweepPeriodMs);
+    uint32_t ms = 0;
+    if (parsePeriodMs(lv_textarea_get_text(ctx->sweepPeriodInput), &ms)) {
+        ctx->playback.sweepPeriodMs.store(ms);
+    } else {
+        ctx->playback.sweepPeriodMs.store(DEFAULT_SWEEP_PERIOD_MS);
+    }
 }
 
 void onVolumeChanged(lv_event_t* event) {
