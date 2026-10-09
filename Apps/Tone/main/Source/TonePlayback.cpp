@@ -24,6 +24,15 @@ constexpr char PLAYBACK_TASK_NAME[] = "tone-playback";
 void playbackTask(void* argument) {
     auto* playback = static_cast<TonePlayback*>(argument);
 
+    // Block until tone_playback_start() has published this task's handle. Without this,
+    // the task can run on a second core and clear its own handle (or exit via an early
+    // allocation failure) before the creator's store lands, leaving a stale handle that
+    // tone_playback_stop() would wait on forever.
+    if (xSemaphoreTake(playback->lifecycleMutex, portMAX_DELAY) != pdTRUE) {
+        vTaskDelete(nullptr);
+        return;
+    }
+
     const uint8_t channels = playback->channels;
     const size_t samplesPerChunk = CHUNK_FRAMES * channels;
     auto* chunk = static_cast<int16_t*>(malloc(samplesPerChunk * sizeof(int16_t)));
@@ -32,9 +41,11 @@ void playbackTask(void* argument) {
         playback->playing.store(false);
         playback->currentHz.store(0);
         playback->task.store(nullptr);
+        xSemaphoreGive(playback->lifecycleMutex);
         vTaskDelete(nullptr);
         return;
     }
+    xSemaphoreGive(playback->lifecycleMutex);
 
     tone_synth::SynthState synthState;
     bool stopping = false;
@@ -95,13 +106,16 @@ void playbackTask(void* argument) {
         }
     }
 
-    if (playback->streamHandle != nullptr) {
-        audio_stream_close(playback->streamHandle);
-        playback->streamHandle = nullptr;
+    if (xSemaphoreTake(playback->lifecycleMutex, portMAX_DELAY) == pdTRUE) {
+        if (playback->streamHandle != nullptr) {
+            audio_stream_close(playback->streamHandle);
+            playback->streamHandle = nullptr;
+        }
+        playback->playing.store(false);
+        playback->currentHz.store(0);
+        playback->task.store(nullptr);
+        xSemaphoreGive(playback->lifecycleMutex);
     }
-    playback->playing.store(false);
-    playback->currentHz.store(0);
-    playback->task.store(nullptr);
 
     free(chunk);
     vTaskDelete(nullptr);
@@ -110,13 +124,25 @@ void playbackTask(void* argument) {
 } // namespace
 
 error_t tone_playback_start(TonePlayback* playback) {
+    if (playback->lifecycleMutex == nullptr) {
+        return ERROR_INVALID_STATE;
+    }
+    // Hold the mutex from the busy-state check through task creation and handle
+    // publication so the family of publications is atomic: the new task blocks on the
+    // same mutex before it can clear its own handle, and a concurrent stop() cannot
+    // observe a half-initialized start.
+    if (xSemaphoreTake(playback->lifecycleMutex, portMAX_DELAY) != pdTRUE) {
+        return ERROR_RESOURCE_BUSY;
+    }
     if (playback->playing.load() || playback->task.load() != nullptr) {
+        xSemaphoreGive(playback->lifecycleMutex);
         return ERROR_RESOURCE_BUSY;
     }
 
     Device* streamDevice = playback->streamDevice;
     if (streamDevice == nullptr) {
         if (device_get_first_by_type(&AUDIO_STREAM_TYPE, &streamDevice) != ERROR_NONE || streamDevice == nullptr) {
+            xSemaphoreGive(playback->lifecycleMutex);
             return ERROR_NOT_FOUND;
         }
         playback->streamDevice = streamDevice;
@@ -132,6 +158,7 @@ error_t tone_playback_start(TonePlayback* playback) {
     const error_t openResult = audio_stream_open_output(streamDevice, &config, &handle);
     if (openResult != ERROR_NONE) {
         LOG_E(TAG, "open_output failed: %s", error_to_string(openResult));
+        xSemaphoreGive(playback->lifecycleMutex);
         return openResult;
     }
     playback->streamHandle = handle;
@@ -146,15 +173,26 @@ error_t tone_playback_start(TonePlayback* playback) {
         playback->playing.store(false);
         playback->streamHandle = nullptr;
         audio_stream_close(handle);
+        xSemaphoreGive(playback->lifecycleMutex);
         return ERROR_OUT_OF_MEMORY;
     }
     playback->task.store(playbackTaskHandle);
+    xSemaphoreGive(playback->lifecycleMutex);
 
     return ERROR_NONE;
 }
 
 void tone_playback_stop(TonePlayback* playback) {
-    playback->playing.store(false);
+    if (playback->lifecycleMutex == nullptr) {
+        return;
+    }
+    // Clear the play flag under the mutex so a racing start() cannot republish the
+    // task handle while we tear it down; release before waiting on the task itself.
+    if (xSemaphoreTake(playback->lifecycleMutex, portMAX_DELAY) == pdTRUE) {
+        playback->playing.store(false);
+        xSemaphoreGive(playback->lifecycleMutex);
+    }
+
     while (playback->task.load() != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }

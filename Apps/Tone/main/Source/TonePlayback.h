@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include <tactility/drivers/audio_stream.h>
+#include <tactility/freertos/semphr.h>
 #include <tactility/freertos/task.h>
 
 /**
@@ -30,6 +31,11 @@ struct TonePlayback {
 
     // Non-null while the playback task is alive; nulled by the task just before it deletes itself.
     std::atomic<TaskHandle_t> task { nullptr };
+
+    // Serializes task creation against handle publication from tone_playback_start()
+    // and against the task's own startup and cleanup, so a stale handle is never
+    // published after the task has already cleared it and deleted itself.
+    SemaphoreHandle_t lifecycleMutex = nullptr;
 };
 
 /**

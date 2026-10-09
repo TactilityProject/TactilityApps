@@ -22,6 +22,11 @@ int main(int argc, char* argv[]) {
     ctx.selectedChannel = 1;
     ctx.playback.channels = 2;
 
+    ctx.playbackGate = xSemaphoreCreateMutex();
+    check(ctx.playbackGate != nullptr);
+    ctx.playback.lifecycleMutex = xSemaphoreCreateMutex();
+    check(ctx.playback.lifecycleMutex != nullptr);
+
     TaskEventGroup eventGroup {};
     task_event_group_construct(&eventGroup);
 
@@ -43,12 +48,20 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Block a play callback that may already be dispatching on the LVGL thread from
+    // starting a new task on this context after playback stops and the window goes away.
+    xSemaphoreTake(ctx.playbackGate, portMAX_DELAY);
+    ctx.closing = true;
+    xSemaphoreGive(ctx.playbackGate);
+
     // Stop playback and join the audio task before the window (and its widgets) are destroyed.
     tone_playback_stop(&ctx.playback);
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
     task_event_group_destruct(&eventGroup);
+    vSemaphoreDelete(ctx.playbackGate);
+    vSemaphoreDelete(ctx.playback.lifecycleMutex);
 
     return 0;
 }

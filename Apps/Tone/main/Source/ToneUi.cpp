@@ -223,11 +223,22 @@ void updateReadout(Context* ctx) {
 void onPlayPressed(lv_event_t* event) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
 
+    // Serialize against main()'s close path: once `closing` is set, a late play press
+    // must not start a task on a context that is about to be torn down.
+    if (ctx->playbackGate == nullptr || xSemaphoreTake(ctx->playbackGate, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    if (ctx->closing) {
+        xSemaphoreGive(ctx->playbackGate);
+        return;
+    }
+
     if (ctx->playback.playing.load()) {
         tone_playback_stop(&ctx->playback);
         updatePlayButton(ctx);
         updateChannelAvailability(ctx);
         updateReadout(ctx);
+        xSemaphoreGive(ctx->playbackGate);
         return;
     }
 
@@ -236,11 +247,13 @@ void onPlayPressed(lv_event_t* event) {
         if (ctx->readoutStatusLabel != nullptr) {
             lv_label_set_text_fmt(ctx->readoutStatusLabel, "Playback failed (%s)", error_to_string(result));
         }
+        xSemaphoreGive(ctx->playbackGate);
         return;
     }
     updatePlayButton(ctx);
     updateChannelAvailability(ctx);
     updateReadout(ctx);
+    xSemaphoreGive(ctx->playbackGate);
 }
 
 void onPresetPressed(lv_event_t* event) {
@@ -544,8 +557,11 @@ void toneCreateWidgetsImpl(lv_obj_t* parent, Context* ctx) {
     setTextareaNumber(ctx->sweepMaxInput, ctx->playback.sweepMaxHz.load());
     {
         char periodBuffer[16];
-        snprintf(periodBuffer, sizeof(periodBuffer), "%" PRIu32,
-                 ctx->playback.sweepPeriodMs.load() / 1000);
+        const uint32_t periodMs = ctx->playback.sweepPeriodMs.load();
+        // Integer-only: { "4.000" for 4000, "0.250" for 250 }. Avoids double math
+        // (%f / double division), which the Xtensa firmware cannot resolve for app code.
+        snprintf(periodBuffer, sizeof(periodBuffer), "%" PRIu32 ".%03" PRIu32,
+                 periodMs / 1000, periodMs % 1000);
         lv_textarea_set_text(ctx->sweepPeriodInput, periodBuffer);
     }
 

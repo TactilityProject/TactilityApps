@@ -8,6 +8,7 @@
 #include "TonePlayback.h"
 
 #include <tactility/device.h>
+#include <tactility/freertos/semphr.h>
 
 /** Frequency presets excluding the "Sweep" option, which is appended by the UI. */
 constexpr uint32_t TONE_FREQUENCY_PRESET_COUNT = 9; // 8 fixed tones + sweep
@@ -18,6 +19,12 @@ struct Context {
     AppInstanceId appInstanceId = 0;
 
     TonePlayback playback;
+
+    // Serializes UI playback control against app teardown: once `closing` is set under
+    // this gate, onPlayPressed() backs out so it cannot start a task on a context that
+    // main() is about to destroy.
+    SemaphoreHandle_t playbackGate = nullptr;
+    bool closing = false;
 
     // UI-only state, touched exclusively on the LVGL thread.
     uint8_t volumePercent = 100;
