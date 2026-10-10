@@ -113,7 +113,6 @@ void playbackTask(void* argument) {
         }
         playback->playing.store(false);
         playback->currentHz.store(0);
-        playback->task.store(nullptr);
         xSemaphoreGive(playback->lifecycleMutex);
     }
     playback->task.store(nullptr);
