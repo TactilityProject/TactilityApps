@@ -40,8 +40,8 @@ void playbackTask(void* argument) {
         LOG_E(TAG, "Out of memory for chunk buffer");
         playback->playing.store(false);
         playback->currentHz.store(0);
-        playback->task.store(nullptr);
         xSemaphoreGive(playback->lifecycleMutex);
+        playback->task.store(nullptr);
         vTaskDelete(nullptr);
         return;
     }
@@ -116,7 +116,7 @@ void playbackTask(void* argument) {
         playback->task.store(nullptr);
         xSemaphoreGive(playback->lifecycleMutex);
     }
-
+    playback->task.store(nullptr);
     free(chunk);
     vTaskDelete(nullptr);
 }

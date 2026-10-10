@@ -80,7 +80,7 @@ float next_sample(ToneWaveform waveform, uint32_t frequency, SynthState& state) 
     float sample = 0.0f;
     switch (waveform) {
         case ToneWaveform::Sine:
-            sample = std::sinf(state.phase);
+            sample = std::sin(state.phase);
             break;
         case ToneWaveform::Square:
             sample = phaseFraction < 0.5f ? 1.0f : -1.0f;
