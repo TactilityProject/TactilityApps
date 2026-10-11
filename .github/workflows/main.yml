@@ -9,6 +9,18 @@ on:
 permissions: read-all
 
 jobs:
+  CheckVersionBumps:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: "Check version bumps"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python3 Scripts/check-version-bumps.py "origin/$BASE_REF"
   GenerateAppMatrix:
     runs-on: ubuntu-latest
     outputs:
