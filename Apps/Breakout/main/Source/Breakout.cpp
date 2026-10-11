@@ -17,7 +17,6 @@
 #include <tactility/drivers/keyboard.h>
 
 #include <lvgl/lvgl.h>
-#include <lvgl/fonts.h>
 
 constexpr auto* TAG = "Breakout";
 
@@ -151,19 +150,6 @@ static int scoreBrick(Context* ctx, int idx);
 
 /* ── UI Creation ──────────────────────────────────────────────── */
 
-static uint32_t getToolbarHeight(UiDensity uiDensity) {
-    if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
-        return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
-    } else {
-        return lvgl_get_text_font_height(FONT_SIZE_LARGE) * 2.2f;
-    }
-}
-
-static uint32_t getActionIconPadding(UiDensity uiDensity) {
-    auto toolbar_height = getToolbarHeight(uiDensity);
-    return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
-}
-
 /* ── Event Callbacks (declared here so createWidgets can wire them up) ── */
 
 static void onTick(lv_timer_t* timer);
@@ -228,38 +214,9 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_text_color(ctx->livesLabel, lv_palette_main(LV_PALETTE_RED), 0);
     lv_obj_align(ctx->livesLabel, LV_ALIGN_CENTER, 0, 0);
 
-    auto ui_density = lvgl_get_ui_density();
-    auto toolbar_height = getToolbarHeight(ui_density);
-    auto icon_padding = getActionIconPadding(ui_density);
-
-    // Toolbar buttons wrapper
-    lv_obj_t* btnsWrapper = lv_obj_create(toolbar);
-    lv_obj_set_width(btnsWrapper, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(btnsWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(btnsWrapper, icon_padding / 2, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(btnsWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(btnsWrapper, 0, LV_STATE_DEFAULT);
-
-    // Pause button
-    lv_obj_t* pauseBtn = lv_btn_create(btnsWrapper);
-    lv_obj_set_size(pauseBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
-    lv_obj_set_style_pad_all(pauseBtn, 0, LV_STATE_DEFAULT);
-    lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(pauseBtn, onPauseClicked, LV_EVENT_CLICKED, ctx);
-
-    lv_obj_t* pauseIcon = lv_label_create(pauseBtn);
-    lv_label_set_text(pauseIcon, LV_SYMBOL_PAUSE);
-    lv_obj_align(pauseIcon, LV_ALIGN_CENTER, 0, 0);
-
-    // Sound toggle button
-    lv_obj_t* soundBtn = lv_btn_create(btnsWrapper);
-    lv_obj_set_size(soundBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
-    lv_obj_set_style_pad_all(soundBtn, 0, LV_STATE_DEFAULT);
-    lv_obj_align(soundBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(soundBtn, onSoundToggled, LV_EVENT_CLICKED, ctx);
-
-    ctx->soundBtnIcon = lv_label_create(soundBtn);
-    lv_obj_align(ctx->soundBtnIcon, LV_ALIGN_CENTER, 0, 0);
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_PAUSE, onPauseClicked, ctx);
+    lv_obj_t* soundBtn = lvgl_toolbar_add_text_button_action(toolbar, "", onSoundToggled, ctx);
+    ctx->soundBtnIcon = lv_obj_get_child(soundBtn, 0);
     updateSoundIcon(ctx);
 
     // Screen size detection (The Book)
