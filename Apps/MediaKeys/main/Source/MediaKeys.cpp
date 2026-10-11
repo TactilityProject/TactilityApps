@@ -11,6 +11,7 @@
 namespace {
 
 const char* TAG = "MediaKeys";
+const char* DEVICE_NAME = "Tactility Media Keys";
 
 // Button layout: two rows of three media-control buttons
 const char* BTN_MAP[] = {
@@ -268,8 +269,6 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
             return;
         }
 
-        bluetooth_set_device_name(ctx->btDevice, "Tactility Media Keys");
-
         enum BtRadioState radioState;
         bluetooth_get_radio_state(ctx->btDevice, &radioState);
 
@@ -277,7 +276,14 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
             // Radio already up - start HID immediately.
             ctx->radioWasOff = false;
             startHid(ctx);
+            // Rename only after HID is up: with the radio on, a rename restarts advertising
+            // right away, and the GATT profile switch in bluetooth_hid_device_start() asserts in
+            // NimBLE (ble_svc_gap_init) if it runs while that advertising is still active.
+            // Once HID is active, the rename just restarts HID advertising with the new name.
+            if (ctx->hidDevice) bluetooth_set_device_name(ctx->btDevice, DEVICE_NAME);
         } else {
+            // Radio off: renaming stores the name without touching advertising
+            bluetooth_set_device_name(ctx->btDevice, DEVICE_NAME);
             // Turn the radio on; startHid() will be called from handleBtEvent()
             // once BT_RADIO_STATE_ON fires. Our BT event subscription (mediaKeysInitBt())
             // was already claimed before the app's main loop started waiting, so that
