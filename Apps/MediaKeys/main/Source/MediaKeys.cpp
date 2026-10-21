@@ -39,6 +39,21 @@ const uint16_t CONSUMER_USAGE[6] = {
     0x00E9, // 5 – VOL_UP:    Volume Increment
 };
 
+constexpr uint32_t WORKER_STACK_SIZE = 6144;
+constexpr UBaseType_t WORKER_QUEUE_LENGTH = 8;
+
+enum class WorkerCommandType : uint8_t {
+    EnableRadio,
+    StartHid,
+    StartHidAfterRadioOn,
+    Disable,
+    Shutdown,
+};
+
+struct WorkerCommand {
+    WorkerCommandType type;
+};
+
 // Data passed to the one-shot key-send task
 struct SendKeyData {
     struct Device* hidDevice;
@@ -47,7 +62,8 @@ struct SendKeyData {
 
 void enterKeyMode(Context* ctx);
 void exitKeyMode(Context* ctx);
-void startHid(Context* ctx);
+void startHid(Context* ctx, bool renameAfterStart);
+void postWorkerCommand(Context* ctx, WorkerCommandType type);
 void handleButtonPress(Context* ctx, uint32_t buttonId);
 
 // ---- Static task / callback implementations ----
@@ -171,16 +187,9 @@ void handleBtEvent(Context* ctx, const BtEvent& event) {
         LOG_I(TAG, "BT radio state: %d", (int)event.radio_state);
 
         if (event.radio_state == BT_RADIO_STATE_ON) {
-            // Radio is now up - start HID (needs LVGL lock for UI update)
-            if (lvgl_try_lock(1000)) {
-                // Re-check inside lock to avoid TOCTOU race with handleSwitchToggle(false).
-                // Also skip touching widgets if this window has been buried in the meantime
-                // (window_manager may have already deleted them) - same reasoning as
-                // onKeyHighlightTimer above.
-                if (ctx->radioEnabling && window_manager_get_state(ctx->window) == WINDOW_STATE_GRANTED) {
-                    startHid(ctx);
-                }
-                lvgl_unlock();
+            // Radio is now up. The worker starts HID only if the user didn't switch off in the meantime.
+            if (ctx->radioEnabling) {
+                postWorkerCommand(ctx, WorkerCommandType::StartHidAfterRadioOn);
             }
         } else if (event.radio_state == BT_RADIO_STATE_OFF && ctx->isEnabled) {
             // Radio dropped while we were active - revert UI
@@ -205,31 +214,67 @@ void handleBtEvent(Context* ctx, const BtEvent& event) {
 
 // ---- Instance-equivalent functions ----
 
-void startHid(Context* ctx) {
-    // Called once the BT radio is confirmed ON (either already was, or just came up).
-    // May be called from handleBtEvent() on the app's own task - LVGL must already be locked by caller.
+void postWorkerCommand(Context* ctx, WorkerCommandType type) {
+    if (ctx->workerQueue == nullptr) return;
+    WorkerCommand command { type };
+    if (xQueueSend(ctx->workerQueue, &command, 0) != pdTRUE) {
+        LOG_E(TAG, "Worker queue full");
+    }
+}
+
+// Takes the LVGL lock from the worker. @return false when the lock couldn't be taken
+bool lockLvgl() {
+    for (int i = 0; i < 5; i++) {
+        if (lvgl_try_lock(1000)) return true;
+    }
+    LOG_W(TAG, "Failed to acquire LVGL lock");
+    return false;
+}
+
+// Runs on the worker. Reverts the switch when HID can't start.
+void showHidFailed(Context* ctx) {
+    ctx->isEnabled = false;
+    if (!lockLvgl()) return;
+    if (window_manager_get_state(ctx->window) == WINDOW_STATE_GRANTED && ctx->switchWidget) {
+        lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
+    }
+    lvgl_unlock();
+}
+
+// Runs on the worker, once the BT radio is confirmed ON (either already was, or just came up).
+void startHid(Context* ctx, bool renameAfterStart) {
     ctx->radioEnabling = false;
 
-    ctx->hidDevice = bluetooth_hid_device_get();
-    if (!ctx->hidDevice) {
+    Device* hidDevice = bluetooth_hid_device_get();
+    if (!hidDevice) {
         LOG_E(TAG, "BLE HID device unavailable after radio on");
-        ctx->isEnabled = false;
-        if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
+        showHidFailed(ctx);
         return;
     }
 
-    error_t err = bluetooth_hid_device_start(ctx->hidDevice, BT_HID_DEVICE_MODE_KEYBOARD);
+    error_t err = bluetooth_hid_device_start(hidDevice, BT_HID_DEVICE_MODE_KEYBOARD);
     if (err != ERROR_NONE) {
         LOG_E(TAG, "Failed to start HID device: %d", (int)err);
-        device_put(ctx->hidDevice);
-        ctx->hidDevice = nullptr;
-        ctx->isEnabled = false;
-        if (ctx->switchWidget) lv_obj_remove_state(ctx->switchWidget, LV_STATE_CHECKED);
+        device_put(hidDevice);
+        showHidFailed(ctx);
         return;
     }
+    ctx->hidDevice = hidDevice;
 
-    if (ctx->mainWrapper) lv_obj_remove_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
-    if (device_has_active_by_type(&KEYBOARD_TYPE)) enterKeyMode(ctx);
+    // Rename only after HID is up: with the radio on, a rename restarts advertising
+    // right away, and the GATT profile switch in bluetooth_hid_device_start() asserts in
+    // NimBLE (ble_svc_gap_init) if it runs while that advertising is still active.
+    // Once HID is active, the rename just restarts HID advertising with the new name.
+    if (renameAfterStart) bluetooth_set_device_name(ctx->btDevice, DEVICE_NAME);
+
+    // Skip touching widgets if the window was buried in the meantime (window_manager may have
+    // already deleted them), same reasoning as onKeyHighlightTimer above.
+    if (!lockLvgl()) return;
+    if (window_manager_get_state(ctx->window) == WINDOW_STATE_GRANTED) {
+        if (ctx->mainWrapper) lv_obj_remove_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
+        if (device_has_active_by_type(&KEYBOARD_TYPE)) enterKeyMode(ctx);
+    }
+    lvgl_unlock();
 }
 
 // Restores the radio to the state we found it in when we turned it on ourselves. Does not touch
@@ -238,6 +283,42 @@ void startHid(Context* ctx) {
 void restoreRadioIfNeeded(Context* ctx) {
     if (ctx->btDevice && ctx->radioWasOff) bluetooth_set_radio_enabled(ctx->btDevice, false);
     ctx->radioWasOff = false;
+}
+
+void workerTask(void* param) {
+    auto* ctx = static_cast<Context*>(param);
+    WorkerCommand command;
+    bool running = true;
+    while (running) {
+        xQueueReceive(ctx->workerQueue, &command, portMAX_DELAY);
+        switch (command.type) {
+            case WorkerCommandType::EnableRadio:
+                bluetooth_set_device_name(ctx->btDevice, DEVICE_NAME);
+                bluetooth_set_radio_enabled(ctx->btDevice, true);
+                break;
+            case WorkerCommandType::StartHid:
+                startHid(ctx, true);
+                break;
+            case WorkerCommandType::StartHidAfterRadioOn:
+                // Re-check here to avoid a race with a switch-off that happened after the event was queued
+                if (ctx->isEnabled && ctx->radioEnabling) startHid(ctx, false);
+                break;
+            case WorkerCommandType::Disable:
+                if (ctx->hidDevice) {
+                    bluetooth_hid_device_stop(ctx->hidDevice);
+                    device_put(ctx->hidDevice);
+                    ctx->hidDevice = nullptr;
+                }
+                restoreRadioIfNeeded(ctx);
+                break;
+            case WorkerCommandType::Shutdown:
+                restoreRadioIfNeeded(ctx);
+                running = false;
+                break;
+        }
+    }
+    xSemaphoreGive(ctx->workerDone);
+    vTaskDelete(nullptr);
 }
 
 void teardownBt(Context* ctx) {
@@ -250,7 +331,14 @@ void teardownBt(Context* ctx) {
     // up stale context on next use. Explicit stop is handled by handleSwitchToggle.
     // The device itself is never stopped, it's started for the process lifetime (see
     // Documentation/bluetooth-app-migration.md) - just restore the radio and drop our ref.
-    restoreRadioIfNeeded(ctx);
+    if (ctx->workerQueue != nullptr) {
+        postWorkerCommand(ctx, WorkerCommandType::Shutdown);
+        xSemaphoreTake(ctx->workerDone, portMAX_DELAY);
+        vSemaphoreDelete(ctx->workerDone);
+        vQueueDelete(ctx->workerQueue);
+        ctx->workerDone = nullptr;
+        ctx->workerQueue = nullptr;
+    }
     if (ctx->btDevice) device_put(ctx->btDevice);
     if (ctx->hidDevice) device_put(ctx->hidDevice);
     ctx->btDevice = nullptr;
@@ -272,38 +360,27 @@ void handleSwitchToggle(Context* ctx, bool enabled) {
         enum BtRadioState radioState;
         bluetooth_get_radio_state(ctx->btDevice, &radioState);
 
+        // The Bluetooth calls run on the worker: this can be the LVGL task, which must not touch flash
         if (radioState == BT_RADIO_STATE_ON) {
             // Radio already up - start HID immediately.
             ctx->radioWasOff = false;
-            startHid(ctx);
-            // Rename only after HID is up: with the radio on, a rename restarts advertising
-            // right away, and the GATT profile switch in bluetooth_hid_device_start() asserts in
-            // NimBLE (ble_svc_gap_init) if it runs while that advertising is still active.
-            // Once HID is active, the rename just restarts HID advertising with the new name.
-            if (ctx->hidDevice) bluetooth_set_device_name(ctx->btDevice, DEVICE_NAME);
+            postWorkerCommand(ctx, WorkerCommandType::StartHid);
         } else {
-            // Radio off: renaming stores the name without touching advertising
-            bluetooth_set_device_name(ctx->btDevice, DEVICE_NAME);
-            // Turn the radio on; startHid() will be called from handleBtEvent()
+            // Turn the radio on; the worker starts HID from handleBtEvent()
             // once BT_RADIO_STATE_ON fires. Our BT event subscription (mediaKeysInitBt())
             // was already claimed before the app's main loop started waiting, so that
             // wakeup won't be missed.
             LOG_I(TAG, "BT radio not on (state=%d), enabling...", (int)radioState);
             ctx->radioWasOff = true;
             ctx->radioEnabling = true;
-            bluetooth_set_radio_enabled(ctx->btDevice, true);
+            postWorkerCommand(ctx, WorkerCommandType::EnableRadio);
         }
     } else {
         ctx->radioEnabling = false;
         if (device_has_active_by_type(&KEYBOARD_TYPE)) exitKeyMode(ctx);
-        // Explicit user toggle-off: stop HID cleanly (safe here since we're on the
-        // LVGL task and the user intentionally disabled, so no race with app teardown).
-        if (ctx->hidDevice) {
-            bluetooth_hid_device_stop(ctx->hidDevice);
-            device_put(ctx->hidDevice);
-        }
-        ctx->hidDevice = nullptr;
-        restoreRadioIfNeeded(ctx);
+        // Explicit user toggle-off: the worker stops HID cleanly and restores the radio
+        // (safe here since the user intentionally disabled, so no race with app teardown).
+        postWorkerCommand(ctx, WorkerCommandType::Disable);
         if (ctx->mainWrapper) lv_obj_add_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -348,6 +425,20 @@ bool mediaKeysInitBt(Context* ctx) {
     // call, so a radio-on event fired right after a late subscribe could go unnoticed forever.
     if (bluetooth_event_subscribe(ctx->btDevice, &ctx->btEventSub, ctx->eventGroup) != ERROR_NONE) {
         LOG_E(TAG, "Failed to subscribe to BT events");
+        device_put(ctx->btDevice);
+        ctx->btDevice = nullptr;
+        return false;
+    }
+    ctx->workerQueue = xQueueCreate(WORKER_QUEUE_LENGTH, sizeof(WorkerCommand));
+    ctx->workerDone = xSemaphoreCreateBinary();
+    if (ctx->workerQueue == nullptr || ctx->workerDone == nullptr ||
+        xTaskCreate(workerTask, "mediakeys_bt", WORKER_STACK_SIZE, ctx, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+        LOG_E(TAG, "Failed to start Bluetooth worker");
+        if (ctx->workerQueue) vQueueDelete(ctx->workerQueue);
+        if (ctx->workerDone) vSemaphoreDelete(ctx->workerDone);
+        ctx->workerQueue = nullptr;
+        ctx->workerDone = nullptr;
+        bluetooth_event_unsubscribe(ctx->btDevice, &ctx->btEventSub);
         device_put(ctx->btDevice);
         ctx->btDevice = nullptr;
         return false;

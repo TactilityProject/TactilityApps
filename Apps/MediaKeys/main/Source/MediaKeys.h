@@ -7,6 +7,9 @@
 #include <tactility/drivers/bluetooth.h>
 #include <tactility/drivers/bluetooth_hid_device.h>
 #include <tactility/drivers/keyboard.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <atomic>
 
 struct Context {
@@ -26,6 +29,10 @@ struct Context {
     struct Device* btDevice = nullptr;
     struct Device* hidDevice = nullptr;
     struct BtEventSubscription btEventSub {};
+
+    // Runs the Bluetooth calls. They can touch flash, which the LVGL task (stack in external RAM) must not do.
+    QueueHandle_t workerQueue = nullptr;
+    SemaphoreHandle_t workerDone = nullptr;
 
     // State - accessed from both LVGL thread and the app's own task (BT event poll loop)
     std::atomic<bool> isEnabled       {false};
