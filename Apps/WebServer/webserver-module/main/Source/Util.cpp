@@ -61,12 +61,7 @@ static int hexValue(char c) {
     return -1;
 }
 
-std::string normalizePath(const std::string& raw) {
-    std::string text = raw;
-    if (text.size() >= 2 && ((text.front() == '\'' && text.back() == '\'') || (text.front() == '"' && text.back() == '"'))) {
-        text = text.substr(1, text.size() - 2);
-    }
-
+std::string percentDecode(const std::string& text) {
     std::string decoded;
     decoded.reserve(text.size());
     for (size_t i = 0; i < text.size(); ++i) {
@@ -89,6 +84,16 @@ std::string normalizePath(const std::string& raw) {
             decoded.push_back(c);
         }
     }
+    return decoded;
+}
+
+std::string normalizePath(const std::string& raw) {
+    std::string text = raw;
+    if (text.size() >= 2 && ((text.front() == '\'' && text.back() == '\'') || (text.front() == '"' && text.back() == '"'))) {
+        text = text.substr(1, text.size() - 2);
+    }
+
+    const std::string decoded = percentDecode(text);
 
     size_t start = 0;
     while (start < decoded.size() && isspace(static_cast<unsigned char>(decoded[start]))) ++start;
@@ -120,7 +125,11 @@ bool isAllowedBasePath(const std::string& path, bool allowRoot) {
         return false;
     }
     if (allowRoot && path == "/") return true;
-    return path.starts_with("/data") || path.starts_with("/sdcard");
+    // The root itself or a path inside it: "/database" or "/sdcard2" must not match
+    auto isUnder = [&path](const std::string& root) {
+        return path == root || path.starts_with(root + "/");
+    };
+    return isUnder("/data") || isUnder("/sdcard");
 }
 
 const char* getContentType(const std::string& path) {

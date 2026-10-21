@@ -269,8 +269,10 @@ void startHid(Context* ctx, bool renameAfterStart) {
 
     // Skip touching widgets if the window was buried in the meantime (window_manager may have
     // already deleted them), same reasoning as onKeyHighlightTimer above.
+    // Also skip if the switch was turned off while HID was starting: handleSwitchToggle already
+    // hid the controls and queued Disable, which stops HID.
     if (!lockLvgl()) return;
-    if (window_manager_get_state(ctx->window) == WINDOW_STATE_GRANTED) {
+    if (ctx->isEnabled && window_manager_get_state(ctx->window) == WINDOW_STATE_GRANTED) {
         if (ctx->mainWrapper) lv_obj_remove_flag(ctx->mainWrapper, LV_OBJ_FLAG_HIDDEN);
         if (device_has_active_by_type(&KEYBOARD_TYPE)) enterKeyMode(ctx);
     }
@@ -297,7 +299,8 @@ void workerTask(void* param) {
                 bluetooth_set_radio_enabled(ctx->btDevice, true);
                 break;
             case WorkerCommandType::StartHid:
-                startHid(ctx, true);
+                // Re-check here to avoid a race with a switch-off that happened after the command was queued
+                if (ctx->isEnabled) startHid(ctx, true);
                 break;
             case WorkerCommandType::StartHidAfterRadioOn:
                 // Re-check here to avoid a race with a switch-off that happened after the event was queued
@@ -332,7 +335,10 @@ void teardownBt(Context* ctx) {
     // The device itself is never stopped, it's started for the process lifetime (see
     // Documentation/bluetooth-app-migration.md) - just restore the radio and drop our ref.
     if (ctx->workerQueue != nullptr) {
-        postWorkerCommand(ctx, WorkerCommandType::Shutdown);
+        // Blocking send: dropping Shutdown on a full queue would hang the workerDone wait below.
+        // The worker keeps draining the queue, so this completes.
+        WorkerCommand shutdown { WorkerCommandType::Shutdown };
+        xQueueSend(ctx->workerQueue, &shutdown, portMAX_DELAY);
         xSemaphoreTake(ctx->workerDone, portMAX_DELAY);
         vSemaphoreDelete(ctx->workerDone);
         vQueueDelete(ctx->workerQueue);

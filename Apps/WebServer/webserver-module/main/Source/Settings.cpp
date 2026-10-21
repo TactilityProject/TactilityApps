@@ -113,18 +113,6 @@ int parseInteger(const std::map<std::string, std::string>& properties, const cha
     return static_cast<int>(value);
 }
 
-// Only the empty credentials are generated, the ones the user typed are kept. Callers save when they want to keep them.
-void generateMissingCredentials(WebServerSettings& settings) {
-    if (!settings.ap_open_network && settings.ap_password[0] == '\0') {
-        LOG_I(TAG, "The access point has no password: generating one (not saved)");
-        copyString(settings.ap_password, sizeof(settings.ap_password), generateCredential(12));
-    }
-    if (settings.auth_enabled && (settings.username[0] == '\0' || settings.password[0] == '\0')) {
-        LOG_I(TAG, "Authentication is enabled without credentials: generating them (not saved)");
-        copyString(settings.username, sizeof(settings.username), generateCredential(12));
-        copyString(settings.password, sizeof(settings.password), generateCredential(12));
-    }
-}
 
 void getDefault(WebServerSettings& settings) {
     memset(&settings, 0, sizeof(settings));
@@ -136,13 +124,31 @@ void getDefault(WebServerSettings& settings) {
 
 }
 
+// Only the empty credentials are generated, the ones the user typed are kept
+bool settingsGenerateMissingCredentials(WebServerSettings& settings) {
+    bool generated = false;
+    if (!settings.ap_open_network && settings.ap_password[0] == '\0') {
+        LOG_I(TAG, "The access point has no password: generating one");
+        copyString(settings.ap_password, sizeof(settings.ap_password), generateCredential(12));
+        generated = true;
+    }
+    if (settings.auth_enabled && (settings.username[0] == '\0' || settings.password[0] == '\0')) {
+        LOG_I(TAG, "Authentication is enabled without credentials: generating them");
+        copyString(settings.username, sizeof(settings.username), generateCredential(12));
+        copyString(settings.password, sizeof(settings.password), generateCredential(12));
+        generated = true;
+    }
+    return generated;
+}
+
 void settingsLoadOrDefault(WebServerSettings& settings) {
     getDefault(settings);
 
     const std::string path = getSettingsPath();
     std::map<std::string, std::string> properties;
     if (path.empty() || !util::isFile(path) || !loadProperties(path, properties)) {
-        generateMissingCredentials(settings);
+        // Saved, so every later load returns the same credentials
+        if (settingsGenerateMissingCredentials(settings)) settingsSave(settings);
         return;
     }
 
@@ -174,7 +180,8 @@ void settingsLoadOrDefault(WebServerSettings& settings) {
         copyString(settings.password, sizeof(settings.password), password->second);
     }
 
-    generateMissingCredentials(settings);
+    // Saved, so every later load returns the same credentials
+    if (settingsGenerateMissingCredentials(settings)) settingsSave(settings);
 }
 
 bool settingsSave(const WebServerSettings& settings) {

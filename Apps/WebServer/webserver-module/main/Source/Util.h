@@ -16,6 +16,9 @@ std::string format(const char* format, ...) __attribute__((format(printf, 1, 2))
 
 std::string escapeJson(const std::string& text);
 
+/** Decodes the %xx and + sequences and drops control characters */
+std::string percentDecode(const std::string& text);
+
 /** Decodes the %xx and + sequences, drops control characters and quotes, makes the path start with one "/" without double slashes */
 std::string normalizePath(const std::string& raw);
 

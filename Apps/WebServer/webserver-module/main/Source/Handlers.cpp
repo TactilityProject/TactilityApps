@@ -129,7 +129,7 @@ error_t handleFsList(HttpServerRequest* request) {
         return ERROR_NONE;
     }
 
-    std::string json = "{\"path\":\"" + normalized + "\",\"entries\":[";
+    std::string json = "{\"path\":\"" + util::escapeJson(normalized) + "\",\"entries\":[";
     if (normalized == "/") {
         struct Context {
             std::string* json;
@@ -140,7 +140,7 @@ error_t handleFsList(HttpServerRequest* request) {
             char path[128];
             if (file_system_is_mounted(fs) && file_system_get_path(fs, path, sizeof(path)) == ERROR_NONE) {
                 if (context->count++ > 0) *context->json += ",";
-                *context->json += util::format("{\"name\":\"%s\",\"type\":\"dir\",\"size\":0}", path);
+                *context->json += util::format("{\"name\":\"%s\",\"type\":\"dir\",\"size\":0}", util::escapeJson(path).c_str());
             }
             return true;
         });
@@ -243,9 +243,24 @@ error_t handleFsUpload(HttpServerRequest* request) {
         return ERROR_UNDEFINED;
     }
 
-    const size_t received = util::receiveFile(request, static_cast<size_t>(contentLength), normalized);
+    // Receive into a sibling file, so a failed upload doesn't destroy an existing file at the target
+    const std::string partPath = normalized + ".part";
+    const size_t received = util::receiveFile(request, static_cast<size_t>(contentLength), partPath);
     if (received != contentLength) {
-        util::deleteFile(normalized);
+        util::deleteFile(partPath);
+        http_server_request_send_error(request, 500, "upload failed");
+        return ERROR_UNDEFINED;
+    }
+
+    // FAT's rename() fails when the target exists, so remove the old file first
+    if (util::isFile(normalized) && !util::deleteFile(normalized)) {
+        util::deleteFile(partPath);
+        http_server_request_send_error(request, 500, "failed to replace existing file");
+        return ERROR_UNDEFINED;
+    }
+    if (rename(partPath.c_str(), normalized.c_str()) != 0) {
+        LOG_W(TAG, "POST /fs/upload: rename failed: %s", strerror(errno));
+        util::deleteFile(partPath);
         http_server_request_send_error(request, 500, "upload failed");
         return ERROR_UNDEFINED;
     }
@@ -367,7 +382,8 @@ error_t handleFsRename(HttpServerRequest* request) {
     }
 
     // The new name is a plain name, not a path
-    newName = trimSpaces(newName);
+    // Decode before validating, so an encoded %2F can't slip past the checks below
+    newName = trimSpaces(util::percentDecode(newName));
     if (newName.empty() || newName.find('/') != std::string::npos || newName.find('\\') != std::string::npos || newName.find("..") != std::string::npos) {
         http_server_request_send_error(request, 400, "invalid newName");
         return ERROR_UNDEFINED;

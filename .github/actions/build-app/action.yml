@@ -8,6 +8,10 @@ inputs:
     description: Save the ESP-IDF/SDK compiler cache after building (one job per run should do this)
     required: false
     default: 'false'
+  upload_artifact:
+    description: Upload the built app as a workflow artifact (artifact names must be unique per run)
+    required: false
+    default: 'true'
 
 runs:
   using: "composite"
@@ -40,6 +44,7 @@ runs:
         path: .ccache
         key: ccache-idf-v6.1-${{ github.run_id }}
     - name: 'Upload Artifact'
+      if: inputs.upload_artifact == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.app_name }}

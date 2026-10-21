@@ -21,7 +21,8 @@ static error_t stop() {
 }
 
 error_t webserver_settings_load(WebServerSettings* settings) {
-    settingsLoadOrDefault(*settings);
+    // The active settings, not a fresh load: that would generate new (unsaved) random credentials
+    *settings = serverGetSettings();
     return ERROR_NONE;
 }
 

@@ -43,6 +43,8 @@ jobs:
         with:
           app_name: HelloWorld
           save_cache: 'true'
+          # The Build matrix also builds HelloWorld and uploads its artifact
+          upload_artifact: 'false'
   Build:
     runs-on: ubuntu-latest
     needs: [GenerateAppMatrix, WarmBuildCache]

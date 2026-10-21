@@ -189,11 +189,23 @@ WebServerSettings serverGetSettings() {
 }
 
 error_t serverSaveSettings(const WebServerSettings& settings) {
-    if (!settingsSave(settings)) {
+    // E.g. authentication was enabled with empty credentials
+    WebServerSettings completed = settings;
+    settingsGenerateMissingCredentials(completed);
+    // A closed access point can't start with a password outside the WPA2 limits.
+    // Rejected instead of saved, or the server would fail to start on every boot.
+    if (!completed.ap_open_network) {
+        const size_t length = strlen(completed.ap_password);
+        if (length < WEBSERVER_AP_PASSWORD_MIN_LENGTH || length > WEBSERVER_AP_PASSWORD_MAX_LENGTH) {
+            LOG_E(TAG, "Invalid access point password length: %u", static_cast<unsigned>(length));
+            return ERROR_INVALID_ARGUMENT;
+        }
+    }
+    if (!settingsSave(completed)) {
         return ERROR_RESOURCE;
     }
     mutex_lock(&state->settingsMutex);
-    state->settings = settings;
+    state->settings = completed;
     mutex_unlock(&state->settingsMutex);
     return ERROR_NONE;
 }

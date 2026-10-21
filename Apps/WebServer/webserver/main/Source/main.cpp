@@ -11,6 +11,7 @@
 #include <tactility/check.h>
 #include <tactility/device.h>
 #include <tactility/drivers/wifi.h>
+#include <tactility/log.h>
 #include <tactility/module.h>
 
 #include <lvgl.h>
@@ -26,6 +27,8 @@
 #include <type_traits>
 
 namespace {
+
+constexpr auto* TAG = "WebServerApp";
 
 enum Request : int32_t {
     REQUEST_NONE = -1,
@@ -505,11 +508,17 @@ extern "C" int main(int argc, char* argv[]) {
     const WebServerSettings settings = ctx.settings;
     lvgl_unlock();
     if (changed && moduleAvailable) {
-        ctx.api.saveSettings(&settings);
-        // The running server only uses a new mode or access point setting after a restart
-        if (accessPointChanged && ctx.api.isEnabled()) {
+        // Not saved when invalid (e.g. a too short access point password): the running server keeps its settings
+        const error_t saveResult = ctx.api.saveSettings(&settings);
+        if (saveResult != ERROR_NONE) {
+            LOG_E(TAG, "Failed to save the settings: %s", error_to_string(saveResult));
+        } else if (accessPointChanged && ctx.api.isEnabled()) {
+            // The running server only uses a new mode or access point setting after a restart
             ctx.api.setEnabled(false);
-            ctx.api.setEnabled(true);
+            const error_t startResult = ctx.api.setEnabled(true);
+            if (startResult != ERROR_NONE) {
+                LOG_E(TAG, "Failed to restart the web server: %s", error_to_string(startResult));
+            }
         }
     }
 
