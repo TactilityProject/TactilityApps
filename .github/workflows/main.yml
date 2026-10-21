@@ -31,9 +31,21 @@ jobs:
           persist-credentials: false
       - id: set-matrix
         run: python3 Scripts/gh-generate-app-matrix.py
+  # Fills the compiler cache that the Build jobs restore: HelloWorld targets every ESP32 platform
+  WarmBuildCache:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: "Build"
+        uses: ./.github/actions/build-app
+        with:
+          app_name: HelloWorld
+          save_cache: 'true'
   Build:
     runs-on: ubuntu-latest
-    needs: GenerateAppMatrix
+    needs: [GenerateAppMatrix, WarmBuildCache]
     strategy:
       matrix: ${{ fromJSON(needs.GenerateAppMatrix.outputs.matrix) }}
     steps:

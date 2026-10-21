@@ -4,6 +4,10 @@ inputs:
   app_name:
     description: The name of the app directory
     required: true
+  save_cache:
+    description: Save the ESP-IDF/SDK compiler cache after building (one job per run should do this)
+    required: false
+    default: 'false'
 
 runs:
   using: "composite"
@@ -11,6 +15,14 @@ runs:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
+    # After checkout, which cleans the workspace. The SDK compiles its ESP-IDF/SDK parts through
+    # ccache, in .ccache/<platform>. The newest cache of any earlier run is restored.
+    - name: 'Restore compiler cache'
+      uses: actions/cache/restore@v4
+      with:
+        path: .ccache
+        key: ccache-idf-v6.1-${{ github.run_id }}
+        restore-keys: ccache-idf-v6.1-
     - name: 'Build'
       uses: espressif/esp-idf-ci-action@v1
       with:
@@ -19,7 +31,14 @@ runs:
         # The export reset prevents an error when building other targets
         # The default environment variable is set to "esp32" by the GitHub Action
         # tt runs in the app's folder, so it uses the SDK version of this app's manifest
-        command: 'export IDF_TARGET= && cd Apps/${{ inputs.app_name }} && python ../../tt.py app build'
+        # TACTILITY_CCACHE_DIR points the SDK's compiler cache into the workspace, so it can be cached
+        command: 'export IDF_TARGET= && export TACTILITY_CCACHE_DIR="$(pwd)/.ccache" && cd Apps/${{ inputs.app_name }} && python ../../tt.py app build && (for d in "$TACTILITY_CCACHE_DIR"/*/; do [ -d "$d" ] && echo "ccache $d" && ccache -d "$d" -s; done; true)'
+    - name: 'Save compiler cache'
+      if: inputs.save_cache == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .ccache
+        key: ccache-idf-v6.1-${{ github.run_id }}
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
