@@ -33,11 +33,7 @@ static void updatePinWidgets(Context* ctx) {
         // The user data stores the state, so we can avoid unnecessary updates
         if (reinterpret_cast<void*>(level) != label_user_data) {
             lv_obj_set_user_data(label, reinterpret_cast<void*>(level));
-            if (level == 0) {
-                lv_obj_set_style_bg_color(label, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
-            } else {
-                lv_obj_set_style_bg_color(label, lv_color_make(0, 200, 0), LV_STATE_DEFAULT);
-            }
+            lv_obj_set_style_bg_opa(label, level == 0 ? LV_OPA_TRANSP : LV_OPA_COVER, LV_STATE_DEFAULT);
         }
     }
     lvgl_unlock();
@@ -102,7 +98,8 @@ void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
 
     auto block_size = lvgl_get_text_font_height(FONT_SIZE_DEFAULT);
     auto lvgl_density = lvgl_get_ui_density();
-    const int32_t square_spacing = (lvgl_density == LVGL_UI_DENSITY_COMPACT) ? 0 : 4;
+    const int32_t square_spacing = (lvgl_density == LVGL_UI_DENSITY_COMPACT) ? 1 : 4;
+    const int32_t border_width = (lvgl_density == LVGL_UI_DENSITY_COMPACT) ? 1 : LV_DPX(1);
     int32_t x_spacing = block_size + square_spacing;
     uint8_t column = 0;
     const uint8_t column_limit = is_landscape_display ? 10 : 5;
@@ -139,10 +136,13 @@ void gpioCreateWidgets(lv_obj_t* parent, void* userData) {
         lv_obj_set_size(status_square, block_size, block_size);
         lv_obj_set_style_pad_all(status_square, 0, LV_STATE_DEFAULT);
         lv_obj_set_style_margin_all(status_square, 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(status_square, 0, LV_STATE_DEFAULT);
+        // Low is an outline, high is filled
+        const lv_color_t secondary = lv_theme_get_color_secondary(status_square);
+        lv_obj_set_style_border_width(status_square, border_width, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(status_square, secondary, LV_STATE_DEFAULT);
         lv_obj_set_style_radius(status_square, 0, LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(status_square, lv_color_make(20, 20, 20), LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_opa(status_square, LV_OPA_COVER, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(status_square, secondary, LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(status_square, LV_OPA_TRANSP, LV_STATE_DEFAULT);
         ctx->pinWidgets[i] = status_square;
         ctx->pinStates[i] = false;
 
