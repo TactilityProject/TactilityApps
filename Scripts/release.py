@@ -137,6 +137,9 @@ def manifest_config_to_flat_json(manifest):
     target_sdk = manifest.get("target.sdk", "")
     platforms_raw = manifest.get("target.platforms", "")
     target_platforms = [p.strip() for p in str(platforms_raw).split(",") if p.strip()] if platforms_raw is not None else []
+    # An empty list means every platform
+    if target_platforms == ["all"]:
+        target_platforms = []
 
     requires_device_id_raw = manifest.get("requires.device.id", "")
     requires_device_id = [d.strip() for d in str(requires_device_id_raw).split(",") if d.strip()]
