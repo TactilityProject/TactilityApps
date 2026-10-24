@@ -35,7 +35,8 @@ static bool isTouched(Device* touch, Device* mouse) {
     if (touch != nullptr) {
         uint16_t x, y, strength;
         uint8_t pointCount = 0;
-        if (touch_read_data(touch, 0) == ERROR_NONE && touch_get_touched_points(touch, &x, &y, &strength, &pointCount, 1)) {
+        touch_read_data(touch, 0);
+        if (touch_get_touched_points(touch, &x, &y, &strength, &pointCount, 1)) {
             return true;
         }
     }

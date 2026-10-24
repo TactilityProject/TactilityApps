@@ -73,6 +73,7 @@ int main(int argc, char* argv[]) {
     if (touch_device == nullptr && mouse_device == nullptr) {
         ESP_LOGE(TAG, "No touch device found");
         showErrorAndWait(app_instance_id, "No touch device was found.");
+        device_put(display_device);
         return 0;
     }
 
@@ -82,6 +83,13 @@ int main(int argc, char* argv[]) {
     // Run the main logic
     ESP_LOGI(TAG, "Running application");
     runApplication(display_device, touch_device, mouse_device);
+    device_put(display_device);
+    if (touch_device != nullptr) {
+        device_put(touch_device);
+    }
+    if (mouse_device != nullptr) {
+        device_put(mouse_device);
+    }
 
     // Restart LVGL to resume rendering of regular apps
     if (!module_is_started(&lvgl_module)) {
