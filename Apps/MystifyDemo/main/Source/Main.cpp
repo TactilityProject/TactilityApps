@@ -11,7 +11,8 @@
 #include <tactility/check.h>
 #include <tactility/device.h>
 #include <tactility/drivers/display.h>
-#include <tactility/drivers/pointer.h>
+#include <tactility/drivers/mouse.h>
+#include <tactility/drivers/touch.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/module.h>
 #include <tactility/module.h>
@@ -70,8 +71,11 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    struct Device* touch_device;
-    if (device_get_first_active_by_type(&POINTER_TYPE, &touch_device) != ERROR_NONE) {
+    struct Device* touch_device = nullptr;
+    struct Device* mouse_device = nullptr;
+    device_get_first_active_by_type(&TOUCH_TYPE, &touch_device);
+    device_get_first_active_by_type(&MOUSE_TYPE, &mouse_device);
+    if (touch_device == nullptr && mouse_device == nullptr) {
         ESP_LOGE(TAG, "No touch device found");
         device_put(display_device);
         showErrorAndWait(app_instance_id, "No touch device was found.");
@@ -86,8 +90,13 @@ int main(int argc, char* argv[]) {
     device_put(display_device);
 
     ESP_LOGI(TAG, "Creating touch driver");
-    auto touch = new TouchDriver(touch_device);
-    device_put(touch_device);
+    auto touch = new TouchDriver(touch_device, mouse_device);
+    if (touch_device != nullptr) {
+        device_put(touch_device);
+    }
+    if (mouse_device != nullptr) {
+        device_put(mouse_device);
+    }
 
     // Run the main logic
     ESP_LOGI(TAG, "Running application");

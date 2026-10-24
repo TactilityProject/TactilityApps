@@ -1,7 +1,8 @@
 #include "Application.h"
 #include "DoomEsp.h"
 
-#include <tactility/drivers/pointer.h>
+#include <tactility/drivers/mouse.h>
+#include <tactility/drivers/touch.h>
 
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -30,16 +31,19 @@ static void doomTask(void* arg) {
     vTaskDelete(nullptr);
 }
 
-static bool isTouched(Device* touch) {
-    if (pointer_read_data(touch, 0) != ERROR_NONE) {
-        return false;
+static bool isTouched(Device* touch, Device* mouse) {
+    if (touch != nullptr) {
+        uint16_t x, y, strength;
+        uint8_t pointCount = 0;
+        if (touch_read_data(touch, 0) == ERROR_NONE && touch_get_touched_points(touch, &x, &y, &strength, &pointCount, 1)) {
+            return true;
+        }
     }
-    uint16_t x, y, strength;
-    uint8_t pointCount = 0;
-    return pointer_get_touched_points(touch, &x, &y, &strength, &pointCount, 1);
+    bool pressed = false;
+    return mouse != nullptr && mouse_get_button_pressed(mouse, 0, &pressed) == ERROR_NONE && pressed;
 }
 
-void runApplication(Device* display, Device* touch) {
+void runApplication(Device* display, Device* touch, Device* mouse) {
     SemaphoreHandle_t doneSem = xSemaphoreCreateBinary();
     if (doneSem == nullptr) {
         ESP_LOGE(TAG, "Failed to create shutdown semaphore");
@@ -62,7 +66,7 @@ void runApplication(Device* display, Device* touch) {
 
     // Wait until either the doom task exits on its own, or the user touches the screen
     while (xSemaphoreTake(doneSem, pdMS_TO_TICKS(EXIT_POLL_DELAY_MS)) == pdFALSE) {
-        if (isTouched(touch)) {
+        if (isTouched(touch, mouse)) {
             doomEsp_RequestStop();
             xSemaphoreTake(doneSem, portMAX_DELAY);
             break;

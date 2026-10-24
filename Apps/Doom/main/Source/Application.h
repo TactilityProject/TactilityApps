@@ -2,4 +2,4 @@
 
 #include <tactility/device.h>
 
-void runApplication(struct Device* display, struct Device* touch);
+void runApplication(struct Device* display, struct Device* touch, struct Device* mouse);

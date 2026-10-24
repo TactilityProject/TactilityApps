@@ -9,9 +9,7 @@ constexpr auto TAG = "Application";
 constexpr int MYSTIFY_FRAME_DELAY_MS = 50;  // ~20 FPS for smooth animation
 
 static bool isTouched(TouchDriver* touch) {
-    uint16_t x, y, strength;
-    uint8_t pointCount = 0;
-    return touch->getTouchedPoints(&x, &y, &strength, &pointCount, 1);
+    return touch->isTouched();
 }
 
 void runApplication(DisplayDriver* display, TouchDriver* touch) {

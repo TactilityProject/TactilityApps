@@ -7,9 +7,7 @@
 constexpr auto TAG = "Application";
 
 static bool isTouched(TouchDriver* touch) {
-    uint16_t x, y, strength;
-    uint8_t pointCount = 0;
-    return touch->getTouchedPoints(&x, &y, &strength, &pointCount, 1);
+    return touch->isTouched();
 }
 
 void createRgbRow(PixelBuffer& buffer) {
