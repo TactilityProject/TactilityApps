@@ -242,6 +242,12 @@ lv_obj_t* createTextArea(lv_obj_t* row, const char* text, uint32_t maxLength, bo
     return textArea;
 }
 
+void addWifiModeChip(Context* ctx, const char* name) {
+    auto* chip = lvgl_chip_create(ctx->wifiModeChips);
+    lv_label_set_text(lv_label_create(chip), name);
+    lv_obj_add_event_cb(chip, onWifiModeChip, LV_EVENT_SHORT_CLICKED, ctx);
+}
+
 // Called with the LVGL lock held
 void createWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
@@ -287,11 +293,8 @@ void createWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_all(ctx->wifiModeChips, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_pad_column(ctx->wifiModeChips, 0, LV_STATE_DEFAULT);
     // In WebServerWifiMode order
-    for (const char* name : { "Station", "Access point" }) {
-        auto* chip = lvgl_chip_create(ctx->wifiModeChips);
-        lv_label_set_text(lv_label_create(chip), name);
-        lv_obj_add_event_cb(chip, onWifiModeChip, LV_EVENT_SHORT_CLICKED, ctx);
-    }
+    addWifiModeChip(ctx, "Station");
+    addWifiModeChip(ctx, "Access point");
     lvgl_grid_navigation_add(ctx->wifiModeChips);
 
     ctx->apGroup = createGroup(wifiCard);
