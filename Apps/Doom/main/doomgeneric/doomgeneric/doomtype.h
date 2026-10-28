@@ -92,8 +92,10 @@ typedef enum
 #else
 
 // C23 makes false/true reserved keywords, so this enum can no longer declare them as
-// enumerator names. C23 already has a real bool, so alias boolean to it directly.
-typedef bool boolean;
+// enumerator names. Keep boolean 4 bytes wide like upstream Doom: legacy code casts
+// boolean* to int* (e.g. st_stuff.c arms widget -> player_t.weaponowned[]), which
+// breaks if boolean is only 1 byte.
+typedef uint32_t boolean;
 #define undef 0xFFFFFFFF
 
 #endif

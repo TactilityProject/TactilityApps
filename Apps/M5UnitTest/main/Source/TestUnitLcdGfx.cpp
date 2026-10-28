@@ -221,8 +221,10 @@ uint32_t testRoundRects(TestUnitLcdGfx* self) {
 // ---------------------------------------------------------------------------
 
 void selectIfNeeded(TestUnitLcdGfx* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() &&
+        self->channel_ != UnitPaHub::NO_CHANNEL) {
+        self->hub_.select(self->channel_);
+    }
 }
 
 void appendLog(TestUnitLcdGfx* self, const char* name, uint32_t us) {
@@ -392,21 +394,30 @@ void testUnitLcdGfxStart(TestUnitLcdGfx* self, lv_obj_t* parent, Context* app) {
     Device* i2c = findGroveI2cDevice();
     if (!i2c) { lv_label_set_text(self->lblPhase_, "grove0_i2c not found"); return; }
 
-    if (self->lcd_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
-        self->usingPaHub_ = true;
-        bool found = false;
+    bool found = false;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+
+    // PaHub first. A channel left selected by an earlier test can make a
+    // direct probe succeed through the mux and then break on the next switch.
+    if (self->hub_.begin(i2c)) {
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->lcd_.begin(i2c)) found = true;
+            if (!self->hub_.select(ch)) continue;
+            if (self->lcd_.begin(i2c)) {
+                self->usingPaHub_ = true;
+                self->channel_    = ch;
+                found = true;
+            }
         }
-        if (!found) {
-            self->hub_.deselect();
-            lv_label_set_text(self->lblPhase_, "LCD not found");
-            return;
-        }
-    } else {
+        if (!found) self->hub_.deselect();
+    }
+    if (!found && self->lcd_.begin(i2c)) {
+        self->usingPaHub_ = false;
+        self->channel_    = UnitPaHub::NO_CHANNEL;
+        found = true;
+    }
+
+    if (!found) {
         lv_label_set_text(self->lblPhase_, "LCD not found");
         return;
     }
@@ -436,5 +447,7 @@ void testUnitLcdGfxStop(TestUnitLcdGfx* self) {
     selectIfNeeded(self);
     if (self->lcd_.isPresent()) self->lcd_.setBrightness(0);
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
     self->lblPhase_ = self->lblLog_ = nullptr;
 }

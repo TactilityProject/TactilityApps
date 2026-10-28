@@ -26,6 +26,7 @@
  *   0x2B TPrescalerReg - timer prescaler
  *   0x2C TReloadRegH   - timer reload high
  *   0x2D TReloadRegL   - timer reload low
+ *   0x37 VersionReg    - chip version (WS1850S 0x15; MFRC522 0x88/0x90/0x91/0x92/0x12)
  *
  * Usage:
  *   UnitRfid2 rfid;
@@ -87,6 +88,9 @@ public:
     // Pass a I2C controller device
     bool begin(Device* dev, uint8_t addr = DEFAULT_ADDR);
     bool isPresent() const { return dev_ != nullptr; }
+
+    // MFRC522/WS1850S VersionReg value (0 when unknown).
+    uint8_t firmwareVersion() const { return version_; }
 
     // ---------------------------------------------------------------------------
     // Card detection & UID
@@ -175,8 +179,9 @@ public:
     void haltCard();
 
 private:
-    Device*  dev_  = nullptr;
-    uint8_t  addr_ = DEFAULT_ADDR;
+    Device*  dev_     = nullptr;
+    uint8_t  addr_    = DEFAULT_ADDR;
+    uint8_t  version_ = 0;
 
     // ---------------------------------------------------------------------------
     // Low-level register access
@@ -194,6 +199,7 @@ private:
 
     bool softReset();
     void antennaOn();
+    bool readVersion(uint8_t& version);
 
     // ---------------------------------------------------------------------------
     // CRC & transceive
@@ -253,6 +259,7 @@ private:
     static constexpr uint8_t REG_TPRESCALER   = 0x2B;
     static constexpr uint8_t REG_TRELOAD_H    = 0x2C;
     static constexpr uint8_t REG_TRELOAD_L    = 0x2D;
+    static constexpr uint8_t REG_VERSION      = 0x37;  // VersionReg
 
     // ---------------------------------------------------------------------------
     // MFRC522 commands

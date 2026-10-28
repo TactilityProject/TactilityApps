@@ -44,7 +44,7 @@ Each level has a unique brick layout pattern. Colors rotate each level, and Silv
   [][][]  [][][]                                          [][][][][][]
 ```
 
-After level 12, layouts are **procedurally generated** using a seeded algorithm — the same level number always produces the same layout.
+After level 12, layouts are **procedurally generated** using a seeded algorithm - the same level number always produces the same layout.
 
 ## Power-Up Capsules
 
@@ -67,7 +67,7 @@ Capsules drop from destroyed bricks (~15% chance) and fall toward the paddle. Ca
 | Extend | `Blue` | **E** | Paddle width increases by 50% |
 | Catch | `Green` | **C** | Ball sticks to paddle on contact, auto-releases after 3 seconds |
 | Slow | `Orange` | **S** | Ball speed reduced to 60%, gradually recovers over 5 seconds |
-| BreakOut | `Pink` | **B** | Opens exit on right wall — move paddle to exit for +10,000 pts |
+| BreakOut | `Pink` | **B** | Opens exit on right wall - move paddle to exit for +10,000 pts |
 | Split | `Cyan` | **D** | Splits ball into 3! Life lost only when ALL balls are gone |
 | Extra Life | `Grey` | **+** | +1 life (rarest drop) |
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "drivers/DisplayDriver.h"
-#include "drivers/TouchDriver.h"
+#include <gfx/Gfx.h>
+#include <input/AnyInput.h>
 
-void runApplication(DisplayDriver* display, TouchDriver* touch);
+void runApplication(gfx::Target* target, AnyInput* input);

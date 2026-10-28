@@ -20,6 +20,7 @@ struct TestUnitByteButton {
     uint32_t    ledColors_[BTN_COUNT]  = {};
     bool        prevPressed_[BTN_COUNT]= {};
     bool        usingPaHub_            = false;
+    uint8_t     channel_               = UnitPaHub::NO_CHANNEL;
 };
 
 void testUnitByteButtonStart(TestUnitByteButton* self, lv_obj_t* parent, Context* app);

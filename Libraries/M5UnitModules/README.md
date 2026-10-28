@@ -10,7 +10,7 @@ Drivers for M5Stack Unit peripheral modules, for use with [Tactility OS](https:/
 | `UnitByteButton.h` | ByteButton - 8 buttons + RGB LEDs | I2C | 0x47 |
 | `UnitJoystick2.h` | Joystick2 - XY joystick + button + LED | I2C | 0x63 |
 | `UnitScroll.h` | Scroll - single encoder + button + LED | I2C | 0x40 |
-| `UnitPaHub.h` | PaHub - TCA9548A 6-channel I2C mux | I2C | 0x70 |
+| `UnitPaHub.h` | PaHub - PCA9548AP 6-channel I2C mux | I2C | 0x70 |
 | `UnitLcd.h` | LCD Unit - 135x240 IPS display (ESP32-PICO) | I2C | 0x3E |
 | `UnitDualButton.h` | Dual Button - 2 GPIO buttons | GPIO | - |
 | `UnitCardKB2.h` | CardKB2 - QWERTY keyboard | I2C | 0x5F |
@@ -21,7 +21,7 @@ Drivers for M5Stack Unit peripheral modules, for use with [Tactility OS](https:/
 
 ### Without CMake component
 
-Source files are compiled directly into your app (same pattern as `TactilityCpp` and `SoundEngine`). In your app's `main/CMakeLists.txt`:
+Source files are compiled directly into your app. In your app's `main/CMakeLists.txt`:
 
 ```cmake
 file(GLOB_RECURSE SOURCE_FILES
@@ -32,7 +32,6 @@ file(GLOB_RECURSE SOURCE_FILES
 idf_component_register(
     SRCS ${SOURCE_FILES}
     INCLUDE_DIRS
-        ../../../Libraries/TactilityCpp/Include
         ../../../Libraries/M5UnitModules/Include
     REQUIRES TactilitySDK
 )
@@ -63,7 +62,7 @@ if (bb.begin(i2c)) {
 
 ### Through PaHub (I2C multiplexer)
 
-When multiple units share the same I2C address, or more than 6 units are needed, connect them via a PaHub. Select the channel before each operation:
+When multiple units share the same I2C address, connect them via a PaHub. The PaHub exposes six downstream channels; units on the same channel must still have unique addresses. Select the channel before each operation:
 
 ```cpp
 #include <UnitPaHub.h>
@@ -150,7 +149,9 @@ The driver tracks Aa (caps lock / one-shot shift), Sym (symbol mode), and Fn int
 
 Most M5Stack Units use an STM32 microcontroller internally. These require a STOP condition between the register-pointer write and the data read (STM32 HAL populates the tx buffer after STOP, before the next START). Using a repeated-START causes bus errors.
 
-`UnitCommon.h` provides `unitReadReg` which implements the required STOP + 2ms delay pattern automatically. All STM32-based drivers use this helper.
+`UnitCommon.h` provides `unitReadReg` which implements the required STOP + 3ms delay pattern automatically. All STM32-based drivers use this helper.
+
+`unitProbe` retries up to five times and accepts the first successful transaction. It deliberately does not use the ESP-IDF `i2c_master_probe()` path: on ESP-IDF 6.1 that can report a false ACK for an absent address, and behind a PaHub it made every known address appear present on every channel. Instead, `unitProbe` reads the PaHub control register, the firmware-version register (`0xFE`, accepted range 1-15) for the 8Encoder/Scroll/ByteButton/Joystick2, the four-byte ID (`0x04` -> `0x77 0x89 ...`) for the LCD, CardKB2 version `0xF1` (1-15), and RFID2 `VersionReg` `0x37` (WS1850S `0x15` or an MFRC522-family value). A successful probe is still followed by a real register read in `begin()`: the 8Encoder checks version plus address register `0xFF`, the LCD checks its ID, and CardKB2/RFID2 re-read their version registers. This prevents a floating PaHub channel from latching a scan onto an empty port.
 
 The LCD Unit is an exception - it contains an ESP32-PICO and uses a command-based I2C protocol without the STOP+delay requirement.
 
@@ -260,7 +261,7 @@ NTAG21x UID bytes are read-only at the hardware level and cannot be cloned.
 | `TestUnitJoystick2` | Joystick2 | XY position bar graphs + button state + LED colour picker |
 | `TestUnitLcd` | LCD Unit | Displays a colour gradient and version info on the unit's screen |
 | `TestUnitMidi` | MIDI / Synth | Channel + program picker; Note On/Off for middle C |
-| `TestUnitPaHub` | PaHub | Per-channel I2C address scanner with periodic re-probe |
+| `TestUnitPaHub` | PaHub | Per-channel I2C identity scanner (tap a channel to probe) |
 | `TestUnitRfid2` | RFID2 | Card detection with UID, type, SAK/ATQA display; Clear to re-scan |
 | `TestUnitScroll` | Scroll | Encoder delta counter + button state + LED colour |
 

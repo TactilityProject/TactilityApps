@@ -12,6 +12,7 @@ struct Context {
     lv_obj_t* answerLabel = nullptr;
     lv_obj_t* hintLabel = nullptr;
     lv_obj_t* ballObj = nullptr;
+    lv_obj_t* windowObj = nullptr;
 
     // State
     int lastIdx = -1;

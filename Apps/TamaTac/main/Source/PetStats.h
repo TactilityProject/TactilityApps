@@ -89,7 +89,7 @@ struct PetStats {
     LifeStage stage;
     AnimState currentAnim;
     Personality personality;
-    RandomEvent lastEvent;    // Transient — not saved/loaded
+    RandomEvent lastEvent;    // Transient - not saved/loaded
 
     // Timestamps
     uint32_t lastUpdateTime;  // Last stat update (millis)

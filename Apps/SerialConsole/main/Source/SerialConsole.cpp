@@ -42,14 +42,14 @@ void showConsoleView(Context* app, Device* dev) {
     stopActiveView(app);
     app->activeView = Context::ActiveView::Console;
     consoleViewCreate(app->wrapperWidget, app, dev);
-    lv_obj_remove_flag(app->disconnectButton, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(app->disconnectButton, false);
 }
 
 void showConnectView(Context* app) {
     stopActiveView(app);
     app->activeView = Context::ActiveView::Connect;
     connectViewCreate(app->wrapperWidget, app);
-    lv_obj_add_flag(app->disconnectButton, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(app->disconnectButton, true);
 }
 
 void serialConsoleCreateWidgets(lv_obj_t* parent, void* userData) {
@@ -81,11 +81,11 @@ void serialConsoleCreateWidgets(lv_obj_t* parent, void* userData) {
         // destroys the widget tree, never our background threads or the open UART, so just
         // rebuild the widgets around the still-running session instead of dropping it (see
         // ConsoleView.h's comment on consoleViewRebuildWidgets()).
-        lv_obj_remove_flag(ctx->disconnectButton, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(ctx->disconnectButton, false);
         consoleViewRebuildWidgets(ctx->wrapperWidget, ctx);
     } else {
         // First creation, or resurfacing on the (stateless) connect form.
-        lv_obj_add_flag(ctx->disconnectButton, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(ctx->disconnectButton, true);
         connectViewCreate(ctx->wrapperWidget, ctx);
         ctx->activeView = Context::ActiveView::Connect;
     }

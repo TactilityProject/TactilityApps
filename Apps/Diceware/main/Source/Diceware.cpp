@@ -3,6 +3,7 @@
 #include <app/start.h>
 #include <app/paths.h>
 #include <lvgl/lvgl.h>
+#include <lvgl/widgets/card.h>
 #include <lvgl/widgets/toolbar.h>
 
 #include <esp_random.h>
@@ -115,7 +116,7 @@ static void onHelpClicked(lv_event_t* e) {
         "The hardware random number generator can use the Wi-Fi radio to improve randomness. There's no need to connect to a Wi-Fi network for this to work.",
         "OK",
     };
-    app_start_for_result("AlertDialog", 3, argv, ctx->appInstanceId, &ctx->pendingHelpDialogId);
+    app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->pendingHelpDialogId);
 }
 
 void dicewareCreateWidgets(lv_obj_t* parent, void* userData) {
@@ -130,43 +131,52 @@ void dicewareCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* wrapper = lv_obj_create(parent);
     lv_obj_set_style_border_width(wrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_flex_flow(wrapper, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(wrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
     lv_obj_set_width(wrapper, LV_PCT(100));
     lv_obj_set_flex_grow(wrapper, 1);
 
-    auto* top_row_wrapper = lv_obj_create(wrapper);
-    lv_obj_set_style_border_width(top_row_wrapper, 0, LV_STATE_DEFAULT);
+    auto* top_row_wrapper = lvgl_card_create(wrapper);
     lv_obj_set_size(top_row_wrapper, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(top_row_wrapper, 0, LV_STATE_DEFAULT);
+    lv_obj_set_flex_flow(top_row_wrapper, LV_FLEX_FLOW_COLUMN);
 
-    auto* generate_button = lv_button_create(top_row_wrapper);
-    lv_obj_align(generate_button, LV_ALIGN_LEFT_MID, 0, 0);
+    auto* controls_row = lv_obj_create(top_row_wrapper);
+    lv_obj_remove_style_all(controls_row);
+    lv_obj_set_size(controls_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(controls_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(controls_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollable(controls_row, false);
+
+    auto* generate_button = lv_button_create(controls_row);
     auto* generate_label = lv_label_create(generate_button);
     lv_label_set_text(generate_label, "Generate");
     lv_obj_add_event_cb(generate_button, onClickGenerate, LV_EVENT_SHORT_CLICKED, ctx);
 
-    ctx->spinbox = lv_spinbox_create(top_row_wrapper);
+    auto* spinbox_controls = lv_obj_create(controls_row);
+    lv_obj_remove_style_all(spinbox_controls);
+    lv_obj_set_size(spinbox_controls, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(spinbox_controls, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(spinbox_controls, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(spinbox_controls, 8, LV_STATE_DEFAULT);
+    lv_obj_set_scrollable(spinbox_controls, false);
+
+    auto* spinbox_dec_button = lv_button_create(spinbox_controls);
+    auto* spinbox_dec_label = lv_label_create(spinbox_dec_button);
+    lv_label_set_text(spinbox_dec_label, LV_SYMBOL_MINUS);
+    lv_obj_center(spinbox_dec_label);
+
+    ctx->spinbox = lv_spinbox_create(spinbox_controls);
     lv_spinbox_set_range(ctx->spinbox, 4, 12);
     lv_spinbox_set_value(ctx->spinbox, 5);
     lv_spinbox_set_step(ctx->spinbox, 1);
     lv_spinbox_set_digit_format(ctx->spinbox, 1, 0);
-    lv_obj_set_width(ctx->spinbox, 30);
-
-    auto* spinbox_dec_button = lv_button_create(top_row_wrapper);
-    lv_obj_set_style_bg_image_src(spinbox_dec_button, LV_SYMBOL_MINUS, LV_STATE_DEFAULT);
+    lv_obj_set_width(ctx->spinbox, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_align(ctx->spinbox, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_add_event_cb(spinbox_dec_button, onSpinboxDecrement, LV_EVENT_SHORT_CLICKED, ctx->spinbox);
-    lv_obj_set_style_pad_all(spinbox_dec_button, 16, LV_STATE_DEFAULT);
 
-    auto* spinbox_inc_button = lv_button_create(top_row_wrapper);
-    // lv_obj_align_to(spinbox_inc_button, spinbox, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
-    lv_obj_set_style_bg_image_src(spinbox_inc_button, LV_SYMBOL_PLUS, LV_STATE_DEFAULT);
+    auto* spinbox_inc_button = lv_button_create(spinbox_controls);
+    auto* spinbox_inc_label = lv_label_create(spinbox_inc_button);
+    lv_label_set_text(spinbox_inc_label, LV_SYMBOL_PLUS);
+    lv_obj_center(spinbox_inc_label);
     lv_obj_add_event_cb(spinbox_inc_button, onSpinboxIncrement, LV_EVENT_SHORT_CLICKED, ctx->spinbox);
-    lv_obj_set_style_pad_all(spinbox_inc_button, 16, LV_STATE_DEFAULT);
-
-    // Align spinbox widgets
-    lv_obj_align(spinbox_inc_button, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_align_to(ctx->spinbox, spinbox_inc_button, LV_ALIGN_OUT_LEFT_MID, -5, 0);
-    lv_obj_align_to(spinbox_dec_button, ctx->spinbox, LV_ALIGN_OUT_LEFT_MID, -5, 0);
 
     auto* result_wrapper = lv_obj_create(wrapper);
     lv_obj_set_flex_grow(result_wrapper, 1);

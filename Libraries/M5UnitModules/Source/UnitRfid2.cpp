@@ -59,10 +59,23 @@ void UnitRfid2::writeFifo(const uint8_t* buf, uint8_t len) {
 // ---------------------------------------------------------------------------
 
 bool UnitRfid2::softReset() {
-    writeReg(REG_COMMAND, CMD_SOFT_RESET);
+    // Match the reference MFRC522 driver: clear pending ComIrq flags before
+    // issuing SoftReset. Some WS1850S boards otherwise leave the command
+    // register in a stale state after power-up.
+    uint8_t irq = 0x7F;
+    if (!unitWriteReg(dev_, addr_, REG_COM_IRQ, &irq, 1)) return false;
+    uint8_t reset = CMD_SOFT_RESET;
+    if (!unitWriteReg(dev_, addr_, REG_COMMAND, &reset, 1)) return false;
     vTaskDelay(pdMS_TO_TICKS(50));
     for (int i = 0; i < 10; i++) {
-        if (!(readReg(REG_COMMAND) & 0x10)) return true;
+        uint8_t command = 0;
+        // Treat a failed read as "still busy" instead of success: readReg()
+        // returns 0 on a bus error, and CommandReg bit 4 == 0 would otherwise
+        // make a dead bus look like a completed reset.
+        if (unitReadReg(dev_, addr_, REG_COMMAND, &command, 1) &&
+            !(command & 0x10)) {
+            return true;
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     return false;
@@ -70,11 +83,32 @@ bool UnitRfid2::softReset() {
 
 void UnitRfid2::antennaOn() {
     uint8_t val = readReg(REG_TX_CONTROL);
-    if (!(val & 0x03))
-        setBitMask(REG_TX_CONTROL, 0x03);
+    if ((val & 0x03) != 0x03)
+        writeReg(REG_TX_CONTROL, val | 0x03);
+}
+
+bool UnitRfid2::readVersion(uint8_t& version) {
+    version = 0;
+    if (!dev_) return false;
+    // The WS1850S can miss the first version read on a freshly powered or
+    // freshly reset bus; the reference library retries this register too.
+    for (int attempt = 0; attempt < 3; attempt++) {
+        version = readReg(REG_VERSION);
+        // The RFID2 Unit uses a WS1850S, which reports 0x15. The remaining values
+        // cover MFRC522/PN512-family readers.
+        if (version == 0x15 || version == 0x88 || version == 0x90 ||
+            version == 0x91 || version == 0x92 || version == 0x12) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return false;
 }
 
 bool UnitRfid2::begin(Device* dev, uint8_t addr) {
+    dev_     = nullptr;
+    addr_    = 0;
+    version_ = 0;
     if (!dev || !device_is_ready(dev)) return false;
     if (!unitProbe(dev, addr)) {
         ESP_LOGW(TAG, "RFID2 not found at 0x%02X", addr);
@@ -83,11 +117,28 @@ bool UnitRfid2::begin(Device* dev, uint8_t addr) {
     dev_  = dev;
     addr_ = addr;
 
+    uint8_t version = 0;
+    if (!readVersion(version)) {
+        ESP_LOGW(TAG, "RFID2 identity check failed at 0x%02X (VersionReg 0x%02X)",
+                 addr_, (unsigned)version);
+        dev_ = nullptr;
+        return false;
+    }
+
     if (!softReset()) {
         ESP_LOGE(TAG, "RFID2 soft reset failed at 0x%02X", addr_);
         dev_ = nullptr;
         return false;
     }
+
+    // Verify the chip is still answering after the reset; readVersion() would
+    // otherwise treat a failed read as zero and let a dead bus pass.
+    if (!readVersion(version)) {
+        ESP_LOGE(TAG, "RFID2 lost identity after soft reset at 0x%02X", addr_);
+        dev_ = nullptr;
+        return false;
+    }
+    version_ = version;
 
     // Timer: auto mode, prescaler for ~25ms timeout
     writeReg(REG_TMODE,      0x80);
@@ -100,7 +151,8 @@ bool UnitRfid2::begin(Device* dev, uint8_t addr) {
     writeReg(REG_MODE,   0x3D);
 
     antennaOn();
-    ESP_LOGI(TAG, "RFID2 ready at 0x%02X", addr_);
+    ESP_LOGI(TAG, "RFID2 ready at 0x%02X (fw 0x%02X, tx 0x%02X)",
+             addr_, (unsigned)version_, (unsigned)readReg(REG_TX_CONTROL));
     return true;
 }
 
@@ -151,8 +203,11 @@ uint8_t UnitRfid2::transceive(const uint8_t* txBuf, uint8_t txLen,
     }
     clearBitMask(REG_BIT_FRAMING, 0x80);
 
-    if (!(irq & 0x01) && (irq & 0x30) == 0) return 0;
-    if (readReg(REG_ERROR) & 0x1B) return 0;
+    if ((irq & 0x30) == 0) return 0;  // no RxIRq and no IdleIRq
+    // Ignore CollErr (0x08): it is expected/possible during anticollision and
+    // the reference MFRC522 driver only treats BufferOvfl/Parity/Protocol as
+    // fatal. Rejecting CollErr here made a single card look like no card at all.
+    if (readReg(REG_ERROR) & 0x13) return 0;
 
     uint8_t n = readReg(REG_FIFO_LEVEL) & 0x7F;
     if (n > rxMaxLen) n = rxMaxLen;
@@ -198,6 +253,7 @@ bool UnitRfid2::transceiveCRC(const uint8_t* txBuf, uint8_t txLen,
 // Send a 7-bit short frame command (REQA=0x26 or WUPA=0x52).
 // REQA only wakes IDLE cards; WUPA wakes both IDLE and HALT cards.
 bool UnitRfid2::requestA(uint8_t atqa[2], uint8_t cmd) {
+    writeReg(REG_COLL, 0x00);       // ValuesAfterColl=0 while waiting for ATQA
     writeReg(REG_BIT_FRAMING, 0x07);
     uint8_t rx[2] = {};
     uint8_t rxLen = transceive(&cmd, 1, rx, 2);
@@ -217,7 +273,7 @@ bool UnitRfid2::select(Uid* uid) {
     uint8_t uidSize = 0;
 
     for (int cascade = 0; cascade < 3; cascade++) {
-        writeReg(REG_COLL, 0x80);              // ValuesAfterColl: don't clear bits on collision
+        writeReg(REG_COLL, 0x00);              // ValuesAfterColl=0: keep collision bits
         writeReg(REG_BIT_FRAMING, 0x00);
 
         uint8_t anticollCmd[2] = { selCmd[cascade], PICC_ANTICOLL };

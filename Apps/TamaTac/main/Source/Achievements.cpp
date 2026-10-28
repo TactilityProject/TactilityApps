@@ -4,6 +4,7 @@
  */
 
 #include "Achievements.h"
+#include "Layout.h"
 #include "TamaTac.h"
 #include <app/paths.h>
 #include <tactility/preferences.h>
@@ -70,6 +71,12 @@ bool achievementsHas(uint16_t bits, AchievementId id) {
     return (bits >> static_cast<uint8_t>(id)) & 1;
 }
 
+// NOTE: achievement STORAGE (unlock/increment/clean-count) is serialized by
+// Context.timerMutex - every caller below runs with it held (action handlers
+// take it, the 30s timer callback holds it for its whole duration). Do not
+// call these from a thread that doesn't hold it: concurrent read-modify-write
+// of the bitfield/counter can lose an unlock. (The Achievements *view* reads
+// without the lock; worst case it shows bits one tick stale.)
 void achievementsUnlock(AchievementId id) {
     if (static_cast<int>(id) >= static_cast<int>(AchievementId::COUNT)) {
         return;
@@ -120,10 +127,9 @@ void achievementsIncrementCleanCount() {
 void achievementsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     AchievementsViewState* state = &ctx->achievementsView;
 
-    lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenWidth < 280 || screenHeight < 180);
-    bool isXLarge = (screenWidth >= 600);
+    TamaViewport vp = tamaGetViewport();
+    bool isSmall = tamaIsSmall(vp);
+    bool isXLarge = tamaIsXLarge(vp);
 
     int padAll = isSmall ? 4 : (isXLarge ? 16 : 8);
     int padRow = isSmall ? 2 : (isXLarge ? 8 : 4);
@@ -136,6 +142,8 @@ void achievementsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     lv_obj_set_style_border_width(state->mainWrapper, 0, 0);
     lv_obj_set_flex_flow(state->mainWrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(state->mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    // 12 rows always overflow short screens - vertical scroll only
+    lv_obj_set_scroll_dir(state->mainWrapper, LV_DIR_VER);
 
     uint16_t bits = achievementsLoad();
     int unlocked = achievementsCountUnlocked(bits);

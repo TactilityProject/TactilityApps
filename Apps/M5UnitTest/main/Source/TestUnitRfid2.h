@@ -13,10 +13,12 @@ struct TestUnitRfid2 {
     lv_timer_t*  pulseTimer_  = nullptr;
     bool         usingPaHub_  = false;
     bool         cardShown_   = false;
+    uint8_t      channel_     = UnitPaHub::NO_CHANNEL;
 
     // Idle group
     lv_obj_t*    idleGroup_   = nullptr;
     lv_obj_t*    circle_      = nullptr;
+    lv_obj_t*    lblReader_   = nullptr;
 
     // Card info group
     lv_obj_t*    cardGroup_   = nullptr;

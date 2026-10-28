@@ -2,7 +2,7 @@
  * @file SfxDefinitions.h
  * @brief 52 curated SFX definitions for SfxEngine.
  *
- * Implements SfxEngine::loadSound() — mapping SfxId values to note sequences.
+ * Implements SfxEngine::loadSound() - mapping SfxId values to note sequences.
  */
 
 #pragma once
@@ -20,16 +20,20 @@
     } \
 } while(0)
 
-inline void SfxEngine::loadSound(SfxId sound) {
+inline void SfxEngine::loadSound(SfxId sound, int slot) {
+    SequencePlayer& player = sequencePlayers_[slot];
+    // Local reference aliases matching the old member names, so every ADD_SFX_NOTE/
+    // sequenceLength_ line below (one per sound, 52 cases) needs no per-case changes:
+    // they now write into this call's own slot instead of engine-wide shared state.
+    auto& sequence_ = player.notes;
+    auto& sequenceLength_ = player.length;
+    auto& sequenceIndex_ = player.index;
+    auto& sequenceDelaySamples_ = player.delaySamples;
+
     sequenceIndex_ = 0;
     sequenceDelaySamples_ = 0;
     sequenceLength_ = 0;
-
-    // Stop all voices
-    for (int i = 0; i < NUM_VOICES; i++) {
-        voices_[i].active = false;
-        voices_[i].envStage = EnvelopeStage::Off;
-    }
+    player.startOrder = nextSequenceOrder_++;
 
     switch (sound) {
 

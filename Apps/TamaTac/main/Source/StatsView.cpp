@@ -4,6 +4,7 @@
  */
 
 #include "StatsView.h"
+#include "Layout.h"
 #include "TamaTac.h"
 #include <cstdio>
 
@@ -36,12 +37,10 @@ lv_obj_t* createStatRow(lv_obj_t* parentContainer, const char* labelText, lv_col
 void statsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     StatsViewState* state = &ctx->statsView;
 
-    // Detect screen size for responsive layout
-    // Use display resolution for reliable sizing (parent may not be laid out yet on first load)
-    lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenWidth < 280 || screenHeight < 180);
-    bool isXLarge = (screenWidth >= 600);
+    // Shared viewport detection (display resolution + orientation)
+    TamaViewport vp = tamaGetViewport();
+    bool isSmall = tamaIsSmall(vp);
+    bool isXLarge = tamaIsXLarge(vp);
 
     // Scaled dimensions
     int padAll = isSmall ? 6 : (isXLarge ? 24 : 12);
@@ -56,7 +55,9 @@ void statsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     lv_obj_set_style_border_width(state->mainWrapper, 0, 0);
     lv_obj_set_flex_flow(state->mainWrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(state->mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_remove_flag(state->mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    // Vertical scroll safety: 7 rows can overflow short landscape screens
+    lv_obj_set_scrollable(state->mainWrapper, true);
+    lv_obj_set_scroll_dir(state->mainWrapper, LV_DIR_VER);
 
     // Title row (stage/age on left, status on right)
     lv_obj_t* titleRow = lv_obj_create(state->mainWrapper);

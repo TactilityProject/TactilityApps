@@ -4,6 +4,7 @@
  */
 
 #include "ReactionGame.h"
+#include "Layout.h"
 #include "TamaTac.h"
 #include "SfxEngine.h"
 #include <lvgl_window_manager/window_manager.h>
@@ -30,7 +31,7 @@ void scheduleTimer(Context* ctx, uint32_t ms);
 void startRound(Context* ctx) {
     ReactionGameState* state = &ctx->reactionGame;
     state->phase = ReactionGameState::Phase::WaitForTarget;
-    if (state->targetBtn) lv_obj_add_flag(state->targetBtn, LV_OBJ_FLAG_HIDDEN);
+    if (state->targetBtn) lv_obj_set_hidden(state->targetBtn, true);
 
     char msg[48];
     snprintf(msg, sizeof(msg), "Round %d/%d - Wait...", state->round + 1, REACTION_GAME_MAX_ROUNDS);
@@ -46,7 +47,7 @@ void showTarget(Context* ctx) {
     state->phase = ReactionGameState::Phase::TargetShown;
     state->targetShowTime = tt::kernel::getMillis();
 
-    if (state->targetBtn) lv_obj_clear_flag(state->targetBtn, LV_OBJ_FLAG_HIDDEN);
+    if (state->targetBtn) lv_obj_set_hidden(state->targetBtn, false);
     if (state->statusLabel) lv_label_set_text(state->statusLabel, "TAP NOW!");
 
     if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Blip);
@@ -57,13 +58,13 @@ void showTarget(Context* ctx) {
 
 void returnToMain(Context* ctx) {
     ReactionGameState* state = &ctx->reactionGame;
-    tamaTacOnReactionGameComplete(ctx, state->score, state->score >= REACTION_GAME_MAX_ROUNDS);
+    tamaTacOnReactionGameComplete(ctx, state->score, state->fastHits >= REACTION_GAME_MAX_ROUNDS);
 }
 
 void showFinalResult(Context* ctx) {
     ReactionGameState* state = &ctx->reactionGame;
     char msg[64];
-    if (state->score >= REACTION_GAME_MAX_ROUNDS) {
+    if (state->fastHits >= REACTION_GAME_MAX_ROUNDS) {
         snprintf(msg, sizeof(msg), LV_SYMBOL_OK " Perfect! %d/%d", state->score, REACTION_GAME_MAX_ROUNDS);
     } else if (state->score > 0) {
         snprintf(msg, sizeof(msg), "Score: %d/%d", state->score, REACTION_GAME_MAX_ROUNDS);
@@ -81,14 +82,18 @@ void showFinalResult(Context* ctx) {
 void handleTap(Context* ctx) {
     ReactionGameState* state = &ctx->reactionGame;
     uint32_t reactionTime = tt::kernel::getMillis() - state->targetShowTime;
-    if (state->targetBtn) lv_obj_add_flag(state->targetBtn, LV_OBJ_FLAG_HIDDEN);
+    if (state->targetBtn) lv_obj_set_hidden(state->targetBtn, true);
 
+    // Completion and perfection are tracked separately: any in-time tap
+    // completes the round (score), only fast taps count toward perfect.
+    // Previously a single Slow tap made a perfect game unwinnable.
+    state->score++;
     const char* rating;
     if (reactionTime <= GREAT_TIME_MS) {
-        state->score++;
+        state->fastHits++;
         rating = "GREAT";
     } else if (reactionTime <= GOOD_TIME_MS) {
-        state->score++;
+        state->fastHits++;
         rating = "Good";
     } else {
         rating = "Slow";
@@ -133,7 +138,7 @@ void onTimerTick(lv_timer_t* timer) {
             break;
         case ReactionGameState::Phase::TargetShown:
             // Timeout - player didn't tap in time
-            if (state->targetBtn) lv_obj_add_flag(state->targetBtn, LV_OBJ_FLAG_HIDDEN);
+            if (state->targetBtn) lv_obj_set_hidden(state->targetBtn, true);
             if (state->statusLabel) lv_label_set_text(state->statusLabel, "Too slow!");
             state->round++;
             state->phase = ReactionGameState::Phase::RoundResult;
@@ -177,13 +182,22 @@ void onAreaClicked(lv_event_t* e) {
 void reactionGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     ReactionGameState* state = &ctx->reactionGame;
 
-    lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenWidth < 280 || screenHeight < 180);
-    bool isXLarge = (screenWidth >= 600);
+    TamaViewport vp = tamaGetViewport();
+    bool isSmall = tamaIsSmall(vp);
+    bool isXLarge = tamaIsXLarge(vp);
 
     int pad = isSmall ? 4 : (isXLarge ? 16 : 8);
     int targetSize = isSmall ? 80 : (isXLarge ? 200 : 120);
+
+    // Fill sizing: grow the target toward the display's short side (Tab5 was
+    // stuck at the old 200px), shrink into short displays. Floor 64px.
+    {
+        int avail = vp.width < vp.height ? vp.width : vp.height;
+        int fillTarget = avail - 120;
+        if (fillTarget < 64) fillTarget = 64;
+        if (fillTarget > 300) fillTarget = 300;
+        targetSize = fillTarget;
+    }
 
     // Main wrapper (tappable for early-tap detection)
     lv_obj_t* wrapper = lv_obj_create(parent);
@@ -194,8 +208,8 @@ void reactionGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     lv_obj_set_flex_flow(wrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(wrapper, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(wrapper, pad, 0);
-    lv_obj_remove_flag(wrapper, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(wrapper, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(wrapper, false);
+    lv_obj_set_clickable(wrapper, true);
     lv_obj_add_event_cb(wrapper, onAreaClicked, LV_EVENT_CLICKED, ctx);
 
     // Status label
@@ -210,7 +224,7 @@ void reactionGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     lv_obj_set_style_radius(state->targetBtn, targetSize / 2, 0);
     lv_obj_set_style_border_width(state->targetBtn, 0, 0);
     lv_obj_set_style_shadow_width(state->targetBtn, 0, 0);
-    lv_obj_add_flag(state->targetBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(state->targetBtn, true);
     lv_obj_add_event_cb(state->targetBtn, onTargetClicked, LV_EVENT_CLICKED, ctx);
 
     lv_obj_t* tapLabel = lv_label_create(state->targetBtn);
@@ -221,6 +235,7 @@ void reactionGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     srand(static_cast<unsigned>(tt::kernel::getMillis()));
     state->round = 0;
     state->score = 0;
+    state->fastHits = 0;
     state->phase = ReactionGameState::Phase::WaitForTarget;
     startRound(ctx);
 }

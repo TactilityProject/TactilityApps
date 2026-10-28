@@ -62,7 +62,6 @@ file(GLOB_RECURSE SFX_ENGINE_FILES ../../../Libraries/SfxEngine/Source/*.c*)
 idf_component_register(
     SRCS ${SOURCE_FILES} ${SFX_ENGINE_FILES}
     INCLUDE_DIRS
-        ../../../Libraries/TactilityCpp/Include
         ../../../Libraries/SfxEngine/Include
     REQUIRES TactilitySDK esp_driver_i2s esp_driver_gpio
 )

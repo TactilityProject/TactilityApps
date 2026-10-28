@@ -31,19 +31,6 @@ bool getPreferencesPath(std::string& outPath) {
     return true;
 }
 
-uint32_t getToolbarHeight(UiDensity uiDensity) {
-    if (uiDensity == LVGL_UI_DENSITY_COMPACT) {
-        return lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 1.4f;
-    } else {
-        return lvgl_get_text_font_height(FONT_SIZE_LARGE) * 2.2f;
-    }
-}
-
-uint32_t getActionIconPadding(UiDensity uiDensity) {
-    auto toolbar_height = getToolbarHeight(uiDensity);
-    return (uiDensity != LVGL_UI_DENSITY_COMPACT) ? (uint32_t)(toolbar_height * 0.2f) : 8;
-}
-
 void loadHighScores(Context* ctx) {
     std::string path;
     if (!getPreferencesPath(path)) return;
@@ -156,7 +143,7 @@ void newGameBtnEvent(lv_event_t* e) {
 }
 
 void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     // Create game widget
@@ -176,7 +163,7 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
     lv_obj_set_style_pad_column(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ctx->scoreWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(ctx->scoreWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->scoreWrapper, false);
 
     // Create score label
     ctx->scoreLabel = lv_label_create(ctx->scoreWrapper);
@@ -188,28 +175,8 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
     lv_obj_set_style_text_color(ctx->scoreLabel, lv_palette_main(LV_PALETTE_AMBER), LV_PART_MAIN);
     lv_obj_add_event_cb(ctx->gameObject, twoElevenEventCb, LV_EVENT_VALUE_CHANGED, ctx);
 
-    auto ui_density = lvgl_get_ui_density();
-    auto toolbar_height = getToolbarHeight(ui_density);
-    auto icon_padding = getActionIconPadding(ui_density);
-
-    // Create new game button wrapper
-    ctx->newGameWrapper = lv_obj_create(tb);
-    lv_obj_set_width(ctx->newGameWrapper, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(ctx->newGameWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(ctx->newGameWrapper, icon_padding / 2, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(ctx->newGameWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ctx->newGameWrapper, 0, LV_STATE_DEFAULT);
-
     // Create new game button
-    lv_obj_t* newGameBtn = lv_btn_create(ctx->newGameWrapper);
-    lv_obj_set_size(newGameBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
-    lv_obj_set_style_pad_all(newGameBtn, 0, LV_STATE_DEFAULT);
-    lv_obj_align(newGameBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(newGameBtn, newGameBtnEvent, LV_EVENT_CLICKED, ctx);
-
-    lv_obj_t* btnIcon = lv_image_create(newGameBtn);
-    lv_image_set_src(btnIcon, LV_SYMBOL_REFRESH);
-    lv_obj_align(btnIcon, LV_ALIGN_CENTER, 0, 0);
+    lvgl_toolbar_add_text_button_action(tb, LV_SYMBOL_REFRESH, newGameBtnEvent, ctx);
 }
 
 } // namespace
@@ -218,7 +185,7 @@ void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
     ESP_LOGI("TwoEleven", "twoElevenCreateWidgets called, parent=%p", parent);
     auto* ctx = static_cast<Context*>(userData);
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     // Create toolbar
@@ -233,7 +200,7 @@ void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_row(ctx->mainWrapper, 2, LV_PART_MAIN);
     lv_obj_set_style_pad_column(ctx->mainWrapper, 2, LV_PART_MAIN);
     lv_obj_set_style_border_width(ctx->mainWrapper, 0, LV_PART_MAIN);
-    lv_obj_remove_flag(ctx->mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->mainWrapper, false);
 
     // Load high scores on first build
     if (!ctx->highScoresLoaded) {

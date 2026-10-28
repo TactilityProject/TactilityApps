@@ -2,7 +2,7 @@
  * @file SfxEngine.cpp
  * @brief Lightweight SFX-only audio engine implementation.
  *
- * Stripped-down version of SoundEngine — no BGM, no delay, no advanced synthesis.
+ * Stripped-down version of SoundEngine - no BGM, no delay, no advanced synthesis.
  * Sound definitions are in SfxDefinitions.h (inline loadSound).
  */
 
@@ -121,7 +121,7 @@ void SfxEngine::updateEnvelope(Voice& v) {
         return;
     } else if (v.envType == SfxEnvelopeType::Twang) {
         if (v.envSamplePos == 1) v.envLevel = 1.0f;
-        v.envLevel *= 0.992f;
+        v.envLevel *= v.envDecayMul;
         if (v.envLevel < 0.001f) {
             v.envLevel = 0.0f;
             v.envStage = EnvelopeStage::Off;
@@ -304,7 +304,9 @@ float SfxEngine::generateVoiceSample(Voice& v) {
 
 void SfxEngine::fillStereoBuffer(int16_t* buf, int samples) {
     for (int i = 0; i < samples; i++) {
-        processSequence();
+        for (int slot = 0; slot < MAX_CONCURRENT_SEQUENCES; slot++) {
+            processSequence(sequencePlayers_[slot], slot);
+        }
 
         float mix = 0.0f;
 
@@ -340,6 +342,7 @@ void SfxEngine::fillStereoBuffer(int16_t* buf, int samples) {
 
         // Convert to 16-bit stereo
         int16_t s = static_cast<int16_t>(mix * 28000);
+
         buf[i * 2] = s;
         buf[i * 2 + 1] = s;
     }
@@ -380,6 +383,11 @@ void SfxEngine::triggerNote(Voice& v, uint8_t midiNote, uint16_t durationMs,
         v.releaseSamples = (50 * SAMPLE_RATE) / 1000;
     }
 
+    // Twang decays exponentially. Derive the per-sample multiplier from a time constant so
+    // the decay is independent of the sample rate (0.992/sample was -60 dB in ~54 ms at 16 kHz).
+    float twangDecaySeconds = (decayMs > 0) ? (decayMs / 1000.0f) : 0.35f;
+    v.envDecayMul = powf(0.001f, 1.0f / (twangDecaySeconds * SAMPLE_RATE));
+
     // Reset pitch effects
     v.vibratoDepth = 0.0f;
     v.vibratoRate = 0.0f;
@@ -393,27 +401,52 @@ void SfxEngine::triggerNote(Voice& v, uint8_t midiNote, uint16_t durationMs,
 // Sequence Processing
 //==============================================================================
 
-void SfxEngine::processSequence() {
-    if (sequenceIndex_ >= sequenceLength_) return;
+void SfxEngine::processSequence(SequencePlayer& player, int slot) {
+    if (player.index >= player.length) return;
 
-    if (sequenceDelaySamples_ > 0) {
-        sequenceDelaySamples_--;
+    if (player.delaySamples > 0) {
+        player.delaySamples--;
         return;
     }
 
-    const SfxSequenceNote& note = sequence_[sequenceIndex_];
+    const SfxSequenceNote& note = player.notes[player.index];
 
-    if (note.voice < NUM_VOICES && note.pitch > 0) {
-        triggerNote(voices_[note.voice], note.pitch, note.durationMs,
+    // Each slot owns a stride of MAX_VOICES_PER_SEQUENCE voices, so layered
+    // definitions (notes with voice 1, e.g. Error's second layer) sound on
+    // their own voice instead of retriggering - and killing - voice 0's
+    // still-sounding envelope. Out-of-range voice indices are dropped: all
+    // shipped definitions stay within the stride.
+    if (note.pitch > 0 && note.voice < MAX_VOICES_PER_SEQUENCE) {
+        triggerNote(voices_[slot * MAX_VOICES_PER_SEQUENCE + note.voice], note.pitch, note.durationMs,
                     note.wave, note.volume, note.envType,
                     note.attackMs, note.decayMs, note.sustain, note.releaseMs);
     }
 
-    sequenceIndex_++;
+    player.index++;
 
-    if (sequenceIndex_ < sequenceLength_) {
-        sequenceDelaySamples_ = (sequence_[sequenceIndex_].delayMs * SAMPLE_RATE) / 1000;
+    if (player.index < player.length) {
+        player.delaySamples = (player.notes[player.index].delayMs * SAMPLE_RATE) / 1000;
     }
+}
+
+// Returns a free sequence-player slot (length == 0, i.e. finished or never started), or the
+// oldest-started slot if all MAX_CONCURRENT_SEQUENCES are still active - matching the engine's
+// existing "steal the longest-running thing" behavior elsewhere (e.g. voice allocation is
+// implicit per-note via the sequence's own voice index).
+int SfxEngine::allocateSequenceSlot() {
+    for (int i = 0; i < MAX_CONCURRENT_SEQUENCES; i++) {
+        if (sequencePlayers_[i].index >= sequencePlayers_[i].length) {
+            return i;
+        }
+    }
+
+    int oldest = 0;
+    for (int i = 1; i < MAX_CONCURRENT_SEQUENCES; i++) {
+        if (sequencePlayers_[i].startOrder < sequencePlayers_[oldest].startOrder) {
+            oldest = i;
+        }
+    }
+    return oldest;
 }
 
 //==============================================================================
@@ -428,12 +461,26 @@ void SfxEngine::audioTaskFunc(void* param) {
 
     ESP_LOGI(TAG, "Audio task started");
 
+    // Opens the stream from inside this task (matching DoomAudio's mixer task, which opens and
+    // writes from the same pinned, high-priority task context throughout) rather than the
+    // caller of start() opening it beforehand on a different task.
+    self->startOpenSucceeded_ = self->openStream();
+    xSemaphoreGive(self->startSemaphore_);
+    if (!self->startOpenSucceeded_) {
+        self->running_ = false;
+        if (self->stopSemaphore_ != nullptr) {
+            xSemaphoreGive(self->stopSemaphore_);
+        }
+        vTaskDelete(nullptr);
+        return;
+    }
+
     while (self->running_) {
         // Process queued messages (non-blocking)
         while (xQueueReceive(self->msgQueue_, &msg, 0) == pdTRUE) {
             switch (msg.type) {
                 case MsgType::PlaySound:
-                    self->loadSound(msg.sfxId);
+                    self->loadSound(msg.sfxId, self->allocateSequenceSlot());
                     break;
 
                 case MsgType::PlayNote:
@@ -457,7 +504,10 @@ void SfxEngine::audioTaskFunc(void* param) {
                         self->voices_[i].envStage = EnvelopeStage::Release;
                         self->voices_[i].envSamplePos = 0;
                     }
-                    self->sequenceLength_ = 0;
+                    for (auto& player : self->sequencePlayers_) {
+                        player.length = 0;
+                        player.index = 0;
+                    }
                     break;
             }
         }
@@ -483,15 +533,37 @@ void SfxEngine::audioTaskFunc(void* param) {
         error_t error = audio_stream_write(self->audioStreamHandle_, self->audioBuffer_,
                                             sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(100));
         if (error != ERROR_NONE) {
-            ESP_LOGE(TAG, "Audio stream write error");
-            self->running_ = false;
-            break;
+            // ERROR_INVALID_STATE/ERROR_RESOURCE here typically mean a hotplug codec change
+            // (e.g. USB audio attach/detach) re-bound the output direction out from under this
+            // handle - the old handle is now permanently dead, but a new one against whatever
+            // codec is current should work. Close it and retry a bounded number of times before
+            // giving up, rather than killing the task on the first hot-swap.
+            ESP_LOGW(TAG, "Audio stream write error (%s) - reopening", error_to_string(error));
+            audio_stream_close(self->audioStreamHandle_);
+            self->audioStreamHandle_ = nullptr;
+            self->audioStreamDevice_ = nullptr;
+
+            bool reopened = false;
+            for (int attempt = 0; attempt < 10 && self->running_; attempt++) {
+                if (self->openStream()) {
+                    reopened = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            if (!reopened) {
+                ESP_LOGE(TAG, "Failed to reopen audio stream after codec change - stopping");
+                self->running_ = false;
+                break;
+            }
         }
     }
 
-    // Flush silence
-    memset(self->audioBuffer_, 0, sizeof(self->audioBuffer_));
-    audio_stream_write(self->audioStreamHandle_, self->audioBuffer_, sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(50));
+    // Flush silence (skip if the stream is already gone - e.g. reopen failed above)
+    if (self->audioStreamHandle_ != nullptr) {
+        memset(self->audioBuffer_, 0, sizeof(self->audioBuffer_));
+        audio_stream_write(self->audioStreamHandle_, self->audioBuffer_, sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(50));
+    }
 
     ESP_LOGI(TAG, "Audio task exiting");
 
@@ -507,9 +579,7 @@ void SfxEngine::audioTaskFunc(void* param) {
 // Public API
 //==============================================================================
 
-bool SfxEngine::start() {
-    if (running_) return true;
-
+bool SfxEngine::openStream() {
     // Find audio stream device
     audioStreamDevice_ = nullptr;
     device_for_each_of_type(&AUDIO_STREAM_TYPE, &audioStreamDevice_, [](Device* device, void* context) {
@@ -538,28 +608,57 @@ bool SfxEngine::start() {
         return false;
     }
 
+    return true;
+}
+
+bool SfxEngine::start() {
+    if (running_) return true;
+
     // Create message queue
     msgQueue_ = xQueueCreate(8, sizeof(QueueMsg));
     if (msgQueue_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create message queue");
-        audio_stream_close(audioStreamHandle_);
-        audioStreamHandle_ = nullptr;
-        audioStreamDevice_ = nullptr;
         return false;
     }
 
-    // Start audio task
+    startSemaphore_ = xSemaphoreCreateBinary();
+    if (startSemaphore_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create start semaphore");
+        vQueueDelete(msgQueue_);
+        msgQueue_ = nullptr;
+        return false;
+    }
+
+    // Start audio task. It opens the stream itself as its first action (matching DoomAudio's
+    // mixer task, which opens and writes from the same pinned, high-priority task context
+    // throughout) and signals startSemaphore_ with the result.
     systemVolumePollCounter_ = 0; // poll the system volume immediately on the first iteration
     running_ = true;
-    BaseType_t result = xTaskCreate(audioTaskFunc, "sfxeng", 4096, this, 5, &task_);
+    // Pinned to core 0 at a high priority (matching DoomAudio's mixer task): USB Audio pulls
+    // from its ring buffer on a fixed real-time schedule regardless of what the app is doing,
+    // and silently drops audio if the ring runs dry. At the default priority/no pinning, the
+    // app's own game/render work could delay this task's next buffer-fill+write long enough to
+    // starve the ring - audible as playback "cutting in and out" when output is a USB device.
+    BaseType_t result = xTaskCreatePinnedToCore(audioTaskFunc, "sfxeng", 4096, this, 10, &task_, 0);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Failed to create audio task");
         running_ = false;
+        vSemaphoreDelete(startSemaphore_);
+        startSemaphore_ = nullptr;
         vQueueDelete(msgQueue_);
         msgQueue_ = nullptr;
-        audio_stream_close(audioStreamHandle_);
-        audioStreamHandle_ = nullptr;
-        audioStreamDevice_ = nullptr;
+        return false;
+    }
+
+    xSemaphoreTake(startSemaphore_, portMAX_DELAY);
+    vSemaphoreDelete(startSemaphore_);
+    startSemaphore_ = nullptr;
+
+    if (!startOpenSucceeded_) {
+        // The task already cleaned up running_/self-deleted on open failure.
+        vQueueDelete(msgQueue_);
+        msgQueue_ = nullptr;
+        task_ = nullptr;
         return false;
     }
 

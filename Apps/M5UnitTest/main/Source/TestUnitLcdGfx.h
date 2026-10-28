@@ -15,6 +15,7 @@ struct TestUnitLcdGfx {
     UnitPaHub  hub_;
     UnitLcd    lcd_;
     bool       usingPaHub_ = false;
+    uint8_t    channel_    = UnitPaHub::NO_CHANNEL;
 
     lv_obj_t*   lblPhase_  = nullptr;
     lv_obj_t*   lblLog_    = nullptr;

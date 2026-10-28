@@ -240,10 +240,10 @@ static void setUpdateButtonsDisabled(Context* ctx, bool disabled) {
 
 static void refreshWifiPrompt(Context* ctx) {
     if (isWifiRadioOn(ctx)) {
-        lv_obj_add_flag(ctx->enableWifiButton, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(ctx->enableWifiButton, true);
         setUpdateButtonsDisabled(ctx, false);
     } else {
-        lv_obj_clear_flag(ctx->enableWifiButton, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(ctx->enableWifiButton, false);
         setUpdateButtonsDisabled(ctx, true);
     }
 }
@@ -684,7 +684,7 @@ void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData) {
 
     ctx->isShown = false;
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t* toolbar = lvgl_toolbar_create(parent, "ESP-NOW Bridge");

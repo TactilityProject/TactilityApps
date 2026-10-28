@@ -6,6 +6,7 @@
 #include <tactility/drivers/uart_controller.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <lvgl/fonts.h>
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -88,6 +89,13 @@ void showConnectOverlay(TestUnitCardKB2* self) {
     self->connectOverlay_ = lv_obj_create(self->parentRef_);
     lv_obj_set_size(self->connectOverlay_, LV_PCT(100), LV_PCT(100));
     lv_obj_set_pos(self->connectOverlay_, 0, 0);
+    // The overlay is a child of the flex-column wrapper; without IGNORE_LAYOUT
+    // the flex parent treats it as another row and pushes it below the banner.
+    lv_obj_add_flag(self->connectOverlay_, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_style_bg_color(self->connectOverlay_, uiBgColor(), 0);
+    lv_obj_set_style_bg_opa(self->connectOverlay_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(self->connectOverlay_, 0, 0);
+    lv_obj_set_style_border_width(self->connectOverlay_, 0, 0);
     lv_obj_set_layout(self->connectOverlay_, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(self->connectOverlay_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(self->connectOverlay_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -137,6 +145,12 @@ void buildMainUI(TestUnitCardKB2* self) {
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(cont, 0, 0);
 
+    self->lblStatus_ = lv_label_create(cont);
+    lv_obj_set_style_text_font(self->lblStatus_, lvgl_get_text_font(FONT_SIZE_SMALL), 0);
+    lv_obj_set_style_text_color(self->lblStatus_, lv_color_hex(0x9AA4B2), 0);
+    lv_label_set_text(self->lblStatus_, "");
+    lv_obj_set_width(self->lblStatus_, LV_PCT(100));
+
     if (uiW() >= 200) buildGrid(self, cont);
 
     self->lblHistory_ = lv_label_create(cont);
@@ -152,8 +166,10 @@ void buildMainUI(TestUnitCardKB2* self) {
 // ---------------------------------------------------------------------------
 
 void selectIfNeeded(TestUnitCardKB2* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() &&
+        self->channel_ != UnitPaHub::NO_CHANNEL) {
+        self->hub_.select(self->channel_);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,21 +237,47 @@ void doConnectI2C(TestUnitCardKB2* self) {
     }
 
     bool ok = false;
-    if (self->unit_.begin(i2c)) {
-        self->usingPaHub_ = false;
-        ok = true;
-    } else if (self->hub_.begin(i2c)) {
-        self->usingPaHub_ = true;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+
+    // PaHub first: a PaHub occupies the Grove port, and a channel left selected
+    // by an earlier test can make a direct probe look valid until the next test
+    // switches the mux. The 0xF1 version read keeps the final result honest.
+    if (self->hub_.begin(i2c)) {
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !ok; ch++) {
-            self->hub_.select(ch);
-            if (self->unit_.begin(i2c)) ok = true;
+            if (!self->hub_.select(ch)) continue;
+            if (self->unit_.begin(i2c)) {
+                self->usingPaHub_ = true;
+                self->channel_    = ch;
+                ok = true;
+            }
         }
         if (!ok) self->hub_.deselect();
     }
+    if (!ok && self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+        self->channel_    = UnitPaHub::NO_CHANNEL;
+        ok = true;
+    }
 
     buildMainUI(self);
-    if (!ok) lv_label_set_text(self->lblHistory_, "CardKB2 not found");
-    else     self->timer_ = lv_timer_create(onTimer, 50, self);
+    if (!ok) {
+        lv_label_set_text(self->lblHistory_, "CardKB2 not found");
+        lv_label_set_text(self->lblStatus_, "I2C 0x5F: no response");
+        return;
+    }
+
+    char status[64];
+    if (self->usingPaHub_) {
+        snprintf(status, sizeof(status), "I2C 0x5F  CH%u  fw %u",
+                 (unsigned)self->channel_, (unsigned)self->unit_.firmwareVersion());
+    } else {
+        snprintf(status, sizeof(status), "I2C 0x5F  direct  fw %u",
+                 (unsigned)self->unit_.firmwareVersion());
+    }
+    lv_label_set_text(self->lblStatus_, status);
+    lv_label_set_text(self->lblHistory_, "Type on the keyboard...");
+    self->timer_ = lv_timer_create(onTimer, 50, self);
 }
 
 void doConnectUart(TestUnitCardKB2* self) {
@@ -246,12 +288,16 @@ void doConnectUart(TestUnitCardKB2* self) {
     buildMainUI(self);
     if (!uart) {
         lv_label_set_text(self->lblHistory_, "grove0_uart not found");
+        lv_label_set_text(self->lblStatus_, "UART: no grove0_uart");
         return;
     }
     if (!self->unit_.beginUart(uart)) {
         lv_label_set_text(self->lblHistory_, "UART open failed");
+        lv_label_set_text(self->lblStatus_, "UART 115200: open failed");
         return;
     }
+    lv_label_set_text(self->lblStatus_, "UART 115200 8N1");
+    lv_label_set_text(self->lblHistory_, "Type on the keyboard...");
     self->timer_ = lv_timer_create(onTimer, 50, self);
 }
 
@@ -279,6 +325,9 @@ void testUnitCardKB2Stop(TestUnitCardKB2* self) {
     if (self->timer_) { lv_timer_delete(self->timer_); self->timer_ = nullptr; }
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
     self->unit_.end();
+    self->usingPaHub_     = false;
+    self->channel_        = UnitPaHub::NO_CHANNEL;
+    self->lblStatus_      = nullptr;
     self->lblHistory_     = nullptr;
     self->connectOverlay_ = nullptr;
     self->activeBtn_      = nullptr;

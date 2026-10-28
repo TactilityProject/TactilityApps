@@ -1,8 +1,8 @@
 /*
- * UnitPaHub.h - M5Stack PaHub v2 I2C multiplexer (TCA9548A, addr 0x70)
+ * UnitPaHub.h - M5Stack PaHub v2 I2C multiplexer (PCA9548AP, addr 0x70)
  *
  * 6-channel I2C mux. Selecting a channel routes the downstream bus to that
- * port only. Selecting channel 255 (or calling deselect()) disables all ports.
+ * port only. Calling deselect() disables all ports.
  *
  * Usage:
  *   UnitPaHub hub;
@@ -37,6 +37,9 @@ public:
 
     // Select a single channel (0-5). Returns false on error.
     bool select(uint8_t channel);
+
+    // Read the control register back. Returns false on I2C error.
+    bool readChannel(uint8_t& mask);
 
     // Disable all channels.
     bool deselect();

@@ -206,7 +206,7 @@ static void onButtonPressed(lv_event_t* e) {
 void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(parent, 0, LV_STATE_DEFAULT);
 
@@ -225,7 +225,7 @@ void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_right(wrapper, 10, LV_PART_MAIN);
     lv_obj_set_style_pad_column(wrapper, 40, LV_PART_MAIN);
     lv_obj_set_style_border_width(wrapper, 0, 0);
-    lv_obj_remove_flag(wrapper, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(wrapper, false);
 
     ctx->displayLabel = lv_label_create(wrapper);
     lv_label_set_text(ctx->displayLabel, "0");

@@ -1,5 +1,6 @@
 #include "M5UnitTest.h"
 #include "TestListView.h"
+#include "UiScale.h"
 #include "TestUnit8Encoder.h"
 #include "TestUnitByteButton.h"
 #include "TestUnitJoystick2.h"
@@ -66,12 +67,16 @@ void stopActiveTest(Context* ctx) {
 void m5UnitTestCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_bg_color(parent, uiBgColor(), 0);
+    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(parent, 0, 0);
 
     ctx->wrapper = lv_obj_create(parent);
     lv_obj_set_width(ctx->wrapper, LV_PCT(100));
     lv_obj_set_flex_grow(ctx->wrapper, 1);
+    lv_obj_set_scrollable(ctx->wrapper, false);
     lv_obj_set_layout(ctx->wrapper, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(ctx->wrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(ctx->wrapper, 0, 0);

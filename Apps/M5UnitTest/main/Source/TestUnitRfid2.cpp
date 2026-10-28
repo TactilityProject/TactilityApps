@@ -12,8 +12,10 @@
 namespace {
 
 void selectIfNeeded(TestUnitRfid2* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() &&
+        self->channel_ != UnitPaHub::NO_CHANNEL) {
+        self->hub_.select(self->channel_);
+    }
 }
 
 void showCard(TestUnitRfid2* self, const UnitRfid2::Uid& uid) {
@@ -38,8 +40,8 @@ void showCard(TestUnitRfid2* self, const UnitRfid2::Uid& uid) {
              uid.sak, uid.atqa[0], uid.atqa[1]);
     lv_label_set_text(self->lblSak_, sakBuf);
 
-    lv_obj_add_flag(self->idleGroup_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(self->cardGroup_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(self->idleGroup_, true);
+    lv_obj_set_hidden(self->cardGroup_, false);
     self->unit_.haltCard();
 }
 
@@ -75,8 +77,8 @@ void onPulseTimer(lv_timer_t* t) {
 void onClear(lv_event_t* e) {
     auto* self = static_cast<TestUnitRfid2*>(lv_event_get_user_data(e));
     self->cardShown_ = false;
-    lv_obj_remove_flag(self->idleGroup_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(self->cardGroup_,   LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(self->idleGroup_, false);
+    lv_obj_set_hidden(self->cardGroup_,   true);
 }
 
 } // namespace
@@ -129,12 +131,17 @@ void testUnitRfid2Start(TestUnitRfid2* self, lv_obj_t* parent, Context* app) {
     lv_obj_set_style_bg_color(self->circle_, LV_COLOR_MAKE(0x20, 0xC0, 0x50), 0);
     lv_obj_set_style_bg_opa(self->circle_, self->pulseOpa_, 0);
     lv_obj_set_style_border_width(self->circle_, 0, 0);
-    lv_obj_remove_flag(self->circle_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(self->circle_, false);
 
     // "Tap a tag/card..." label
     lv_obj_t* tapLabel = lv_label_create(self->idleGroup_);
     lv_obj_set_style_text_font(tapLabel, lvgl_get_text_font(font), 0);
     lv_label_set_text(tapLabel, "Tap a tag/card...");
+
+    self->lblReader_ = lv_label_create(self->idleGroup_);
+    lv_obj_set_style_text_font(self->lblReader_, lvgl_get_text_font(FONT_SIZE_SMALL), 0);
+    lv_obj_set_style_text_color(self->lblReader_, lv_color_hex(0x9AA4B2), 0);
+    lv_label_set_text(self->lblReader_, "");
 
     // ── Card info group ───────────────────────────────────────────────────────
     self->cardGroup_ = lv_obj_create(content);
@@ -147,7 +154,7 @@ void testUnitRfid2Start(TestUnitRfid2* self, lv_obj_t* parent, Context* app) {
     lv_obj_set_style_pad_row(self->cardGroup_, rowGap, 0);
     lv_obj_set_style_bg_opa(self->cardGroup_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(self->cardGroup_, 0, 0);
-    lv_obj_add_flag(self->cardGroup_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(self->cardGroup_, true);
 
     self->lblUid_ = lv_label_create(self->cardGroup_);
     lv_obj_set_style_text_font(self->lblUid_,
@@ -172,24 +179,49 @@ void testUnitRfid2Start(TestUnitRfid2* self, lv_obj_t* parent, Context* app) {
 
     // ── Device discovery ─────────────────────────────────────────────────────
     Device* i2c = findGroveI2cDevice();
-    if (!i2c) return;
-
-    if (self->unit_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
-        self->usingPaHub_ = true;
-        bool found = false;
-        for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->unit_.begin(i2c)) found = true;
-        }
-        if (!found) {
-            self->hub_.deselect();
-            return;
-        }
-    } else {
+    if (!i2c) {
+        lv_label_set_text(self->lblReader_, "No I2C bus");
         return;
     }
+
+    bool found = false;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+
+    // PaHub first. A PaHub occupies the Grove port, and a channel left selected
+    // by an earlier test can make a direct probe look valid until the next test
+    // switches the mux. The VersionReg read keeps the final result honest.
+    if (self->hub_.begin(i2c)) {
+        for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
+            if (!self->hub_.select(ch)) continue;
+            if (self->unit_.begin(i2c)) {
+                self->usingPaHub_ = true;
+                self->channel_    = ch;
+                found = true;
+            }
+        }
+        if (!found) self->hub_.deselect();
+    }
+    if (!found && self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+        self->channel_    = UnitPaHub::NO_CHANNEL;
+        found = true;
+    }
+
+    if (!found) {
+        lv_label_set_text(self->lblReader_, "I2C 0x28: no response");
+        return;
+    }
+
+    char status[80];
+    if (self->usingPaHub_) {
+        snprintf(status, sizeof(status), "I2C 0x28  CH%u  fw 0x%02X",
+                 (unsigned)self->channel_, (unsigned)self->unit_.firmwareVersion());
+    } else {
+        snprintf(status, sizeof(status), "I2C 0x28  direct  fw 0x%02X",
+                 (unsigned)self->unit_.firmwareVersion());
+    }
+    lv_label_set_text(self->lblReader_, status);
 
     self->timer_      = lv_timer_create(onTimer,      100, self);
     self->pulseTimer_ = lv_timer_create(onPulseTimer,  60, self);
@@ -200,7 +232,9 @@ void testUnitRfid2Stop(TestUnitRfid2* self) {
     if (self->pulseTimer_) { lv_timer_delete(self->pulseTimer_);  self->pulseTimer_ = nullptr; }
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
 
-    self->cardShown_ = false;
-    self->idleGroup_ = self->circle_ = nullptr;
-    self->cardGroup_ = self->lblUid_ = self->lblType_ = self->lblSak_ = nullptr;
+    self->cardShown_  = false;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+    self->idleGroup_  = self->circle_ = self->lblReader_ = nullptr;
+    self->cardGroup_  = self->lblUid_ = self->lblType_ = self->lblSak_ = nullptr;
 }

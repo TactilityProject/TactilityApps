@@ -10,24 +10,75 @@ static inline void packRgb(uint8_t* dst, uint32_t rgb) {
 }
 
 bool Unit8Encoder::begin(Device* dev, uint8_t addr) {
+    dev_  = nullptr;
+    addr_ = 0;
     if (!dev || !device_is_ready(dev)) return false;
     if (!unitProbe(dev, addr)) {
-        ESP_LOGW(TAG, "8Encoder not found at 0x%02X", addr);
+        ESP_LOGD(TAG, "8Encoder not found at 0x%02X", addr);
+        return false;
+    }
+    // A floating or marginal downstream bus (common behind a PaHub with no
+    // device on the selected channel) can make a write-only presence probe
+    // look successful for every address. Read the firmware version and the
+    // unit's own address register to confirm that this really is an 8Encoder
+    // before touching LEDs or counters.
+    uint8_t version = 0;
+    bool identityOk = false;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint8_t address = 0;
+        version = 0;
+        bool versionOk = unitReadReg(dev, addr, REG_VERSION, &version, 1);
+        vTaskDelay(pdMS_TO_TICKS(1));
+        bool addressOk = unitReadReg(dev, addr, REG_ADDRESS, &address, 1);
+        if (versionOk && addressOk &&
+            version >= 1 && version <= 15 && address == addr) {
+            identityOk = true;
+            break;
+        }
+        if (attempt + 1 < 3) vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (!identityOk) {
+        // The presence probe succeeded, so this is not an empty channel: either
+        // the bus is marginal or a different device answered 0x41. Surface it
+        // at warning level instead of silently hiding it.
+        ESP_LOGW(TAG, "8Encoder identity check failed at 0x%02X", addr);
         return false;
     }
     dev_  = dev;
     addr_ = addr;
+    // The STM32 briefly stops listening between the presence probe and the
+    // first data write. Retry the init writes so a healthy unit isn't rejected
+    // just because it was still re-arming.
+    auto writeWithRetry = [&](uint8_t reg, const uint8_t* data, uint16_t len) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (unitWriteReg(dev_, addr_, reg, data, len)) return true;
+            if (attempt + 1 < 3) vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        return false;
+    };
     // Turn encoder LEDs off
     uint8_t off[ENCODER_LED_COUNT * 3] = {};
-    if (!unitWriteReg(dev_, addr_, REG_LED, off, sizeof(off)))
+    bool ledOk = writeWithRetry(REG_LED, off, sizeof(off));
+    if (!ledOk)
         ESP_LOGW(TAG, "8Encoder LED init write failed at 0x%02X", addr_);
     // Turn switch LED off
     uint8_t offSw[3] = {};
-    if (!unitWriteReg(dev_, addr_, REG_SWITCH_LED, offSw, 3))
+    bool switchOk = writeWithRetry(REG_SWITCH_LED, offSw, 3);
+    if (!switchOk)
         ESP_LOGW(TAG, "8Encoder switch LED init write failed at 0x%02X", addr_);
+    // A device can ACK the presence probe but reject writes (for example a
+    // different unit at 0x41). If neither register accepts data, leave this
+    // channel for the scan to try the next one instead of latching onto a
+    // device that isn't an 8Encoder.
+    if (!ledOk && !switchOk) {
+        ESP_LOGW(TAG, "8Encoder not responding at 0x%02X", addr_);
+        dev_  = nullptr;
+        addr_ = 0;
+        return false;
+    }
     // Poison cache so first flushLeds() always sends
     memset(ledColor_, 0xFF, sizeof(ledColor_));
-    ESP_LOGI(TAG, "8Encoder ready at 0x%02X", addr_);
+    ESP_LOGI(TAG, "8Encoder ready at 0x%02X (fw %u)", addr_, (unsigned)version);
     return true;
 }
 

@@ -14,9 +14,31 @@ Each entry links to the official M5Stack docs and the upstream Arduino library.
 | Channels | 6 (CH0-CH5) |
 | Driver class | `UnitPaHub` |
 
-PCA9548A-based I2C multiplexer. Allows up to 6 I2C devices with the same
-address to share a single bus. Select a channel before talking to a device
-behind it; deselect (mask = 0) when done.
+PCA9548AP-based I2C multiplexer. The chip supports eight channels, but this unit
+wires only six (CH0-CH5), so up to 6 I2C devices with the same address can share
+a single bus. Select a channel before talking to a device behind it; deselect
+(mask = 0) when done.
+
+`select()` skips the write when the requested channel is already cached as
+active (writing the same mask again briefly reconnects the downstream bus),
+and waits 3 ms after a real channel change for the bus to settle. It reads the
+control register back for diagnostics, but does not fail on a mismatch: a
+downstream STM32 unit can hold SCL low and block the upstream readback even
+though the mux latched correctly. `deselect()` writes mask 0 and requires a
+0x00 readback, because with no channel selected the upstream bus should be
+free; this also prevents a non-mux device at 0x70 from passing `begin()`. A
+failed write or deselect invalidates the cached channel, so the next
+`select()` always writes the mask again.
+
+The M5UnitTest PaHub scanner probes one channel per tap. It waits 20 ms after
+selecting a channel and goes straight to the identity reads: a mux readback at
+that point can be blocked by downstream clock stretching. If a full channel
+scan misses, it disconnects the channel, waits, re-selects it, and scans once
+more before reporting "No devices found". Every address in `KNOWN_UNIT_ADDRS`
+uses an identity read: firmware version for
+8Encoder/Scroll/ByteButton/Joystick2/CardKB2, four-byte ID for the LCD, and the
+MFRC522/WS1850S `VersionReg` for RFID2. Only an identity match is reported as
+found.
 
 - Docs: https://docs.m5stack.com/en/unit/Unit-PaHub%20v2.1
 - Repo: https://github.com/m5stack/M5Unit-HUB
@@ -25,7 +47,7 @@ behind it; deselect (mask = 0) when done.
 
 | Addr | Operation | Description |
 |------|-----------|-------------|
-| 0x70 | W: bitmask | Enable channels (bit i = channel i). Write 0x00 to deselect all. |
+| 0x70 | R/W: bitmask | Enable channels (bit i = channel i). Write 0x00 to deselect all. Read back to verify the latch. |
 
 ---
 
@@ -49,6 +71,11 @@ reboots.
 
 **I2C protocol:** single I2C read (no register write) returns current key ASCII
 value. 0x00 = no key or I2C error (indistinguishable by design).
+
+**Identity register:** write `0xF1`, then read one byte to get the firmware
+version (current firmware returns `0x02`). `UnitCardKB2::begin()` requires a
+version in the range 1-15, and `firmwareVersion()` exposes it. Reading `0xF1`
+does not consume a queued key.
 
 **UART protocol:** 5-byte frames: `AA 03 [KEY_ID] [KEY_STATE] [checksum]`
 - `KEY_ID` = row × 11 + col (0–43, rows 0–3, cols 0–10)
@@ -81,6 +108,11 @@ value. 0x00 = no key or I2C error (indistinguishable by design).
 Internal ESP32 bridges I2C commands to the ST7789V2. Commands are
 fire-and-forget (the ESP32 processes them asynchronously). For bulk pixel
 writes, poll `bufferRemaining()` (register 0x09) to avoid overflow.
+`begin()` first reads the four-byte ID (`0x04`; must start `0x77 0x89`) and
+retries up to three times. This identity check prevents a false ACK on a
+floating PaHub channel from being treated as an LCD. It then retries the
+brightness and rotation commands up to three times, because the controller can
+still be busy when a PaHub channel has just been switched.
 
 - Docs: https://docs.m5stack.com/en/unit/lcd
 - M5GFX repo: https://github.com/m5stack/M5GFX
@@ -89,6 +121,7 @@ writes, poll `bufferRemaining()` (register 0x09) to avoid overflow.
 
 | Cmd | Bytes | Description |
 |-----|-------|-------------|
+| 0x04 | (read 4 bytes) | READ_ID: `0x77 0x89 [version hi] [version lo]` |
 | 0x22 | [brightness] | Set backlight (0=off, 255=max) |
 | 0x36 | [rotation] | Set rotation (0=portrait, 1=landscape, 2=portrait flip, 3=landscape flip) |
 | 0x6A | [x0][y0][x1][y1][hi][lo] | Fill rect with RGB565 inline |
@@ -206,13 +239,20 @@ and one RGB LED for the switch. Total 9 addressable LEDs.
 | 0x60 | R | uint8_t | Toggle switch state (0=off, 1=on) |
 | 0x70 + i*3 | R/W | 3 bytes | LED [R, G, B] for encoder i (i = 0-7) |
 | 0x88 | R/W | 3 bytes | LED [R, G, B] for toggle switch (LED8) |
-| 0xF0 | R | uint8_t | Firmware version |
+| 0xFE | R | uint8_t | Firmware version |
 | 0xFF | R/W | uint8_t | I2C address |
 
 Hardware counts 4 pulses per detent; the driver divides by 4 to give
 detent-level deltas. Counter range: -2,147,483,648 to +2,147,483,647.
 
 **LED indices in `Unit8Encoder`:** 0-7 = encoder LEDs, 8 = switch LED.
+
+`begin()` validates the device by reading the firmware-version register (`0xFE`,
+accepted range 1-15) and the address register (`0xFF`, must match the probed
+address). It then retries the encoder-LED and switch-LED init writes up to three
+times. This identity check is what prevents a phantom ACK on a floating PaHub
+channel from latching the scan onto the wrong port; it rejects the device only
+if the LED writes still fail after the identity check passes.
 
 ---
 
@@ -320,6 +360,10 @@ Classic, MIFARE Ultralight, and ISO 14443-A cards.
 - The MFRC522 supports SPI, I2C, and UART; this unit hardwires I2C mode.
 - UID length: 4 bytes (single-size) or 7 bytes (double-size) depending on card.
 - Always check `readUID()` return length; 0 = no card present or read error.
+- Identity register: `0x37` (`VersionReg`). The RFID2 Unit's WS1850S reports
+  `0x15`; MFRC522/PN512-family readers report `0x88`, `0x90`, `0x91`, `0x92`,
+  or `0x12`. `0x00`/`0xFF` mean no valid reader.
+  `UnitRfid2::firmwareVersion()` exposes the value read during `begin()`.
 
 ---
 
@@ -327,14 +371,18 @@ Classic, MIFARE Ultralight, and ISO 14443-A cards.
 
 All drivers use `UnitCommon.h` helpers:
 
-- `unitProbe(dev, addr)` - checks for device ACK at address
-- `unitReadReg(dev, addr, reg, buf, len)` - STM32-style: write reg byte, then read
+- `unitProbe(dev, addr)` - performs a real identity read and checks for a valid response, retrying up to five times (first success wins). It reads the PaHub control register, a firmware-version register (`0xFE`, version 1-15) for the 8Encoder/Scroll/ByteButton/Joystick2, a four-byte ID (`0x04` -> `0x77 0x89 ...`) for the LCD, CardKB2 version `0xF1` (1-15), and RFID2 `VersionReg` `0x37` (WS1850S `0x15` or an MFRC522-family value). It does not use the unreliable ESP-IDF `i2c_master_probe()` path.
+- `unitReadReg(dev, addr, reg, buf, len)` - STM32-style: write reg byte, STOP, 3 ms delay, then read
 - `unitWriteReg(dev, addr, reg, buf, len)` - write reg byte followed by data
 - `UNIT_I2C_TIMEOUT_MS` = 20 ms default timeout
+- `UNIT_I2C_PROBE_TIMEOUT_MS` = 10 ms per probe attempt
+- `UNIT_I2C_PROBE_ATTEMPTS` = 5
+- `UNIT_I2C_PROBE_RETRY_DELAY_MS` = 2 ms between failed attempts
 
 The STM32-based units (8Encoder, ByteButton, Scroll, Joystick2, CardKB2)
-require a 2 ms delay between write (reg select) and read in some cases. This
-is handled internally by the I2C controller driver.
+require a 3 ms delay between the register-pointer write and the read. This
+is handled by `unitReadReg()`. RFID2 uses the same pointer-write/read sequence
+for its MFRC522 registers.
 
-When using the PaHub, always call `selectIfNeeded()` **before** `isPresent()`
-to ensure the correct channel is active for the ACK check.
+When using the PaHub, always call `select()` **before** probing or accessing
+a unit, so the correct channel is active for the ACK check.

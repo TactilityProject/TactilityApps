@@ -144,6 +144,20 @@ void mixerTask(void* /*arg*/) {
     uint32_t yieldCounter = 0;
 
     while (!stopRequested.load()) {
+        if (outputHandle == nullptr) {
+            // Output died (hotplug) and the last reopen failed: retry before
+            // rendering anything. Rendering first would advance the MIDI queue
+            // and consume SFX channel positions for audio nobody will ever
+            // hear - and the publish-back below would then throw that progress
+            // away. The back-off keeps the pace identical to the post-failure
+            // path rather than spinning the reopen call every iteration.
+            error_t reopenError = audio_stream_open_output(streamDevice, &config, &outputHandle);
+            if (reopenError != ERROR_NONE) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            continue;
+        }
+
         // Music forms the base layer: DG_OPL_Render() fills the whole buffer
         // (writing silence when nothing is playing), so no memset is needed.
         // It also advances the MIDI timer queue by exactly MIXBUFFER_SAMPLES
@@ -238,11 +252,21 @@ void mixerTask(void* /*arg*/) {
         error_t writeError = audio_stream_write(outputHandle, outBuffer, sizeof(outBuffer), &bytesWritten, pdMS_TO_TICKS(500));
 
         if (writeError != ERROR_NONE) {
+            // ERROR_INVALID_STATE/ERROR_RESOURCE here typically mean a hotplug codec change
+            // (e.g. USB audio attach/detach) re-bound the output direction to a different
+            // codec device - the old handle is now permanently dead. Close and reopen against
+            // whatever codec is current instead of retrying the same dead handle forever.
+            ESP_LOGW(TAG, "Mixer write failed (%s) - reopening", error_to_string(writeError));
+            audio_stream_close(outputHandle);
+            outputHandle = nullptr;
+            error_t reopenError = audio_stream_open_output(streamDevice, &config, &outputHandle);
+            if (reopenError != ERROR_NONE) {
+                ESP_LOGE(TAG, "Failed to reopen output stream: %s", error_to_string(reopenError));
+            }
             // A failing write returns immediately rather than blocking for the
             // buffer to drain. Without a delay here this loop spins flat out at
             // near-top priority and starves the idle task on this core, which
             // trips the task watchdog. Back off so the system stays alive.
-            ESP_LOGW(TAG, "Mixer write failed: %s", error_to_string(writeError));
             vTaskDelay(pdMS_TO_TICKS(10));
         } else if (bytesWritten < sizeof(outBuffer)) {
             // Short write: the stream accepted the data without blocking, so
@@ -261,7 +285,9 @@ void mixerTask(void* /*arg*/) {
 
     }
 
-    audio_stream_close(outputHandle);
+    if (outputHandle) {
+        audio_stream_close(outputHandle);
+    }
     xSemaphoreGive(stoppedSem);
     vTaskDelete(nullptr);
 }

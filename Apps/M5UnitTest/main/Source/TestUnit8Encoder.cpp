@@ -5,13 +5,14 @@
 #include <tactility/device.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <lvgl/fonts.h>
+#include <esp_log.h>
 #include <cstring>
 
 namespace {
 
 void selectIfNeeded(TestUnit8Encoder* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() && self->encChannel_ != UnitPaHub::NO_CHANNEL)
+        self->hub_.select(self->encChannel_);
 }
 
 void update(TestUnit8Encoder* self) {
@@ -56,6 +57,8 @@ void onTimer(lv_timer_t* t) {
 
 void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* app) {
     self->app_ = app;
+    self->usingPaHub_ = false;
+    self->encChannel_ = UnitPaHub::NO_CHANNEL;
     memset(self->counters_,  0, sizeof(self->counters_));
     memset(self->ledColors_, 0, sizeof(self->ledColors_));
 
@@ -69,7 +72,7 @@ void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* ap
 
     const lv_font_t* fnt = lvgl_get_text_font(uiFont());
 
-    // Status label shown when not connected — sits above the grid at full width
+    // Status label shown when not connected - sits above the grid at full width
     self->lblStatus_ = lv_label_create(parent);
     lv_obj_set_style_text_font(self->lblStatus_, fnt, 0);
     lv_obj_set_width(self->lblStatus_, LV_PCT(100));
@@ -99,7 +102,7 @@ void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* ap
         lv_obj_set_style_pad_column(card, uiRowGap(), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(card, 0, 0);
-        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(card, false);
         return card;
     };
     auto makeDot = [&](lv_obj_t* parent) -> lv_obj_t* {
@@ -109,7 +112,7 @@ void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* ap
         lv_obj_set_style_bg_color(dot, lv_color_hex(0x333333), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(dot, false);
         return dot;
     };
 
@@ -148,20 +151,29 @@ void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* ap
         return;
     }
 
-    if (self->enc_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
+    if (self->hub_.begin(i2c)) {
+        // A PaHub occupies the Grove port, so every unit is behind it. Scan the
+        // hub before trying a direct address: a channel left selected by an
+        // earlier test would otherwise look like a directly-connected unit and
+        // then fail as soon as the mux is switched.
         self->usingPaHub_ = true;
         bool found = false;
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->enc_.begin(i2c)) found = true;
+            if (!self->hub_.select(ch)) continue;
+            ESP_LOGI("M5UnitTest", "Trying 8Encoder on PaHub CH%u", (unsigned)ch);
+            if (self->enc_.begin(i2c)) {
+                found = true;
+                self->encChannel_ = ch;
+                ESP_LOGI("M5UnitTest", "8Encoder found on PaHub CH%u", (unsigned)ch);
+            }
         }
         if (!found) {
             self->hub_.deselect();
             lv_label_set_text(self->lblStatus_, "8Encoder not found");
             return;
         }
+    } else if (self->enc_.begin(i2c)) {
+        self->usingPaHub_ = false;
     } else {
         lv_label_set_text(self->lblStatus_, "8Encoder not found");
         return;
@@ -176,6 +188,8 @@ void testUnit8EncoderStop(TestUnit8Encoder* self) {
     selectIfNeeded(self);
     if (self->enc_.isPresent()) self->enc_.setAllLeds(0x000000);
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->encChannel_ = UnitPaHub::NO_CHANNEL;
+    self->usingPaHub_ = false;
     self->lblStatus_ = nullptr;
     memset(self->lblCounters_, 0, sizeof(self->lblCounters_));
     memset(self->dotButtons_,  0, sizeof(self->dotButtons_));

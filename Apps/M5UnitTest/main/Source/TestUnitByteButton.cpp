@@ -10,8 +10,10 @@
 namespace {
 
 void selectIfNeeded(TestUnitByteButton* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() &&
+        self->channel_ != UnitPaHub::NO_CHANNEL) {
+        self->hub_.select(self->channel_);
+    }
 }
 
 void update(TestUnitByteButton* self) {
@@ -83,7 +85,7 @@ void testUnitByteButtonStart(TestUnitByteButton* self, lv_obj_t* parent, Context
         lv_obj_set_style_bg_opa(sq, LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(sq, lv_color_hex(0x444444), 0);
         lv_obj_set_style_border_width(sq, 1, 0);
-        lv_obj_remove_flag(sq, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(sq, false);
         self->indicators_[i] = sq;
     }
 
@@ -98,22 +100,30 @@ void testUnitByteButtonStart(TestUnitByteButton* self, lv_obj_t* parent, Context
         return;
     }
 
-    if (self->unit_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
-        self->usingPaHub_ = true;
-        bool found = false;
+    bool found = false;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+
+    // PaHub first. A channel left selected by an earlier test can make a
+    // direct probe succeed through the mux and then break on the next switch.
+    if (self->hub_.begin(i2c)) {
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->unit_.begin(i2c)) found = true;
+            if (!self->hub_.select(ch)) continue;
+            if (self->unit_.begin(i2c)) {
+                self->usingPaHub_ = true;
+                self->channel_    = ch;
+                found = true;
+            }
         }
-        if (!found) {
-            self->hub_.deselect();
-            for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) lv_obj_set_style_bg_color(self->indicators_[i], lv_color_hex(TestUnitByteButton::COLOR_ERROR), 0);
-            lv_label_set_text(hint, "ByteButton not found");
-            return;
-        }
-    } else {
+        if (!found) self->hub_.deselect();
+    }
+    if (!found && self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+        self->channel_    = UnitPaHub::NO_CHANNEL;
+        found = true;
+    }
+
+    if (!found) {
         for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) lv_obj_set_style_bg_color(self->indicators_[i], lv_color_hex(TestUnitByteButton::COLOR_ERROR), 0);
         lv_label_set_text(hint, "ByteButton not found");
         return;
@@ -130,5 +140,7 @@ void testUnitByteButtonStop(TestUnitByteButton* self) {
         for (int i = 0; i < TestUnitByteButton::BTN_COUNT; i++) self->unit_.setLed((uint8_t)i, 0x000000);
     }
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
     memset(self->indicators_, 0, sizeof(self->indicators_));
 }

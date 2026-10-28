@@ -113,14 +113,17 @@ void onResetClicked([[maybe_unused]] lv_event_t* e) {
         "Reset",
         "Cancel",
     };
-    app_start_for_result("AlertDialog", 4, argv, ctx->appInstanceId, &ctx->resetDialogId);
+    app_start_for_result("tactility.alertdialog", 4, argv, ctx->appInstanceId, &ctx->resetDialogId);
 }
 
 void onTimerUpdate(TimerHandle_t timer) {
     auto* ctx = static_cast<Context*>(pvTimerGetTimerID(timer));
 
-    // Hold mutex for entire callback so tamaTacTeardown() can block until we finish
-    if (ctx->timerMutex == nullptr || xSemaphoreTake(ctx->timerMutex, 0) != pdTRUE) return;
+    // Hold mutex for entire callback so tamaTacTeardown() can block until we finish.
+    // Brief wait instead of a zero-timeout poll: an action handler holding the
+    // mutex would otherwise make us skip this whole 30s tick (no save, no
+    // achievements, no death recording). 200ms is nothing against the period.
+    if (ctx->timerMutex == nullptr || xSemaphoreTake(ctx->timerMutex, pdMS_TO_TICKS(200)) != pdTRUE) return;
 
     bool wasAlive = !ctx->petLogic.isDead();
     // Capture stage before update() - checkHealth() sets stage to Ghost on death
@@ -201,7 +204,7 @@ void tamaTacInit(Context* ctx) {
 void tamaTacCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_pad_row(parent, 0, 0);
@@ -218,7 +221,7 @@ void tamaTacCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_all(ctx->wrapperWidget, 0, 0);
     lv_obj_set_style_border_width(ctx->wrapperWidget, 0, 0);
     lv_obj_set_style_bg_opa(ctx->wrapperWidget, LV_OPA_TRANSP, 0);
-    lv_obj_remove_flag(ctx->wrapperWidget, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->wrapperWidget, false);
 
     // Rebuild whichever view was active. On first creation this is None (-> Main). On a
     // resurface after this window was buried (e.g. by the reset AlertDialog, or by an unrelated
@@ -387,13 +390,17 @@ void tamaTacHandlePlayAction(Context* ctx) {
     bool canPlay = !ctx->petLogic.isDead();
     DayPhase phase = canPlay ? ctx->petLogic.getDayPhase() : DayPhase::Day;
 
-    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
-
+    // Achievement storage is serialized by timerMutex: unlock while held
     if (canPlay) {
         achievementsUnlock(AchievementId::FirstPlay);
         if (phase == DayPhase::Night) {
             achievementsUnlock(AchievementId::NightOwl);
         }
+    }
+
+    if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
+
+    if (canPlay) {
         if (rand() % 2 == 0) {
             showPatternGame(ctx);
         } else {
@@ -436,9 +443,10 @@ void tamaTacOnReactionGameComplete(Context* ctx, int score, bool won) {
     ctx->petLogic.applyPlayResult(clampedScore, REACTION_GAME_MAX_ROUNDS);
     ctx->petLogic.saveState();
 
+    if (won) achievementsUnlock(AchievementId::PerfectGame);
+
     if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 
-    if (won) achievementsUnlock(AchievementId::PerfectGame);
     if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Play);
 
     showMainView(ctx);
@@ -451,9 +459,10 @@ void tamaTacOnPatternGameComplete(Context* ctx, int score, bool won) {
     ctx->petLogic.applyPlayResult(clampedScore, PATTERN_GAME_MAX_ROUNDS);
     ctx->petLogic.saveState();
 
+    if (won) achievementsUnlock(AchievementId::PerfectGame);
+
     if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
 
-    if (won) achievementsUnlock(AchievementId::PerfectGame);
     if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Play);
 
     showMainView(ctx);

@@ -57,6 +57,9 @@ int main(int argc, char* argv[]) {
                             ctx->petLogic.reset();
                             ctx->petLogic.saveState();
                             ctx->lastKnownStage = LifeStage::Egg;
+                            ctx->lastPetTime = 0;  // Clear tap cooldown for the new pet
+                            // Achievements + cemetery intentionally survive: they
+                            // record the player's history, not this pet's life.
                             ctx->pendingResetUI = true;  // Defer UI update to MainView's anim timer
 
                             if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);

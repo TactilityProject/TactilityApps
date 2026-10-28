@@ -18,7 +18,7 @@ lv_obj_t* testViewCreateToolbar(lv_obj_t* parent, Context* app, const char* titl
 
 void testViewCreateBanner(lv_obj_t* parent, const char* unitName,
                           const char* ifaceBadge, lv_color_t accentColor) {
-    lv_coord_t bannerH = uiH() < 200 ? 16 : 22;
+    lv_coord_t bannerH = uiH() < 200 ? 16 : (uiW() >= UI_LARGE_THRESHOLD ? 32 : 24);
 
     lv_obj_t* banner = lv_obj_create(parent);
     lv_obj_set_width(banner, LV_PCT(100));
@@ -32,7 +32,7 @@ void testViewCreateBanner(lv_obj_t* parent, const char* unitName,
     lv_obj_set_layout(banner, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(banner, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(banner, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(banner, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(banner, false);
 
     // Unit name label (left-aligned)
     lv_obj_t* nameLabel = lv_label_create(banner);
@@ -52,7 +52,7 @@ void testViewCreateBanner(lv_obj_t* parent, const char* unitName,
     lv_obj_set_style_radius(pill, 4, 0);
     lv_obj_set_style_pad_hor(pill, 4, 0);
     lv_obj_set_style_pad_ver(pill, 0, 0);
-    lv_obj_remove_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(pill, false);
 
     lv_obj_t* badgeLabel = lv_label_create(pill);
     lv_label_set_text(badgeLabel, ifaceBadge);

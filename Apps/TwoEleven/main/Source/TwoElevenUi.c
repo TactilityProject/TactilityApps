@@ -130,8 +130,8 @@ lv_obj_t * twoeleven_create(lv_obj_t * parent, uint16_t matrix_size)
     lv_obj_set_style_border_width(game_2048->btnm, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(game_2048->btnm, ELEVENTWO_BG_COLOR, LV_PART_MAIN);
     lv_group_remove_obj(game_2048->btnm);
-    lv_obj_add_flag(game_2048->btnm, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
-    lv_obj_remove_flag(game_2048->btnm, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_send_draw_task_events(game_2048->btnm, true);
+    lv_obj_set_gesture_bubble(game_2048->btnm, false);
 
     lv_btnmatrix_set_map(game_2048->btnm, (const char **)game_2048->btnm_map);
     lv_btnmatrix_set_btn_ctrl_all(game_2048->btnm, LV_BTNMATRIX_CTRL_DISABLED);

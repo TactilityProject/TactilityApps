@@ -4,11 +4,12 @@
 #include "UiScale.h"
 #include <tactility/device.h>
 #include <lvgl/fonts.h>
+#include <esp_log.h>
 
 namespace {
 
 void selectIfNeeded(TestUnitLcd* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
+    if (self->usingPaHub_ && self->hub_.isPresent() && self->lcdChannel_ != UnitPaHub::NO_CHANNEL)
         self->hub_.select(self->lcdChannel_);
 }
 
@@ -164,21 +165,29 @@ void testUnitLcdStart(TestUnitLcd* self, lv_obj_t* parent, Context* app) {
         return;
     }
 
-    // Try standalone first, then scan PaHub channels
-    if (self->lcd_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
+    // A PaHub occupies the Grove port, so every unit is behind it. Scan the hub
+    // before trying a direct address: a channel left selected by an earlier test
+    // would otherwise look like a directly-connected unit and then fail as soon
+    // as the mux is switched.
+    if (self->hub_.begin(i2c)) {
         self->usingPaHub_ = true;
         bool found = false;
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->lcd_.begin(i2c)) { found = true; self->lcdChannel_ = ch; }
+            if (!self->hub_.select(ch)) continue;
+            ESP_LOGI("M5UnitTest", "Trying LCD on PaHub CH%u", (unsigned)ch);
+            if (self->lcd_.begin(i2c)) {
+                found = true;
+                self->lcdChannel_ = ch;
+                ESP_LOGI("M5UnitTest", "LCD found on PaHub CH%u", (unsigned)ch);
+            }
         }
         if (!found) {
             self->hub_.deselect();
             lv_label_set_text(self->lblStatus_, "LCD Unit not found");
             return;
         }
+    } else if (self->lcd_.begin(i2c)) {
+        self->usingPaHub_ = false;
     } else {
         lv_label_set_text(self->lblStatus_, "LCD Unit not found");
         return;
@@ -194,5 +203,7 @@ void testUnitLcdStop(TestUnitLcd* self) {
     selectIfNeeded(self);
     if (self->lcd_.isPresent()) self->lcd_.setBrightness(0);
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->lcdChannel_ = UnitPaHub::NO_CHANNEL;
+    self->usingPaHub_ = false;
     self->lblStatus_ = self->sliderBr_ = self->lblRotation_ = nullptr;
 }

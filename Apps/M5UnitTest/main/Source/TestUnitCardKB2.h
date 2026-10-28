@@ -20,11 +20,13 @@ struct TestUnitCardKB2 {
     UnitCardKB2 unit_;
     lv_timer_t* timer_      = nullptr;
     bool        usingPaHub_ = false;
+    uint8_t     channel_    = UnitPaHub::NO_CHANNEL;
 
     // Connection selection overlay (shown before connecting)
     lv_obj_t* connectOverlay_ = nullptr;
 
     // Main content (shown after connecting)
+    lv_obj_t* lblStatus_   = nullptr;
     lv_obj_t* lblHistory_  = nullptr;
     char history_[64]       = {};
     uint8_t histLen_        = 0;

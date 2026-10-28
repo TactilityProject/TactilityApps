@@ -9,8 +9,10 @@
 namespace {
 
 void selectIfNeeded(TestUnitScroll* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() &&
+        self->channel_ != UnitPaHub::NO_CHANNEL) {
+        self->hub_.select(self->channel_);
+    }
 }
 
 void update(TestUnitScroll* self) {
@@ -104,21 +106,31 @@ void testUnitScrollStart(TestUnitScroll* self, lv_obj_t* parent, Context* app) {
         return;
     }
 
-    if (self->unit_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
-        self->usingPaHub_ = true;
-        bool found = false;
+    bool found = false;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+
+    // PaHub first. If an earlier test left a channel selected, a direct probe
+    // can latch onto the unit through the mux but then lose it when the next
+    // test changes channels.
+    if (self->hub_.begin(i2c)) {
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->unit_.begin(i2c)) found = true;
+            if (!self->hub_.select(ch)) continue;
+            if (self->unit_.begin(i2c)) {
+                self->usingPaHub_ = true;
+                self->channel_    = ch;
+                found = true;
+            }
         }
-        if (!found) {
-            self->hub_.deselect();
-            lv_label_set_text(self->lblCounter_, "Scroll not found");
-            return;
-        }
-    } else {
+        if (!found) self->hub_.deselect();
+    }
+    if (!found && self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+        self->channel_    = UnitPaHub::NO_CHANNEL;
+        found = true;
+    }
+
+    if (!found) {
         lv_label_set_text(self->lblCounter_, "Scroll not found");
         return;
     }
@@ -132,6 +144,8 @@ void testUnitScrollStop(TestUnitScroll* self) {
     selectIfNeeded(self);
     if (self->unit_.isPresent()) self->unit_.setLed(0x000000);
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
     self->lblCounter_ = self->lblButton_ = self->lblLed_ = nullptr;
     self->sliderR_ = self->sliderG_ = self->sliderB_ = nullptr;
 }

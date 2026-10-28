@@ -14,7 +14,7 @@ struct TestUnitLcd {
     lv_obj_t* lblRotation_ = nullptr;
     uint8_t   rotation_    = 0;
     bool      usingPaHub_  = false;
-    uint8_t   lcdChannel_  = 0;
+    uint8_t   lcdChannel_  = UnitPaHub::NO_CHANNEL;
 };
 
 void testUnitLcdStart(TestUnitLcd* self, lv_obj_t* parent, Context* app);

@@ -18,6 +18,7 @@ struct TestUnitScroll {
     lv_timer_t* timer_       = nullptr;
     int32_t     counter_     = 0;
     bool        usingPaHub_  = false;
+    uint8_t     channel_     = UnitPaHub::NO_CHANNEL;
 };
 
 void testUnitScrollStart(TestUnitScroll* self, lv_obj_t* parent, Context* app);

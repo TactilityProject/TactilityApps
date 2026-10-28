@@ -4,10 +4,12 @@
  */
 
 #include "SettingsView.h"
+#include "Layout.h"
 #include "TamaTac.h"
 #include <app/paths.h>
 #include <tactility/preferences.h>
 #include <string>
+#include <lvgl/widgets/chip.h>
 
 namespace {
 
@@ -45,47 +47,54 @@ lv_obj_t* createSettingRow(lv_obj_t* parentContainer, const char* labelText, boo
 void onSoundToggled(lv_event_t* e) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     SettingsViewState* state = &ctx->settingsView;
-    if (state->soundSwitch == nullptr || state->decayDropdown == nullptr) return;
+    if (state->soundSwitch == nullptr) return;
 
     bool isChecked = lv_obj_has_state(state->soundSwitch, LV_STATE_CHECKED);
 
     tamaTacSetSoundEnabled(ctx, isChecked);
 
-    // Read decay speed from UI widget instead of redundant preferences load
-    DecaySpeed decaySpeed = static_cast<DecaySpeed>(lv_dropdown_get_selected(state->decayDropdown));
-    settingsViewSaveSettings(isChecked, decaySpeed);
+    // Decay speed lives in Context (single source of truth)
+    settingsViewSaveSettings(isChecked, ctx->decaySpeed);
 }
 
-void onDecayChanged(lv_event_t* e) {
+void syncDecayChips(SettingsViewState* state, DecaySpeed selected) {
+    for (int i = 0; i < 3; i++) {
+        if (state->decayChips[i] != nullptr) {
+            lv_obj_set_state(state->decayChips[i], LV_STATE_CHECKED, i == static_cast<int>(selected));
+        }
+    }
+}
+
+void onDecayChipPressed(lv_event_t* e) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     SettingsViewState* state = &ctx->settingsView;
-    if (state->decayDropdown == nullptr || state->soundSwitch == nullptr) return;
+    auto* chip = static_cast<lv_obj_t*>(lv_event_get_current_target_obj(e));
 
-    uint16_t selected = lv_dropdown_get_selected(state->decayDropdown);
+    for (int i = 0; i < 3; i++) {
+        if (state->decayChips[i] == chip) {
+            DecaySpeed newSpeed = static_cast<DecaySpeed>(i);
+            tamaTacSetDecaySpeed(ctx, newSpeed);
+            syncDecayChips(state, newSpeed);
 
-    if (selected > 2) {
-        selected = 1;
+            bool soundEnabled = state->soundSwitch != nullptr &&
+                lv_obj_has_state(state->soundSwitch, LV_STATE_CHECKED);
+            settingsViewSaveSettings(soundEnabled, newSpeed);
+            break;
+        }
     }
-    DecaySpeed newSpeed = static_cast<DecaySpeed>(selected);
-
-    tamaTacSetDecaySpeed(ctx, newSpeed);
-
-    // Read sound state from UI widget instead of redundant preferences load
-    bool soundEnabled = lv_obj_has_state(state->soundSwitch, LV_STATE_CHECKED);
-    settingsViewSaveSettings(soundEnabled, newSpeed);
 }
 
 } // namespace
 
+constexpr const char* DECAY_NAMES[] = { "Slow", "Normal", "Fast" };
+
 void settingsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     SettingsViewState* state = &ctx->settingsView;
 
-    // Detect screen size for responsive layout
-    // Use display resolution for reliable sizing (parent may not be laid out yet on first load)
-    lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenWidth < 280 || screenHeight < 180);
-    bool isXLarge = (screenWidth >= 600);
+    // Shared viewport detection (display resolution + orientation)
+    TamaViewport vp = tamaGetViewport();
+    bool isSmall = tamaIsSmall(vp);
+    bool isXLarge = tamaIsXLarge(vp);
 
     // Load current settings
     bool soundEnabled = true;
@@ -105,7 +114,9 @@ void settingsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     lv_obj_set_style_border_width(state->mainWrapper, 0, 0);
     lv_obj_set_flex_flow(state->mainWrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(state->mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(state->mainWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    // Vertical scroll safety: rows + chips can overflow short screens
+    lv_obj_set_scrollable(state->mainWrapper, true);
+    lv_obj_set_scroll_dir(state->mainWrapper, LV_DIR_VER);
 
     // Sound setting row
     lv_obj_t* soundRow = createSettingRow(state->mainWrapper, "Sound", isSmall, isXLarge);
@@ -118,23 +129,38 @@ void settingsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     }
     lv_obj_add_event_cb(state->soundSwitch, onSoundToggled, LV_EVENT_VALUE_CHANGED, ctx);
 
-    // Decay speed row
+    // Decay speed row (label + 3 exclusive chips, wraps on narrow portrait screens)
     lv_obj_t* decayRow = createSettingRow(state->mainWrapper, "Speed", isSmall, isXLarge);
+    lv_obj_set_flex_flow(decayRow, LV_FLEX_FLOW_ROW_WRAP);
 
-    state->decayDropdown = lv_dropdown_create(decayRow);
-    lv_dropdown_set_options(state->decayDropdown, "Slow\nNormal\nFast");
-    lv_dropdown_set_selected(state->decayDropdown, static_cast<uint16_t>(decaySpeed));
-    lv_obj_set_width(state->decayDropdown, isSmall ? 80 : (isXLarge ? 140 : 100));
-    lv_obj_set_style_bg_color(state->decayDropdown, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_text_color(state->decayDropdown, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_add_event_cb(state->decayDropdown, onDecayChanged, LV_EVENT_VALUE_CHANGED, ctx);
+    lv_obj_t* chips = lv_obj_create(decayRow);
+    lv_obj_set_size(chips, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(chips, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_bg_opa(chips, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(chips, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(chips, 0, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_column(chips, isSmall ? 2 : 4, LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_row(chips, isSmall ? 2 : 4, LV_STATE_DEFAULT);
+    lv_obj_set_scrollable(chips, false);
+
+    for (int32_t i = 0; i < 3; i++) {
+        auto* chip = lvgl_chip_create(chips);
+        lv_obj_t* chipLabel = lv_label_create(chip);
+        lv_label_set_text(chipLabel, DECAY_NAMES[i]);
+        lv_obj_center(chipLabel);
+        lv_obj_add_event_cb(chip, onDecayChipPressed, LV_EVENT_SHORT_CLICKED, ctx);
+        state->decayChips[i] = chip;
+    }
+    syncDecayChips(state, decaySpeed);
 }
 
 void settingsViewStop(Context* ctx) {
     SettingsViewState* state = &ctx->settingsView;
     state->mainWrapper = nullptr;
     state->soundSwitch = nullptr;
-    state->decayDropdown = nullptr;
+    for (int i = 0; i < 3; i++) {
+        state->decayChips[i] = nullptr;
+    }
 }
 
 void settingsViewLoadSettings(bool* soundEnabled, DecaySpeed* decaySpeed) {

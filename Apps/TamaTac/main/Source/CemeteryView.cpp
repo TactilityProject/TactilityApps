@@ -4,6 +4,7 @@
  */
 
 #include "CemeteryView.h"
+#include "Layout.h"
 #include "TamaTac.h"
 #include <app/paths.h>
 #include <tactility/preferences.h>
@@ -42,16 +43,25 @@ void cemeteryViewLoadRecords(PetRecord records[CEMETERY_MAX_RECORDS]) {
             snprintf(key, sizeof(key), "pers%d", i);
             value = 0;
             preferences_opt_int32(prefs, key, &value);
+            if (value < 0 || value > static_cast<int32_t>(Personality::Hardy)) {
+                value = 0;
+            }
             records[i].personality = static_cast<Personality>(value);
 
             snprintf(key, sizeof(key), "stage%d", i);
             value = 0;
             preferences_opt_int32(prefs, key, &value);
+            if (value < 0 || value > static_cast<int32_t>(LifeStage::Ghost)) {
+                value = static_cast<int32_t>(LifeStage::Egg);
+            }
             records[i].stageReached = static_cast<LifeStage>(value);
 
             snprintf(key, sizeof(key), "age%d", i);
             value = 0;
             preferences_opt_int32(prefs, key, &value);
+            if (value < 0) {
+                value = 0;
+            }
             records[i].ageHours = static_cast<uint16_t>(value);
         }
     }
@@ -112,10 +122,9 @@ void cemeteryViewRecordDeath(Personality personality, LifeStage stage, uint16_t 
 void cemeteryViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     CemeteryViewState* state = &ctx->cemeteryView;
 
-    lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenWidth < 280 || screenHeight < 180);
-    bool isXLarge = (screenWidth >= 600);
+    TamaViewport vp = tamaGetViewport();
+    bool isSmall = tamaIsSmall(vp);
+    bool isXLarge = tamaIsXLarge(vp);
 
     int padAll = isSmall ? 4 : (isXLarge ? 16 : 8);
     int padRow = isSmall ? 4 : (isXLarge ? 12 : 6);
@@ -128,6 +137,8 @@ void cemeteryViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     lv_obj_set_style_border_width(state->mainWrapper, 0, 0);
     lv_obj_set_flex_flow(state->mainWrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(state->mainWrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    // Rows can exceed short screens - vertical scroll only
+    lv_obj_set_scroll_dir(state->mainWrapper, LV_DIR_VER);
 
     // Title
     lv_obj_t* title = lv_label_create(state->mainWrapper);

@@ -12,7 +12,6 @@ struct TestUnitPaHub {
     lv_obj_t*   lblStatus_        = nullptr;
     lv_obj_t*   btnCh_[CH_COUNT]  = {};
     lv_obj_t*   lblCh_[CH_COUNT]  = {};
-    lv_timer_t* timer_            = nullptr;
     int         selChannel_       = -1;
 };
 

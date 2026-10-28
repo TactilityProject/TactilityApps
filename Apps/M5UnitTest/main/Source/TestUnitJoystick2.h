@@ -15,6 +15,7 @@ struct TestUnitJoystick2 {
     lv_obj_t*   joyCont_    = nullptr;
     lv_timer_t* timer_      = nullptr;
     bool        usingPaHub_ = false;
+    uint8_t     channel_    = UnitPaHub::NO_CHANNEL;
     int         joyArea_    = 120;
     int         dotSize_    = 16;
 };

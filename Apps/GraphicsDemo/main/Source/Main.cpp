@@ -1,18 +1,18 @@
 #include "Application.h"
-#include "drivers/DisplayDriver.h"
-#include "drivers/TouchDriver.h"
 
 #include <esp_log.h>
 
 #include <app/event.h>
-#include <app/start.h>
+#include <app/manager.h>
 #include <app/scheduler.h>
+#include <app/start.h>
+
+#include <gfx/Gfx.h>
+#include <input/AnyInput.h>
 
 #include <tactility/check.h>
 #include <tactility/device.h>
 #include <tactility/drivers/display.h>
-#include <tactility/drivers/mouse.h>
-#include <tactility/drivers/touch.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/module.h>
 #include <tactility/module.h>
@@ -25,7 +25,7 @@ constexpr auto TAG = "Main";
 static void showErrorAndWait(AppInstanceId appInstanceId, const char* message) {
     const char* argv[] = { "Error", message, "OK" };
     uint32_t dialogInstanceId = 0;
-    app_start_for_result("AlertDialog", 3, argv, appInstanceId, &dialogInstanceId);
+    app_start_for_result("tactility.alertdialog", 3, argv, appInstanceId, &dialogInstanceId);
     if (dialogInstanceId == 0) {
         return;
     }
@@ -71,42 +71,48 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    struct Device* touch_device = nullptr;
-    struct Device* mouse_device = nullptr;
-    device_get_first_active_by_type(&TOUCH_TYPE, &touch_device);
-    device_get_first_active_by_type(&MOUSE_TYPE, &mouse_device);
-    if (touch_device == nullptr && mouse_device == nullptr) {
-        ESP_LOGE(TAG, "No touch device found");
-        device_put(display_device);
-        showErrorAndWait(app_instance_id, "No touch device was found.");
-        return 0;
-    }
-
     // Stop LVGL first (because it's currently using the drivers we want to use)
     module_stop(&lvgl_module);
 
-    ESP_LOGI(TAG, "Creating display driver");
-    auto display = new DisplayDriver(display_device);
+    ESP_LOGI(TAG, "Creating display target");
+    auto target = new gfx::Target(display_device);
     device_put(display_device);
 
-    ESP_LOGI(TAG, "Creating touch driver");
-    auto touch = new TouchDriver(touch_device, mouse_device);
-    if (touch_device != nullptr) {
-        device_put(touch_device);
+    if (!target->valid()) {
+        ESP_LOGE(TAG, "Display doesn't support direct rendering");
+        delete target;
+
+        if (!module_is_started(&lvgl_module)) {
+            module_start(&lvgl_module);
+        }
+
+        showErrorAndWait(app_instance_id, "This display can't be used for direct rendering.");
+        return 0;
     }
-    if (mouse_device != nullptr) {
-        device_put(mouse_device);
+
+    auto input = new AnyInput();
+    if (!input->available()) {
+        ESP_LOGE(TAG, "No input device found");
+        delete input;
+        delete target;
+
+        if (!module_is_started(&lvgl_module)) {
+            module_start(&lvgl_module);
+        }
+
+        showErrorAndWait(app_instance_id, "No input device was found.");
+        return 0;
     }
 
     // Run the main logic
     ESP_LOGI(TAG, "Running application");
-    runApplication(display, touch);
+    runApplication(target, input);
 
-    ESP_LOGI(TAG, "Cleanup display driver");
-    delete display;
+    ESP_LOGI(TAG, "Cleanup display target");
+    delete target;
 
-    ESP_LOGI(TAG, "Cleanup touch driver");
-    delete touch;
+    ESP_LOGI(TAG, "Cleanup input");
+    delete input;
 
     // Restart LVGL to resume rendering of regular apps
     if (!module_is_started(&lvgl_module)) {

@@ -18,7 +18,7 @@ enum class DecaySpeed {
 struct SettingsViewState {
     lv_obj_t* mainWrapper = nullptr;
     lv_obj_t* soundSwitch = nullptr;
-    lv_obj_t* decayDropdown = nullptr;
+    lv_obj_t* decayChips[3] = {nullptr, nullptr, nullptr};
 };
 
 void settingsViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx);

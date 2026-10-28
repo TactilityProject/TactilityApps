@@ -175,8 +175,8 @@ void buildReaderUI(Context* ctx, lv_obj_t* parent) {
             (lv_coord_t)lv_font_get_line_height(selectContentFont(false, false)), 0);
         lv_obj_set_style_border_width(ctx->contentWidget_, 0, 0);
         lv_obj_set_style_bg_opa(ctx->contentWidget_, LV_OPA_TRANSP, 0);
-        lv_obj_remove_flag(ctx->contentWidget_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_remove_flag(ctx->contentWidget_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_scrollable(ctx->contentWidget_, false);
+        lv_obj_set_clickable(ctx->contentWidget_, false);
         loadChapter(ctx, ctx->currentSpineIndex_, +1);
     }
 }
@@ -206,7 +206,7 @@ static void renderSpanParagraph(lv_obj_t* parent, const char* seg, size_t len,
     lv_obj_set_style_pad_all(sg, 0, 0);  // keep heights = N*lineH (same rule as lv_label)
     lv_spangroup_set_align(sg, align);
     lv_spangroup_set_mode(sg, LV_SPAN_MODE_BREAK);  // wrap to content height
-    lv_obj_remove_flag(sg, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(sg, false);
 
     bool bold = false, italic = false;
     std::string run;
@@ -314,7 +314,7 @@ void buildBrowserUI(Context* ctx, lv_obj_t* parent) {
     lv_obj_set_style_pad_gap(pathBar, 4, 0);
     lv_obj_set_style_border_width(pathBar, 0, 0);
     lv_obj_set_style_bg_opa(pathBar, LV_OPA_TRANSP, 0);
-    lv_obj_remove_flag(pathBar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(pathBar, false);
 
     if (ctx->browsePath_ != ctx->dataRoot_) {
         lv_obj_t* backBtn = lv_button_create(pathBar);
@@ -433,7 +433,7 @@ void buildShelfUI(Context* ctx, lv_obj_t* parent) {
         lv_obj_set_style_pad_gap(pathBar, padBar, 0);
         lv_obj_set_style_border_width(pathBar, 0, 0);
         lv_obj_set_style_bg_opa(pathBar, LV_OPA_TRANSP, 0);
-        lv_obj_remove_flag(pathBar, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(pathBar, false);
 
         lv_obj_t* backBtn = lv_button_create(pathBar);
         lv_obj_set_size(backBtn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -477,7 +477,7 @@ void buildShelfUI(Context* ctx, lv_obj_t* parent) {
     lv_obj_set_width(list, LV_PCT(100));
     lv_obj_set_flex_grow(list, 1);
     lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(list, false);
 
     if (ctx->browserEntries_.empty()) {
         lv_list_add_text(list, "No books found in books folder.");
@@ -513,7 +513,7 @@ void buildShelfUI(Context* ctx, lv_obj_t* parent) {
     lv_obj_set_style_pad_gap(navBar, padBar, 0);
     lv_obj_set_style_border_width(navBar, 0, 0);
     lv_obj_set_style_bg_opa(navBar, LV_OPA_TRANSP, 0);
-    lv_obj_remove_flag(navBar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(navBar, false);
 
     bool canPrev = (ctx->shelfPage_ > 0);
     bool canNext = (ctx->shelfPage_ < totalPages - 1);

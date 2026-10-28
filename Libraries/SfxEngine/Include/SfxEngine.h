@@ -217,6 +217,9 @@ private:
         int decaySamples = 0;
         float sustainLevel = 0.7f;
         int releaseSamples = 0;
+        // Twang envelope: per-sample decay multiplier, derived from a decay time at trigger
+        // (a fixed per-sample constant would depend on the sample rate).
+        float envDecayMul = 0.998f;
 
         // Volume
         float volume = 0.5f;
@@ -236,10 +239,25 @@ private:
     // SFX Sequence
     //--------------------------------------------------------------------------
 
-    SfxSequenceNote sequence_[MAX_SFX_NOTES] = {};
-    int sequenceLength_ = 0;
-    int sequenceIndex_ = 0;
-    int sequenceDelaySamples_ = 0;
+    // Independent concurrent sequence players: play() claims a free (or, if none free, the
+    // oldest-started) slot rather than sharing one global timeline. Without this, a play()
+    // call while a previous sound was still mid-sequence would silently cancel it (loadSound()
+    // used to reset every voice and replace the one shared sequence_[]/cursor). Each slot
+    // owns MAX_VOICES_PER_SEQUENCE physical voices so layered notes (note.voice > 0, e.g.
+    // the Error sound's second layer) sound together instead of stealing each other.
+    static constexpr int MAX_VOICES_PER_SEQUENCE = 2;
+    static constexpr int MAX_CONCURRENT_SEQUENCES = NUM_VOICES / MAX_VOICES_PER_SEQUENCE;
+
+    struct SequencePlayer {
+        SfxSequenceNote notes[MAX_SFX_NOTES] = {};
+        int length = 0;
+        int index = 0;
+        int delaySamples = 0;
+        uint32_t startOrder = 0; // for oldest-slot eviction when all slots are active
+    };
+
+    SequencePlayer sequencePlayers_[MAX_CONCURRENT_SEQUENCES] = {};
+    uint32_t nextSequenceOrder_ = 0;
 
     //--------------------------------------------------------------------------
     // Queue Messages
@@ -276,6 +294,11 @@ private:
     AudioStreamHandle audioStreamHandle_ = nullptr;
     TaskHandle_t task_ = nullptr;
     SemaphoreHandle_t stopSemaphore_ = nullptr;  // Signaled when audio task exits
+    // Signaled once by the audio task after its own initial open attempt (matching DoomAudio's
+    // pattern of opening the stream from inside its own pinned, high-priority mixer task
+    // instead of the caller of start()), so start() can still report success/failure synchronously.
+    SemaphoreHandle_t startSemaphore_ = nullptr;
+    volatile bool startOpenSucceeded_ = false;
     QueueHandle_t msgQueue_ = nullptr;
 
     volatile bool running_ = false;
@@ -328,16 +351,24 @@ private:
     // Sound Loading
     //--------------------------------------------------------------------------
 
-    void loadSound(SfxId sound);
+    // Loads `sound`'s notes into sequencePlayers_[slot], replacing whatever that slot was
+    // previously playing. Other slots (and the voices they're using) are untouched.
+    void loadSound(SfxId sound, int slot);
     void triggerNote(Voice& v, uint8_t midiNote, uint16_t durationMs,
                      SfxWaveType wave, float volume, SfxEnvelopeType envType,
                      uint16_t attackMs = 0, uint16_t decayMs = 0,
                      float sustain = 0.0f, uint16_t releaseMs = 0);
-    void processSequence();
+    void processSequence(SequencePlayer& player, int slot);
+    // Returns a free sequence-player slot, or the oldest-started one if all are active.
+    int allocateSequenceSlot();
 
     //--------------------------------------------------------------------------
     // Task
     //--------------------------------------------------------------------------
+
+    // Finds the current audio-stream device and opens an output stream on it.
+    // Shared by start() and the audio task's re-open-after-codec-rebind path.
+    bool openStream();
 
     static void audioTaskFunc(void* param);
 };

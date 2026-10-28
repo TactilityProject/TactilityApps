@@ -191,7 +191,7 @@ static void snake_timer_cb(lv_timer_t* timer) {
         if (!snake_spawn_food(game)) {
             // Hide food since there's no valid position
             if (game->food) {
-                lv_obj_add_flag(game->food, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(game->food, true);
             }
             // Player won - end the game
             game->game_over = true;
@@ -322,20 +322,20 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
 
     // Set up main object
     lv_obj_set_size(obj, LV_PCT(100), LV_PCT(100));
-    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(obj, false);
     lv_obj_set_style_pad_all(obj, 0, LV_PART_MAIN);
     lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
 
     // Create game container (the actual playing field)
     game->container = lv_obj_create(obj);
-    lv_obj_remove_flag(game->container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(game->container, false);
     lv_obj_set_style_bg_color(game->container, SNAKE_BG_COLOR, LV_PART_MAIN);
     lv_obj_set_style_border_width(game->container, 1, LV_PART_MAIN);
     lv_obj_set_style_border_color(game->container, SNAKE_GRID_COLOR, LV_PART_MAIN);
     lv_obj_set_style_pad_all(game->container, 0, LV_PART_MAIN);
     lv_group_remove_obj(game->container);
-    lv_obj_remove_flag(game->container, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_gesture_bubble(game->container, false);
 
     // Calculate grid dimensions based on available space (non-square)
     lv_coord_t available_w = lv_obj_get_content_width(parent) - 6;
@@ -459,7 +459,7 @@ void snake_set_new_game(lv_obj_t* obj) {
     // Spawn new food and unhide it
     if (snake_spawn_food(game)) {
         if (game->food) {
-            lv_obj_remove_flag(game->food, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(game->food, false);
         }
     }
 

@@ -239,18 +239,18 @@ static void runCode(Context* ctx, const char* code) {
 
 static void showMainView(Context* ctx) {
     ctx->state = BfState::Main;
-    if (ctx->examplesList) lv_obj_add_flag(ctx->examplesList, LV_OBJ_FLAG_HIDDEN);
-    if (ctx->outputTa) lv_obj_remove_flag(ctx->outputTa, LV_OBJ_FLAG_HIDDEN);
-    if (ctx->inputRow) lv_obj_remove_flag(ctx->inputRow, LV_OBJ_FLAG_HIDDEN);
-    if (ctx->clrBtn) lv_obj_remove_flag(ctx->clrBtn, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->examplesList) lv_obj_set_hidden(ctx->examplesList, true);
+    if (ctx->outputTa) lv_obj_set_hidden(ctx->outputTa, false);
+    if (ctx->inputRow) lv_obj_set_hidden(ctx->inputRow, false);
+    if (ctx->clrBtn) lv_obj_set_hidden(ctx->clrBtn, false);
 }
 
 static void showExamplesView(Context* ctx) {
     ctx->state = BfState::Examples;
-    if (ctx->outputTa) lv_obj_add_flag(ctx->outputTa, LV_OBJ_FLAG_HIDDEN);
-    if (ctx->inputRow) lv_obj_add_flag(ctx->inputRow, LV_OBJ_FLAG_HIDDEN);
-    if (ctx->examplesList) lv_obj_remove_flag(ctx->examplesList, LV_OBJ_FLAG_HIDDEN);
-    if (ctx->clrBtn) lv_obj_add_flag(ctx->clrBtn, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->outputTa) lv_obj_set_hidden(ctx->outputTa, true);
+    if (ctx->inputRow) lv_obj_set_hidden(ctx->inputRow, true);
+    if (ctx->examplesList) lv_obj_set_hidden(ctx->examplesList, false);
+    if (ctx->clrBtn) lv_obj_set_hidden(ctx->clrBtn, true);
 }
 
 /* ── Callbacks ────────────────────────────────────────────────────── */
@@ -395,13 +395,13 @@ void brainfuckCreateWidgets(lv_obj_t* parent, void* userData) {
     g_ctx = ctx;
     ctx->state = BfState::Examples;
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Brainfuck interpreter");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
     ctx->clrBtn = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearClicked, ctx);
-    lv_obj_add_flag(ctx->clrBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(ctx->clrBtn, true);
     lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onExamplesClicked, ctx);
 
     lv_obj_t* cont = lv_obj_create(parent);
@@ -410,7 +410,7 @@ void brainfuckCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(cont, 4, 0);
     lv_obj_set_style_pad_gap(cont, 4, 0);
-    lv_obj_remove_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(cont, false);
     lv_obj_set_style_border_width(cont, 0, 0);
 
     ctx->outputTa = lv_textarea_create(cont);
@@ -420,7 +420,7 @@ void brainfuckCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_width(ctx->outputTa, LV_PCT(100));
     lv_obj_set_flex_grow(ctx->outputTa, 1);
     lv_obj_set_style_text_font(ctx->outputTa, lv_font_get_default(), 0);
-    lv_obj_add_flag(ctx->outputTa, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(ctx->outputTa, true);
 
     ctx->inputRow = lv_obj_create(cont);
     lv_obj_set_size(ctx->inputRow, LV_PCT(100), LV_SIZE_CONTENT);
@@ -428,9 +428,9 @@ void brainfuckCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_flex_align(ctx->inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(ctx->inputRow, 0, 0);
     lv_obj_set_style_pad_gap(ctx->inputRow, 4, 0);
-    lv_obj_remove_flag(ctx->inputRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->inputRow, false);
     lv_obj_set_style_border_width(ctx->inputRow, 0, 0);
-    lv_obj_add_flag(ctx->inputRow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(ctx->inputRow, true);
 
     ctx->inputTa = lv_textarea_create(ctx->inputRow);
     lv_textarea_set_placeholder_text(ctx->inputTa, "++++++[>++++++++++<-]>+++++.");

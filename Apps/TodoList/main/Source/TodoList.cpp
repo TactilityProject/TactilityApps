@@ -278,7 +278,7 @@ void todoListCreateWidgets(lv_obj_t* parent, void* userData) {
 
     loadTodos(ctx);
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     /* Toolbar */
@@ -295,7 +295,7 @@ void todoListCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_column(countWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(countWrapper, 0, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(countWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(countWrapper, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(countWrapper, false);
 
     ctx->countLabel = lv_label_create(countWrapper);
     lv_obj_set_size(ctx->countLabel, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -304,27 +304,8 @@ void todoListCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_text_font(ctx->countLabel, lv_font_get_default(), 0);
     lv_obj_set_style_text_color(ctx->countLabel, lv_palette_main(LV_PALETTE_CYAN), LV_PART_MAIN);
 
-    auto ui_density = lvgl_get_ui_density();
-    auto toolbar_height = getToolbarHeight(ui_density);
-    auto icon_padding = getActionIconPadding(ui_density);
-
-    lv_obj_t* btnWrapper = lv_obj_create(toolbar);
-    lv_obj_set_width(btnWrapper, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(btnWrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(btnWrapper, icon_padding / 2, LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_column(btnWrapper, 4, LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(btnWrapper, 0, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(btnWrapper, 0, LV_STATE_DEFAULT);
-
-    lv_obj_t* clearBtn = lv_button_create(btnWrapper);
-    lv_obj_set_size(clearBtn, toolbar_height - icon_padding, toolbar_height - icon_padding);
-    lv_obj_set_style_pad_all(clearBtn, 0, LV_STATE_DEFAULT);
-    lv_obj_align(clearBtn, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_add_event_cb(clearBtn, onClearDoneClicked, LV_EVENT_CLICKED, ctx);
-
-    lv_obj_t* clearIcon = lv_label_create(clearBtn);
-    lv_label_set_text(clearIcon, LV_SYMBOL_TRASH);
-    lv_obj_align(clearIcon, LV_ALIGN_CENTER, 0, 0);
+    // Create clear button
+    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearDoneClicked, ctx);
 
     /* Container */
     lv_obj_t* cont = lv_obj_create(parent);
@@ -333,7 +314,7 @@ void todoListCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(cont, 4, 0);
     lv_obj_set_style_pad_gap(cont, 4, 0);
-    lv_obj_remove_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(cont, false);
     lv_obj_set_style_border_width(cont, 0, 0);
 
     /* Scrollable list */
@@ -348,7 +329,7 @@ void todoListCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_flex_align(ctx->inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(ctx->inputRow, 0, 0);
     lv_obj_set_style_pad_gap(ctx->inputRow, 4, 0);
-    lv_obj_remove_flag(ctx->inputRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->inputRow, false);
     lv_obj_set_style_border_width(ctx->inputRow, 0, 0);
 
     ctx->inputTa = lv_textarea_create(ctx->inputRow);

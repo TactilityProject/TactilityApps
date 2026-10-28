@@ -6,6 +6,7 @@
  *   UART (115200-8N-1)               - via GROVE port after Fn+Sym+2 mode switch
  *
  * I2C: plain 1-byte read returns ASCII of held key (0 = none).
+ *      Write 0xF1 then read one byte for the firmware version (current = 0x02).
  *
  * UART frame: AA [DATA_LEN=0x03] [KEY_ID] [KEY_STATE] [checksum]
  *   KEY_ID    = row*11 + col  (0-43, rows 0-3, cols 0-10)
@@ -57,6 +58,9 @@ public:
     // Call end() before switching modes (begin→beginUart or vice versa).
     Mode mode() const { return mode_; }
 
+    // Firmware version read from register 0xF1 in I2C mode (0 when unknown).
+    uint8_t firmwareVersion() const { return version_; }
+
     // Returns the ASCII value of the currently/last pressed key, or 0 if none.
     // In UART mode: drains available bytes from the UART RX buffer, parses frames,
     // returns the ASCII of the most recently pressed key (releases are ignored).
@@ -70,6 +74,7 @@ private:
     // I2C
     Device*  i2cDev_    = nullptr;
     uint8_t  addr_      = DEFAULT_ADDR;
+    uint8_t  version_   = 0;
     char     cachedKey_ = 0;
 
     // UART
@@ -92,4 +97,5 @@ private:
 
     char readFromI2C();
     char pollUart();
+    bool readVersion(uint8_t& version);
 };

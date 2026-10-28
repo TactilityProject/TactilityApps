@@ -17,6 +17,7 @@
 #include <tactility/drivers/keyboard.h>
 
 #include <lvgl/lvgl.h>
+#include <lvgl/fonts.h>
 
 constexpr auto* TAG = "Breakout";
 
@@ -164,7 +165,7 @@ static void onSoundToggled(lv_event_t* e);
 void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(parent, 0, 0);
     lv_obj_set_style_pad_row(parent, 0, 0);
@@ -191,10 +192,10 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_right(scoreWrap, 10, 0);
     lv_obj_set_style_border_width(scoreWrap, 0, 0);
     lv_obj_set_style_bg_opa(scoreWrap, 0, 0);
-    lv_obj_remove_flag(scoreWrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(scoreWrap, false);
 
     ctx->scoreLabel = lv_label_create(scoreWrap);
-    lv_obj_set_style_text_font(ctx->scoreLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_font(ctx->scoreLabel, lvgl_get_text_font(FONT_SIZE_DEFAULT), 0);
     lv_obj_set_style_text_color(ctx->scoreLabel, lv_palette_main(LV_PALETTE_AMBER), 0);
     lv_obj_align(ctx->scoreLabel, LV_ALIGN_CENTER, 0, 0);
 
@@ -207,10 +208,10 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_right(livesWrap, 10, 0);
     lv_obj_set_style_border_width(livesWrap, 0, 0);
     lv_obj_set_style_bg_opa(livesWrap, 0, 0);
-    lv_obj_remove_flag(livesWrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(livesWrap, false);
 
     ctx->livesLabel = lv_label_create(livesWrap);
-    lv_obj_set_style_text_font(ctx->livesLabel, lv_font_get_default(), 0);
+    lv_obj_set_style_text_font(ctx->livesLabel, lvgl_get_text_font(FONT_SIZE_DEFAULT), 0);
     lv_obj_set_style_text_color(ctx->livesLabel, lv_palette_main(LV_PALETTE_RED), 0);
     lv_obj_align(ctx->livesLabel, LV_ALIGN_CENTER, 0, 0);
 
@@ -264,8 +265,8 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_border_width(ctx->gameArea, 0, 0);
     lv_obj_set_style_pad_all(ctx->gameArea, 0, 0);
     lv_obj_set_style_radius(ctx->gameArea, 0, 0);
-    lv_obj_remove_flag(ctx->gameArea, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(ctx->gameArea, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(ctx->gameArea, false);
+    lv_obj_set_clickable(ctx->gameArea, true);
 
     // Force layout to get accurate game area dimensions
     lv_obj_update_layout(parent);
@@ -288,7 +289,7 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_border_width(ctx->paddle, 0, 0);
     lv_obj_set_style_pad_all(ctx->paddle, 0, 0);
     lv_obj_set_style_radius(ctx->paddle, 2, 0);
-    lv_obj_remove_flag(ctx->paddle, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->paddle, false);
 
     // Create balls (primary + extras for split)
     for (int i = 0; i < MAX_BALLS; i++) {
@@ -298,9 +299,9 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
         lv_obj_set_style_border_width(ctx->balls[i].obj, 0, 0);
         lv_obj_set_style_pad_all(ctx->balls[i].obj, 0, 0);
         lv_obj_set_style_radius(ctx->balls[i].obj, LV_RADIUS_CIRCLE, 0);
-        lv_obj_remove_flag(ctx->balls[i].obj, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(ctx->balls[i].obj, false);
         if (i > 0) {
-            lv_obj_add_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->balls[i].obj, true);
         }
     }
 
@@ -318,9 +319,9 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_bg_opa(ctx->exitIndicator, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ctx->exitIndicator, 0, 0);
     lv_obj_set_style_radius(ctx->exitIndicator, 0, 0);
-    lv_obj_remove_flag(ctx->exitIndicator, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->exitIndicator, false);
     lv_obj_set_pos(ctx->exitIndicator, ctx->areaW - 6, ctx->paddleYPos - exitH / 2 + ctx->paddleH / 2);
-    lv_obj_add_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(ctx->exitIndicator, true);
 
     // Message overlay (centered in game area)
     ctx->messageLabel = lv_label_create(ctx->gameArea);
@@ -341,18 +342,18 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
         for (int i = 0; i < MAX_BALLS; i++) {
             if (ctx->balls[i].active && ctx->balls[i].obj) {
                 lv_obj_set_pos(ctx->balls[i].obj, (int)ctx->balls[i].x, (int)ctx->balls[i].y);
-                lv_obj_clear_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(ctx->balls[i].obj, false);
             }
         }
         // Restore falling capsules
         for (int i = 0; i < MAX_CAPSULES; i++) {
             if (ctx->capsules[i].active && ctx->capsuleObjs[i]) {
                 lv_obj_set_pos(ctx->capsuleObjs[i], (int)ctx->capsules[i].x, (int)ctx->capsules[i].y);
-                lv_obj_clear_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(ctx->capsuleObjs[i], false);
             }
         }
         // Restore exit indicator
-        if (ctx->exitOpen && ctx->exitIndicator) lv_obj_clear_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
+        if (ctx->exitOpen && ctx->exitIndicator) lv_obj_set_hidden(ctx->exitIndicator, false);
         updateScoreDisplay(ctx);
         updateMessage(ctx);
     }
@@ -421,9 +422,9 @@ static void createCapsuleObjs(Context* ctx) {
         lv_obj_set_style_border_color(ctx->capsuleObjs[i], lv_color_white(), 0);
         lv_obj_set_style_pad_all(ctx->capsuleObjs[i], 0, 0);
         lv_obj_set_style_radius(ctx->capsuleObjs[i], 3, 0);
-        lv_obj_remove_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_remove_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_scrollable(ctx->capsuleObjs[i], false);
+        lv_obj_set_clickable(ctx->capsuleObjs[i], false);
+        lv_obj_set_hidden(ctx->capsuleObjs[i], true);
 
         ctx->capsuleLabels[i] = lv_label_create(ctx->capsuleObjs[i]);
         lv_obj_set_style_text_color(ctx->capsuleLabels[i], lv_color_white(), 0);
@@ -440,8 +441,8 @@ static void createLaserObjs(Context* ctx) {
         lv_obj_set_style_border_width(ctx->lasers[i].obj, 0, 0);
         lv_obj_set_style_pad_all(ctx->lasers[i].obj, 0, 0);
         lv_obj_set_style_radius(ctx->lasers[i].obj, 0, 0);
-        lv_obj_remove_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_scrollable(ctx->lasers[i].obj, false);
+        lv_obj_set_hidden(ctx->lasers[i].obj, true);
         ctx->lasers[i].active = false;
     }
 }
@@ -458,8 +459,8 @@ static void createBricks(Context* ctx) {
             lv_obj_set_style_border_width(ctx->bricks[idx], 0, 0);
             lv_obj_set_style_pad_all(ctx->bricks[idx], 0, 0);
             lv_obj_set_style_radius(ctx->bricks[idx], 2, 0);
-            lv_obj_remove_flag(ctx->bricks[idx], LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_remove_flag(ctx->bricks[idx], LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_scrollable(ctx->bricks[idx], false);
+            lv_obj_set_clickable(ctx->bricks[idx], false);
 
             int x = ctx->brickOffsetX + c * (ctx->brickW + ctx->brickGap);
             int y = ctx->brickOffsetY + r * (ctx->brickH + ctx->brickGap);
@@ -642,11 +643,11 @@ static void refreshBricks(Context* ctx) {
             if (!ctx->bricks[idx]) continue;
 
             if (!ctx->brickAlive[idx]) {
-                lv_obj_add_flag(ctx->bricks[idx], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(ctx->bricks[idx], true);
                 continue;
             }
 
-            lv_obj_clear_flag(ctx->bricks[idx], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->bricks[idx], false);
 
             switch (ctx->brickType[idx]) {
                 case BrickType::Normal: {
@@ -701,7 +702,7 @@ static void hitBrick(Context* ctx, int idx) {
     if (ctx->brickHits[idx] <= 0) {
         // Brick destroyed
         ctx->brickAlive[idx] = false;
-        if (ctx->bricks[idx]) lv_obj_add_flag(ctx->bricks[idx], LV_OBJ_FLAG_HIDDEN);
+        if (ctx->bricks[idx]) lv_obj_set_hidden(ctx->bricks[idx], true);
         ctx->score += scoreBrick(ctx, idx);
         if (ctx->brickType[idx] != BrickType::Gold) {
             ctx->bricksRemaining--;
@@ -798,7 +799,7 @@ static void resetBall(Context* ctx) {
     // Reset to single ball
     for (int i = 1; i < MAX_BALLS; i++) {
         ctx->balls[i].active = false;
-        if (ctx->balls[i].obj) lv_obj_add_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+        if (ctx->balls[i].obj) lv_obj_set_hidden(ctx->balls[i].obj, true);
     }
     ctx->activeBallCount = 1;
 
@@ -809,7 +810,7 @@ static void resetBall(Context* ctx) {
     ctx->balls[0].vy = 0;
     if (ctx->balls[0].obj) {
         lv_obj_set_pos(ctx->balls[0].obj, (int)ctx->balls[0].x, (int)ctx->balls[0].y);
-        lv_obj_clear_flag(ctx->balls[0].obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(ctx->balls[0].obj, false);
     }
 }
 
@@ -905,7 +906,7 @@ static void spawnCapsule(Context* ctx, float x, float y) {
             if (ctx->capsuleObjs[i]) {
                 lv_obj_set_style_bg_color(ctx->capsuleObjs[i], lv_color_hex(CAPSULE_COLORS[typeIdx]), 0);
                 lv_obj_set_pos(ctx->capsuleObjs[i], (int)x, (int)y);
-                lv_obj_clear_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(ctx->capsuleObjs[i], false);
             }
             if (ctx->capsuleLabels[i]) {
                 lv_label_set_text(ctx->capsuleLabels[i], CAPSULE_LETTERS[typeIdx]);
@@ -924,7 +925,7 @@ static void updateCapsules(Context* ctx) {
         // Off screen
         if (ctx->capsules[i].y > ctx->areaH) {
             ctx->capsules[i].active = false;
-            if (ctx->capsuleObjs[i]) lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+            if (ctx->capsuleObjs[i]) lv_obj_set_hidden(ctx->capsuleObjs[i], true);
             continue;
         }
 
@@ -935,7 +936,7 @@ static void updateCapsules(Context* ctx) {
             ctx->capsules[i].x < ctx->paddleX + ctx->paddleW) {
             activatePowerUp(ctx, ctx->capsules[i].type);
             ctx->capsules[i].active = false;
-            if (ctx->capsuleObjs[i]) lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+            if (ctx->capsuleObjs[i]) lv_obj_set_hidden(ctx->capsuleObjs[i], true);
             continue;
         }
 
@@ -1030,13 +1031,13 @@ static void clearPowerUps(Context* ctx) {
     ctx->laserCooldown = 0;
     for (int i = 0; i < MAX_LASERS; i++) {
         ctx->lasers[i].active = false;
-        if (ctx->lasers[i].obj) lv_obj_add_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+        if (ctx->lasers[i].obj) lv_obj_set_hidden(ctx->lasers[i].obj, true);
     }
 
     // Clear capsules
     for (int i = 0; i < MAX_CAPSULES; i++) {
         ctx->capsules[i].active = false;
-        if (ctx->capsuleObjs[i]) lv_obj_add_flag(ctx->capsuleObjs[i], LV_OBJ_FLAG_HIDDEN);
+        if (ctx->capsuleObjs[i]) lv_obj_set_hidden(ctx->capsuleObjs[i], true);
     }
 
     // Close exit
@@ -1071,7 +1072,7 @@ static void splitBalls(Context* ctx) {
 
         if (ctx->balls[i].obj) {
             lv_obj_set_pos(ctx->balls[i].obj, (int)ctx->balls[i].x, (int)ctx->balls[i].y);
-            lv_obj_clear_flag(ctx->balls[i].obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->balls[i].obj, false);
         }
         spawned++;
     }
@@ -1127,7 +1128,7 @@ static void updateBalls(Context* ctx) {
         // Bottom edge
         if (ctx->balls[b].y + ctx->ballSize > ctx->areaH) {
             ctx->balls[b].active = false;
-            if (ctx->balls[b].obj) lv_obj_add_flag(ctx->balls[b].obj, LV_OBJ_FLAG_HIDDEN);
+            if (ctx->balls[b].obj) lv_obj_set_hidden(ctx->balls[b].obj, true);
             ctx->activeBallCount--;
             if (ctx->activeBallCount <= 0) {
                 ctx->activeBallCount = 0;
@@ -1215,7 +1216,7 @@ static void fireLaser(Context* ctx) {
             ctx->lasers[i].y = (float)(ctx->paddleYPos - ctx->laserH);
             if (ctx->lasers[i].obj) {
                 lv_obj_set_pos(ctx->lasers[i].obj, (int)ctx->lasers[i].x, (int)ctx->lasers[i].y);
-                lv_obj_clear_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(ctx->lasers[i].obj, false);
             }
             if (ctx->sfxEngine) ctx->sfxEngine->play(SfxId::Laser);
             return;
@@ -1240,7 +1241,7 @@ static void updateLasers(Context* ctx) {
 
         if (ctx->lasers[i].y + ctx->laserH < 0) {
             ctx->lasers[i].active = false;
-            if (ctx->lasers[i].obj) lv_obj_add_flag(ctx->lasers[i].obj, LV_OBJ_FLAG_HIDDEN);
+            if (ctx->lasers[i].obj) lv_obj_set_hidden(ctx->lasers[i].obj, true);
             continue;
         }
 
@@ -1269,7 +1270,7 @@ static void checkLaserBrickCollisions(Context* ctx) {
                     ctx->lasers[li].y + ctx->laserH > by && ctx->lasers[li].y < by + ctx->brickH) {
                     hitBrick(ctx, idx);
                     ctx->lasers[li].active = false;
-                    if (ctx->lasers[li].obj) lv_obj_add_flag(ctx->lasers[li].obj, LV_OBJ_FLAG_HIDDEN);
+                    if (ctx->lasers[li].obj) lv_obj_set_hidden(ctx->lasers[li].obj, true);
                     goto nextLaser;
                 }
             }
@@ -1282,12 +1283,12 @@ static void checkLaserBrickCollisions(Context* ctx) {
 
 static void openExit(Context* ctx) {
     ctx->exitOpen = true;
-    if (ctx->exitIndicator) lv_obj_clear_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->exitIndicator) lv_obj_set_hidden(ctx->exitIndicator, false);
 }
 
 static void closeExit(Context* ctx) {
     ctx->exitOpen = false;
-    if (ctx->exitIndicator) lv_obj_add_flag(ctx->exitIndicator, LV_OBJ_FLAG_HIDDEN);
+    if (ctx->exitIndicator) lv_obj_set_hidden(ctx->exitIndicator, true);
 }
 
 /* ── Main Game Tick ───────────────────────────────────────────── */
@@ -1369,15 +1370,15 @@ static void updateMessage(Context* ctx) {
                 snprintf(buf, sizeof(buf), "%s to start!", input_hint);
             }
             lv_label_set_text(ctx->messageLabel, buf);
-            lv_obj_clear_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->messageLabel, false);
             break;
         }
         case GameState::Playing:
-            lv_obj_add_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->messageLabel, true);
             break;
         case GameState::Paused:
             lv_label_set_text(ctx->messageLabel, "PAUSED");
-            lv_obj_clear_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->messageLabel, false);
             break;
         case GameState::GameOver: {
             char buf[64];
@@ -1387,7 +1388,7 @@ static void updateMessage(Context* ctx) {
                 snprintf(buf, sizeof(buf), "Game Over\nScore: %d\nBest Score: %d", ctx->score, (int)highScore);
             }
             lv_label_set_text(ctx->messageLabel, buf);
-            lv_obj_clear_flag(ctx->messageLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->messageLabel, false);
             break;
         }
     }

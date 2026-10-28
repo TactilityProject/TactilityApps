@@ -49,24 +49,47 @@ void onBtnClicked(lv_event_t* e) {
 void testListViewCreate(lv_obj_t* parent, Context* app) {
     lvgl_toolbar_create(parent, "M5 Unit Test");
 
-    lv_obj_t* list = lv_list_create(parent);
+    // Build the list from neutral widgets instead of lv_list. The Material
+    // theme's lv_list button style adds large margins/paddings that make the
+    // 11-entry list overflow on small and large displays alike.
+    lv_obj_t* list = lv_obj_create(parent);
     lv_obj_set_width(list, LV_PCT(100));
     lv_obj_set_flex_grow(list, 1);
+    lv_obj_set_layout(list, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_all(list, uiPad(), 0);
     lv_obj_set_style_pad_row(list, uiRowGap(), 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_scrollable(list, true);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
 
     const lv_font_t* font = lvgl_get_text_font(uiFont());
+    const lv_font_t* iconFont = lvgl_get_shared_icon_default_font();
+    const lv_coord_t rowH = uiH() < 200 ? 28 : 40;
 
     for (int i = 0; i < UNIT_COUNT; i++) {
-        lv_obj_t* btn = lv_list_add_button(list, UNIT_ICONS[i], UNIT_NAMES[i]);
+        lv_obj_t* btn = lv_button_create(list);
+        lv_obj_set_size(btn, LV_PCT(100), rowH);
+        lv_obj_set_layout(btn, LV_LAYOUT_FLEX);
+        lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_hor(btn, 10, 0);
+        lv_obj_set_style_pad_ver(btn, 2, 0);
+        lv_obj_set_style_bg_color(btn, (i & 1) ? uiPanelColor() : uiBtnColor(), 0);
         lv_obj_set_user_data(btn, (void*)(intptr_t)i);
         lv_obj_add_event_cb(btn, onBtnClicked, LV_EVENT_CLICKED, app);
-        // lv_list_add_button creates: child 0 = icon label, child 1 = text label
-        lv_obj_t* textLbl = lv_obj_get_child(btn, 1);
-        if (textLbl) lv_obj_set_style_text_font(textLbl, font, 0);
-        lv_obj_t* iconLbl = lv_obj_get_child(btn, 0);
-        if (iconLbl) lv_obj_set_style_text_font(iconLbl, lvgl_get_shared_icon_default_font(), 0);
+
+        lv_obj_t* iconLbl = lv_label_create(btn);
+        lv_label_set_text(iconLbl, UNIT_ICONS[i]);
+        lv_obj_set_style_text_font(iconLbl, iconFont, 0);
+        lv_obj_set_style_text_color(iconLbl, uiTextColor(), 0);
+        lv_obj_set_width(iconLbl, 28);
+        lv_obj_set_style_text_align(iconLbl, LV_TEXT_ALIGN_CENTER, 0);
+
+        lv_obj_t* textLbl = lv_label_create(btn);
+        lv_label_set_text(textLbl, UNIT_NAMES[i]);
+        lv_obj_set_style_text_font(textLbl, font, 0);
+        lv_obj_set_style_text_color(textLbl, uiTextColor(), 0);
+        lv_obj_set_flex_grow(textLbl, 1);
     }
 }

@@ -53,7 +53,7 @@ lv_obj_t* createRowWrapper(lv_obj_t* parent) {
 void showError(Context* app, const char* message) {
     const char* argv[] = { "Error", message, "OK" };
     uint32_t dialogInstanceId = 0;
-    app_start_for_result("AlertDialog", 3, argv, app->appInstanceId, &dialogInstanceId);
+    app_start_for_result("tactility.alertdialog", 3, argv, app->appInstanceId, &dialogInstanceId);
 }
 
 void onConnect(Context* app) {

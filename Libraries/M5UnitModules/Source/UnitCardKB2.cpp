@@ -69,6 +69,16 @@ static char fnCombo(uint8_t id) {
 // I2C
 // ---------------------------------------------------------------------------
 
+bool UnitCardKB2::readVersion(uint8_t& version) {
+    version = 0;
+    if (!i2cDev_) return false;
+    if (!unitReadReg(i2cDev_, addr_, UNIT_CARDKB2_VERSION_REG, &version, 1)) {
+        version = 0;
+        return false;
+    }
+    return version >= 1 && version <= 15;
+}
+
 bool UnitCardKB2::begin(Device* dev, uint8_t addr) {
     end();
     if (!dev || !device_is_ready(dev)) return false;
@@ -78,8 +88,27 @@ bool UnitCardKB2::begin(Device* dev, uint8_t addr) {
     }
     i2cDev_ = dev;
     addr_   = addr;
-    mode_   = Mode::I2C;
-    ESP_LOGI(TAG, "CardKB2 ready (I2C) at 0x%02X", addr_);
+
+    // unitProbe() already read the version, but the STM32 may still be busy
+    // after the probe's STOP. Retry the identity read before declaring success.
+    uint8_t version = 0;
+    bool identityOk = false;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (readVersion(version)) {
+            identityOk = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    if (!identityOk) {
+        ESP_LOGW(TAG, "CardKB2 identity check failed at 0x%02X", addr_);
+        i2cDev_ = nullptr;
+        return false;
+    }
+
+    version_ = version;
+    mode_    = Mode::I2C;
+    ESP_LOGI(TAG, "CardKB2 ready (I2C) at 0x%02X (fw %u)", addr_, (unsigned)version_);
     return true;
 }
 
@@ -225,6 +254,7 @@ void UnitCardKB2::end() {
         uartDev_ = nullptr;
     }
     i2cDev_           = nullptr;
+    version_          = 0;
     cachedKey_        = 0;
     frameState_       = FrameState::WaitAA;
     capsLock_         = false;

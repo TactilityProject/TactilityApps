@@ -217,7 +217,7 @@ void epubReaderCreateWidgets(lv_obj_t* parent, void* userData) {
                 "OK",
             };
             app_start_for_result(
-                "AlertDialog", 3, argv, ctx->appInstanceId, &ctx->psramAlertId_
+                "tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->psramAlertId_
             );
         }
         return;
@@ -240,7 +240,7 @@ void epubReaderCreateWidgets(lv_obj_t* parent, void* userData) {
     }
 
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
 
     ctx->toolbar_ = lvgl_toolbar_create(parent, "Epub Reader");
 
@@ -251,7 +251,7 @@ void epubReaderCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_all(ctx->wrapperWidget_, 0, 0);
     lv_obj_set_style_border_width(ctx->wrapperWidget_, 0, 0);
     lv_obj_set_style_bg_opa(ctx->wrapperWidget_, LV_OPA_TRANSP, 0);
-    lv_obj_remove_flag(ctx->wrapperWidget_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(ctx->wrapperWidget_, false);
 
     // Attempt to open a book: launch parameter → saved progress (first show only).
     // Both paths use lv_async_call so EpubService::open runs at fresh stack

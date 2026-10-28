@@ -1,97 +1,77 @@
 #pragma once
 
-#include "PixelBuffer.h"
-#include "drivers/DisplayDriver.h"
+#include <gfx/Gfx.h>
+
 #include <cmath>
 #include <cstdlib>
+
 #include <esp_random.h>
 
 /**
- * Mystify Screensaver Demo
+ * Mystify screensaver demo.
  *
- * Classic Windows-style mystify screensaver with bouncing polygons and trailing edges.
- * Adapted to work with DisplayDriver and PixelBuffer abstractions.
+ * Draws two bouncing polygons with trailing edges. Rendering goes through gfx::Target, which picks
+ * the cheapest way onto the panel (frame buffer flip, dirty regions, or bands), so the same drawing
+ * code runs on MIPI, RGB, SPI and e-paper panels regardless of how much RAM they have.
  *
- * Usage:
- *   MystifyDemo mystify;
- *   mystify.init(display);
- *
- *   while (!shouldExit) {
- *       mystify.update();
- *   }
+ * The trails are erased by redrawing the snapshots that dropped out of them in black, instead of
+ * clearing each polygon's bounding box. The box is large (four independently bouncing vertices span
+ * much of the screen) while the dropped snapshots are few, and on a hardware frame buffer every
+ * touched cache line costs a fill and a writeback. Erasing the ones from the previous two frames
+ * also repairs the back buffer, which still holds the frame before last, so the target doesn't have
+ * to copy anything forward - hence Prepare::Overwrite below.
  */
 class MystifyDemo {
 public:
     static constexpr int NUM_POLYGONS = 2;
     static constexpr int NUM_VERTICES = 4;
     static constexpr int TRAIL_LENGTH = 8;
-    static constexpr int COLOR_CHANGE_INTERVAL = 200;  // Frames between color changes
-    static constexpr int STRIP_HEIGHT = 16;  // Draw in strips to avoid SPI buffer overflow
+    static constexpr int COLOR_CHANGE_INTERVAL = 200;  // Frames between colour changes
+    // Two, because a double-buffered target displays the frame before last when this one is drawn
+    static constexpr int ERASE_AGES = 2;
+    // One snapshot per trail entry, plus enough to still reproduce the trails of ERASE_AGES frames
+    // ago: a ring of only TRAIL_LENGTH slots loses the oldest snapshot the moment it advances.
+    static constexpr int HISTORY_LENGTH = TRAIL_LENGTH + ERASE_AGES;
 
     MystifyDemo() = default;
-    ~MystifyDemo() { deinit(); }
+    ~MystifyDemo() = default;
 
-    // Non-copyable, non-movable (owns PixelBuffer)
     MystifyDemo(const MystifyDemo&) = delete;
     MystifyDemo& operator=(const MystifyDemo&) = delete;
     MystifyDemo(MystifyDemo&&) = delete;
     MystifyDemo& operator=(MystifyDemo&&) = delete;
 
-    bool init(DisplayDriver* display) {
-        if (!display) {
+    /** @param target must outlive this object */
+    bool init(gfx::Target* target) {
+        if (target == nullptr || !target->valid()) {
             return false;
         }
 
-        display_ = display;
-        width_ = display->getWidth();
-        height_ = display->getHeight();
-
+        target_ = target;
+        width_ = target->info().width;
+        height_ = target->info().height;
         if (width_ <= 0 || height_ <= 0) {
             return false;
         }
 
-        // Seed random generator with hardware entropy
         srand(static_cast<unsigned>(esp_random()));
-
-        // Allocate full-screen framebuffer
-        void* mem = malloc(sizeof(PixelBuffer));
-        if (!mem) {
-            return false;
-        }
-        framebuffer_ = new(mem) PixelBuffer(width_, height_, display->getColorFormat());
 
         initPolygons();
         return true;
     }
 
-    void deinit() {
-        if (framebuffer_) {
-            framebuffer_->~PixelBuffer();
-            free(framebuffer_);
-            framebuffer_ = nullptr;
-        }
-        display_ = nullptr;
-    }
-
     void update() {
-        if (!framebuffer_ || !display_) return;
-
-        // Clear framebuffer to black
-        framebuffer_->clear();
-
-        // Update and draw each polygon
-        for (int p = 0; p < NUM_POLYGONS; p++) {
-            updatePolygon(polygons_[p]);
-            drawPolygon(polygons_[p]);
+        if (target_ == nullptr) {
+            return;
         }
 
-        // Send framebuffer to display in strips (full screen is too large for single SPI transaction)
-        display_->lock();
-        for (int y = 0; y < height_; y += STRIP_HEIGHT) {
-            int stripEnd = (y + STRIP_HEIGHT > height_) ? height_ : y + STRIP_HEIGHT;
-            display_->drawBitmap(0, y, width_, stripEnd, framebuffer_->getDataAtRow(y));
+        for (auto& polygon : polygons_) {
+            advance(polygon);
         }
-        display_->unlock();
+
+        target_->render([this](gfx::Surface& surface) {
+            draw(surface);
+        }, gfx::Prepare::Overwrite);
     }
 
 private:
@@ -105,34 +85,34 @@ private:
 
     struct Polygon {
         Vertex vertices[NUM_VERTICES];
-        // History: [trail_index][vertex_index] = {x, y}
-        int16_t historyX[TRAIL_LENGTH][NUM_VERTICES];
-        int16_t historyY[TRAIL_LENGTH][NUM_VERTICES];
-        uint8_t colorIndex;
+        // History: [snapshot_index][vertex_index] = {x, y}
+        int16_t historyX[HISTORY_LENGTH][NUM_VERTICES];
+        int16_t historyY[HISTORY_LENGTH][NUM_VERTICES];
+        uint8_t colorIndex = 0;
         int historyHead = 0;
-        bool historyFull = false;
         int colorChangeCounter = 0;
     };
 
-    // Vibrant colors as RGB888 for format-agnostic rendering
+    // Vibrant colours as RGB888, converted per pixel for format-agnostic rendering
     struct Color {
-        uint8_t r, g, b;
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
     };
 
     static constexpr Color COLOR_POOL[] = {
-        {255, 0, 255},    // Magenta
-        {0, 255, 255},    // Cyan
-        {255, 255, 0},    // Yellow
-        {255, 128, 0},    // Orange
-        {0, 255, 128},    // Spring green
-        {128, 0, 255},    // Purple
-        {255, 64, 128},   // Hot pink
-        {128, 255, 0},    // Lime
+        { 255, 0, 255 },    // Magenta
+        { 0, 255, 255 },    // Cyan
+        { 255, 255, 0 },    // Yellow
+        { 255, 128, 0 },    // Orange
+        { 0, 255, 128 },    // Spring green
+        { 128, 0, 255 },    // Purple
+        { 255, 64, 128 },   // Hot pink
+        { 128, 255, 0 },    // Lime
     };
     static constexpr int COLOR_POOL_SIZE = sizeof(COLOR_POOL) / sizeof(COLOR_POOL[0]);
 
-    DisplayDriver* display_ = nullptr;
-    PixelBuffer* framebuffer_ = nullptr;
+    gfx::Target* target_ = nullptr;
     uint16_t width_ = 0;
     uint16_t height_ = 0;
     Polygon polygons_[NUM_POLYGONS];
@@ -141,24 +121,21 @@ private:
         return min + (max - min) * (static_cast<float>(rand()) / static_cast<float>(RAND_MAX));
     }
 
-    void initPolygons() {
-        for (int p = 0; p < NUM_POLYGONS; p++) {
-            Polygon& polygon = polygons_[p];
+    static uint16_t toRgb565(uint8_t r, uint8_t g, uint8_t b) {
+        return static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    }
 
-            // Pick random color from pool
-            polygon.colorIndex = rand() % COLOR_POOL_SIZE;
+    void initPolygons() {
+        for (auto& polygon : polygons_) {
+            polygon.colorIndex = static_cast<uint8_t>(rand() % COLOR_POOL_SIZE);
             polygon.historyHead = 0;
-            polygon.historyFull = false;
-            // Stagger color changes so polygons don't change simultaneously
+            // Stagger colour changes so both polygons don't change at the same time
             polygon.colorChangeCounter = rand() % COLOR_CHANGE_INTERVAL;
 
-            // Initialize vertices with random positions and velocities
-            for (int v = 0; v < NUM_VERTICES; v++) {
-                Vertex& vertex = polygon.vertices[v];
+            for (auto& vertex : polygon.vertices) {
                 vertex.x = static_cast<float>(rand() % width_);
                 vertex.y = static_cast<float>(rand() % height_);
 
-                // Speed range for smooth movement
                 vertex.dx = randomFloat(0.8f, 2.0f);
                 vertex.dy = randomFloat(0.8f, 2.0f);
                 if (rand() % 2) vertex.dx = -vertex.dx;
@@ -170,8 +147,7 @@ private:
                 }
             }
 
-            // Initialize history with current positions
-            for (int t = 0; t < TRAIL_LENGTH; t++) {
+            for (int t = 0; t < HISTORY_LENGTH; t++) {
                 for (int v = 0; v < NUM_VERTICES; v++) {
                     polygon.historyX[t][v] = static_cast<int16_t>(polygon.vertices[v].x);
                     polygon.historyY[t][v] = static_cast<int16_t>(polygon.vertices[v].y);
@@ -180,29 +156,26 @@ private:
         }
     }
 
-    void updatePolygon(Polygon& polygon) {
+    /** Moves the polygon and records its new position. Drawing is a separate step. */
+    void advance(Polygon& polygon) {
         constexpr float minSpeed = 0.5f;
         constexpr float maxSpeed = 2.5f;
 
-        // Periodic color change
         polygon.colorChangeCounter++;
         if (polygon.colorChangeCounter >= COLOR_CHANGE_INTERVAL) {
             polygon.colorChangeCounter = 0;
-            // Pick a different color
             uint8_t newColor;
             do {
-                newColor = rand() % COLOR_POOL_SIZE;
+                newColor = static_cast<uint8_t>(rand() % COLOR_POOL_SIZE);
             } while (newColor == polygon.colorIndex && COLOR_POOL_SIZE > 1);
             polygon.colorIndex = newColor;
         }
 
-        // Move vertices
-        for (int v = 0; v < NUM_VERTICES; v++) {
-            Vertex& vertex = polygon.vertices[v];
+        for (auto& vertex : polygon.vertices) {
             vertex.x += vertex.dx;
             vertex.y += vertex.dy;
 
-            // Bounce off edges with slight angle variation for organic movement
+            // Bounce off the edges with a slight angle variation for organic movement
             if (vertex.x <= 0) {
                 vertex.x = 0;
                 vertex.dx = std::fabs(vertex.dx);
@@ -223,95 +196,78 @@ private:
                 vertex.dx *= (1.0f + randomFloat(-0.1f, 0.1f));
             }
 
-            // Clamp speeds to prevent runaway acceleration or stalling
-            auto clampSpeed = [minSpeed, maxSpeed](float& speed) {
-                float sign = (speed >= 0) ? 1.0f : -1.0f;
-                float absSpeed = std::fabs(speed);
-                if (absSpeed < minSpeed) absSpeed = minSpeed;
-                if (absSpeed > maxSpeed) absSpeed = maxSpeed;
-                speed = sign * absSpeed;
+            auto clampSpeed = [](float& speed) {
+                const float sign = (speed >= 0) ? 1.0f : -1.0f;
+                float absolute = std::fabs(speed);
+                if (absolute < minSpeed) absolute = minSpeed;
+                if (absolute > maxSpeed) absolute = maxSpeed;
+                speed = sign * absolute;
             };
             clampSpeed(vertex.dx);
             clampSpeed(vertex.dy);
         }
 
-        // Advance history ring buffer
-        polygon.historyHead = (polygon.historyHead + 1) % TRAIL_LENGTH;
-        if (polygon.historyHead == 0) {
-            polygon.historyFull = true;
-        }
+        // Advance the history ring buffer
+        polygon.historyHead = (polygon.historyHead + 1) % HISTORY_LENGTH;
 
-        // Store current positions
         for (int v = 0; v < NUM_VERTICES; v++) {
             polygon.historyX[polygon.historyHead][v] = static_cast<int16_t>(polygon.vertices[v].x);
             polygon.historyY[polygon.historyHead][v] = static_cast<int16_t>(polygon.vertices[v].y);
         }
     }
 
-    void drawPolygon(const Polygon& polygon) {
+    /** Draws the polygon's single quad for one snapshot @a offset frames before the newest. */
+    void drawSnapshot(gfx::Surface& surface, const Polygon& polygon, int offset, uint16_t color) const {
+        int index = polygon.historyHead - offset;
+        while (index < 0) {
+            index += HISTORY_LENGTH;
+        }
+
+        for (int e = 0; e < NUM_VERTICES; e++) {
+            const int nextVertex = (e + 1) % NUM_VERTICES;
+            surface.line(
+                polygon.historyX[index][e],
+                polygon.historyY[index][e],
+                polygon.historyX[index][nextVertex],
+                polygon.historyY[index][nextVertex],
+                color
+            );
+        }
+    }
+
+    /** Draws the current trail, oldest snapshot first so the newest ends up on top. */
+    void drawTrail(gfx::Surface& surface, const Polygon& polygon) const {
         const Color& baseColor = COLOR_POOL[polygon.colorIndex];
 
-        // Draw trail from oldest to newest (so newest is on top)
         for (int t = TRAIL_LENGTH - 1; t >= 0; t--) {
-            int histIndex = polygon.historyHead - t;
-            if (histIndex < 0) histIndex += TRAIL_LENGTH;
-
-            // Skip if we don't have enough history yet
-            if (!polygon.historyFull && histIndex > polygon.historyHead) {
-                continue;
-            }
-
-            // Calculate brightness for this trail frame (older = dimmer)
+            // Older trail frames are dimmer
             int brightness = 255 - (t * 230 / TRAIL_LENGTH);
             if (brightness < 25) brightness = 25;
 
-            // Scale color by brightness
-            uint8_t r = (baseColor.r * brightness) / 255;
-            uint8_t g = (baseColor.g * brightness) / 255;
-            uint8_t b = (baseColor.b * brightness) / 255;
+            const uint16_t color = toRgb565(
+                static_cast<uint8_t>(baseColor.r * brightness / 255),
+                static_cast<uint8_t>(baseColor.g * brightness / 255),
+                static_cast<uint8_t>(baseColor.b * brightness / 255)
+            );
 
-            // Draw edges connecting vertices
-            for (int e = 0; e < NUM_VERTICES; e++) {
-                int nextVertex = (e + 1) % NUM_VERTICES;
-
-                int x0 = polygon.historyX[histIndex][e];
-                int y0 = polygon.historyY[histIndex][e];
-                int x1 = polygon.historyX[histIndex][nextVertex];
-                int y1 = polygon.historyY[histIndex][nextVertex];
-
-                drawLine(x0, y0, x1, y1, r, g, b);
-            }
+            drawSnapshot(surface, polygon, t, color);
         }
     }
 
-    // Bresenham's line algorithm
-    void drawLine(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
-        int dx = std::abs(x1 - x0);
-        int dy = std::abs(y1 - y0);
-        int sx = (x0 < x1) ? 1 : -1;
-        int sy = (y0 < y1) ? 1 : -1;
-        int err = dx - dy;
-
-        while (true) {
-            setPixel(x0, y0, r, g, b);
-
-            if (x0 == x1 && y0 == y1) break;
-
-            int e2 = 2 * err;
-            if (e2 > -dy) {
-                err -= dy;
-                x0 += sx;
-            }
-            if (e2 < dx) {
-                err += dx;
-                y0 += sy;
+    /** Draws one frame. Safe to call more than once per update (banded mode does). */
+    void draw(gfx::Surface& surface) const {
+        // Only the snapshots that dropped out of the trail since the frame in the back buffer was
+        // drawn need erasing: the ones still in the trail are redrawn anyway, with the brightness
+        // of their new position. Erasing one polygon after another has been drawn would wipe that
+        // one's trail, so every erase happens before any draw.
+        for (const auto& polygon : polygons_) {
+            for (int offset = TRAIL_LENGTH; offset < TRAIL_LENGTH + ERASE_AGES; offset++) {
+                drawSnapshot(surface, polygon, offset, 0x0000);
             }
         }
-    }
 
-    void setPixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-        if (x >= 0 && x < width_ && y >= 0 && y < height_) {
-            framebuffer_->setPixel(x, y, r, g, b);
+        for (const auto& polygon : polygons_) {
+            drawTrail(surface, polygon);
         }
     }
 };

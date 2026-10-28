@@ -11,8 +11,10 @@
 namespace {
 
 void selectIfNeeded(TestUnitJoystick2* self) {
-    if (self->usingPaHub_ && self->hub_.isPresent())
-        self->hub_.select(self->hub_.currentChannel());
+    if (self->usingPaHub_ && self->hub_.isPresent() &&
+        self->channel_ != UnitPaHub::NO_CHANNEL) {
+        self->hub_.select(self->channel_);
+    }
 }
 
 void update(TestUnitJoystick2* self) {
@@ -102,15 +104,18 @@ void testUnitJoystick2Start(TestUnitJoystick2* self, lv_obj_t* parent, Context* 
     self->joyCont_ = lv_obj_create(cont);
     lv_obj_set_size(self->joyCont_, JOY_AREA, JOY_AREA);
     lv_obj_set_style_bg_color(self->joyCont_, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_bg_opa(self->joyCont_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(self->joyCont_, JOY_AREA / 2, 0);
     lv_obj_set_style_border_width(self->joyCont_, 2, 0);
+    lv_obj_set_style_border_color(self->joyCont_, lv_color_hex(0x666666), 0);
     lv_obj_set_style_pad_all(self->joyCont_, 0, 0);
-    lv_obj_remove_flag(self->joyCont_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(self->joyCont_, false);
 
     self->dot_ = lv_obj_create(self->joyCont_);
     lv_obj_set_size(self->dot_, DOT_SIZE, DOT_SIZE);
     lv_obj_set_style_radius(self->dot_, DOT_SIZE / 2, 0);
     lv_obj_set_style_bg_color(self->dot_, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_bg_opa(self->dot_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(self->dot_, 0, 0);
     lv_obj_set_pos(self->dot_, (JOY_AREA - DOT_SIZE) / 2, (JOY_AREA - DOT_SIZE) / 2);
 
@@ -120,21 +125,30 @@ void testUnitJoystick2Start(TestUnitJoystick2* self, lv_obj_t* parent, Context* 
         return;
     }
 
-    if (self->unit_.begin(i2c)) {
-        self->usingPaHub_ = false;
-    } else if (self->hub_.begin(i2c)) {
-        self->usingPaHub_ = true;
-        bool found = false;
+    bool found = false;
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
+
+    // PaHub first. A channel left selected by an earlier test can make a
+    // direct probe succeed through the mux and then break on the next switch.
+    if (self->hub_.begin(i2c)) {
         for (uint8_t ch = 0; ch < UnitPaHub::NUM_CHANNELS && !found; ch++) {
-            self->hub_.select(ch);
-            if (self->unit_.begin(i2c)) found = true;
+            if (!self->hub_.select(ch)) continue;
+            if (self->unit_.begin(i2c)) {
+                self->usingPaHub_ = true;
+                self->channel_    = ch;
+                found = true;
+            }
         }
-        if (!found) {
-            self->hub_.deselect();
-            lv_label_set_text(self->lblXY_, "Joystick2 not found");
-            return;
-        }
-    } else {
+        if (!found) self->hub_.deselect();
+    }
+    if (!found && self->unit_.begin(i2c)) {
+        self->usingPaHub_ = false;
+        self->channel_    = UnitPaHub::NO_CHANNEL;
+        found = true;
+    }
+
+    if (!found) {
         lv_label_set_text(self->lblXY_, "Joystick2 not found");
         return;
     }
@@ -148,5 +162,7 @@ void testUnitJoystick2Stop(TestUnitJoystick2* self) {
     selectIfNeeded(self);
     if (self->unit_.isPresent()) self->unit_.setLed(0x000000);
     if (self->usingPaHub_ && self->hub_.isPresent()) self->hub_.deselect();
+    self->usingPaHub_ = false;
+    self->channel_    = UnitPaHub::NO_CHANNEL;
     self->lblXY_ = self->lblButton_ = self->dot_ = self->joyCont_ = nullptr;
 }

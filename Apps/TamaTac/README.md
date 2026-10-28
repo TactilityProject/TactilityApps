@@ -11,7 +11,7 @@ TamaTac is a digital pet that lives in your ESP32 device. Feed it, play with it,
 ### Core Pet System
 - **5 Stats**: Hunger, Happiness, Health, Energy, Cleanliness (0-100%)
 - **6 Life Stages**: Egg > Baby > Teen > Adult > Elder > Ghost
-- **5 Personalities**: Energetic, Lazy, Glutton, Cheerful, Hardy — each affects stat decay rates
+- **5 Personalities**: Energetic, Lazy, Glutton, Cheerful, Hardy - each affects stat decay rates
 - **Automatic Decay**: Stats decay on a 30-second FreeRTOS timer
 - **Configurable Speed**: Slow (0.5x), Normal (1x), Fast (2x) decay rates
 - **Sickness**: Health below 20% triggers sick state
@@ -41,7 +41,7 @@ Random events occur during timer ticks (~12% chance per tick):
 - **Had a Nap**: +15 energy
 - **Sunny Day**: +10 happiness (day only)
 
-Events are contextual — only eligible events trigger based on current stats.
+Events are contextual - only eligible events trigger based on current stats.
 
 ### Mini-Games
 
@@ -54,11 +54,11 @@ Events are contextual — only eligible events trigger based on current stats.
 - **Lose immediately**: +5 happiness, -5 energy
 
 #### Reaction Time Game
-- Large green circle target appears after a random delay (1-3.5 seconds)
+- Target circle appears after a random delay (1-3.5 seconds)
 - Tap as fast as possible when it appears
 - Tapping too early = penalty round
-- 3 rounds, scored by average reaction time
-- Performance mapped to happiness reward
+- 3 rounds: every in-time tap completes a round; all three fast (≤400ms) earns perfect
+- Completion mapped to happiness reward, perfect unlocks Pro Gamer
 
 ### Pet Cemetery
 When your pet dies, it's remembered in the Cemetery:
@@ -92,28 +92,39 @@ Uses the shared SfxEngine library:
 - Sound toggle in Settings
 
 ### Responsive Scaling
-Adapts to all Tactility screen sizes:
-- **Small** (Cardputer 240x135, T-Dongle): Compact layout, 2x sprites
-- **Medium** (T-Deck 320x240): Default layout, 3x sprites
-- **Large** (480x320 panels): Spacious layout
-- **XLarge** (800x480+): Full-size layout
+Adapts to all Tactility screen sizes (21 known resolutions, 80x160 to 720x1280):
+- **Small** (240x135, 135x240, 170x320-class): Compact layout, 2x sprites
+- **Medium** (320x240, 240x320, 320x480, squares): Default layout, 3x sprites
+- **Large** (480x480-class): 4x sprites
+- **XLarge** (800x480 RGB): 6x sprites, capped 720px centered column
+- **XXLarge** (Tab5 720x1280, 1024x600 RGB): 6x sprites, 3x icons, capped 800px column
+- Sub-280px tall/wide portrait screens stack pet above stats; all tiers share one
+  detector (`Layout.h`) instead of per-view pixel checks
+- MainView fills its real content area: integer pet scale (2x-8x) refit on layout
+  and rotation, measured-width button rows (1x4, never-wrapping 2x2), hide-until-settled
+- Mini-games size toward the display short side; scrollable list views never clip
 
 ### Views
 - **Main View**: Pet sprite, stat bars with icons, action buttons, poop display, day/night visuals
 - **Menu View**: Navigation to Stats, Settings, Cemetery, and Achievements
 - **Stats View**: Detailed stats with exact values, age, life stage, personality
-- **Settings View**: Sound toggle, decay speed selector
-- **Pattern Game**: Simon Says mini-game
-- **Reaction Game**: Reaction time mini-game
+- **Settings View**: Sound toggle, decay speed chips (Slow/Normal/Fast)
+- **Pattern Game**: Simon Says mini-game (explicit 2x2 rows)
+- **Reaction Game**: Reaction time mini-game (completion vs perfect tracked separately)
 - **Cemetery View**: Hall of fame for past pets
 - **Achievements View**: Progress tracker for all 12 achievements
 
 ### Animated Sprites
 - 24x24 RGB565 full-color sprites with transparency (magenta color key)
 - 12 animated pet sprites (2-3 frames each) for all life stages and states
-- 9 monochrome 8x8 UI icons for stats and action buttons
-- Canvas-rendered with responsive scaling (2x on small screens, 3x on medium+)
-- Animation timer at ~5fps for smooth frame cycling
+- 9 monochrome 8x8 UI icons for stats and action buttons (3x on XXLarge)
+- Canvas-rendered with integer scaling (2x-8x); heap canvas above 72px so small
+  no-PSRAM devices pay nothing extra
+- Pixel-art backdrop: flat day/night colors (band-free on RGB565, fastest load)
+  + XL/XXL scenery (Flash silhouettes + tileable grass, zero RAM, faded behind
+  the UI): sun/moon, clouds, ground strip; `gen_bgdecor.py` also renders
+  composed `decor/scene_day.png` + `scene_night.png` previews
+- Animation timer at ~5fps, skipping identical frames to save CPU at large scales
 
 #### Sprite Preview
 
@@ -185,7 +196,9 @@ TamaTac/
       MainView.h/cpp        # Pet display, stat bars, action buttons, day/night
       MenuView.h/cpp        # Navigation menu
       StatsView.h/cpp       # Detailed stats display (incl. personality)
-      SettingsView.h/cpp    # Sound toggle and decay speed settings
+      SettingsView.h/cpp    # Sound toggle and decay speed chips
+      Layout.h              # Shared viewport/size-class detector + content caps
+      Decor.h               # Generated scenery art (see Scripts/sprite_tools/gen_bgdecor.py)
       PatternGame.h/cpp     # Simon Says mini-game
       ReactionGame.h/cpp    # Reaction time mini-game
       CemeteryView.h/cpp    # Pet cemetery / hall of fame
@@ -213,12 +226,14 @@ TamaTac uses a multi-view pattern with a shared `wrapperWidget`. Views are swapp
 
 ### Save Data
 
-| Namespace | Keys |
+One properties file per concern under the app's user-data path:
+
+| File | Keys |
 |-----------|------|
-| `"TamaTac"` | `hunger`, `happiness`, `health`, `energy`, `cleanliness`, `poopCount`, `ageSeconds`, `ageHours`, `lifespan`, `isSick`, `isAsleep`, `isDead`, `stage`, `currentAnim`, `lastSaveTime`, `personality` |
-| `"TamaTacCfg"` | `soundEnabled`, `decaySpeed` |
-| `"TamaTacCem"` | `count`, `pers0..4`, `stage0..4`, `age0..4`, `valid0..4` |
-| `"TamaTacAch"` | `bits` (uint16 bitfield), `cleanCnt` |
+| `pet.properties` | `hunger`, `happiness`, `health`, `energy`, `cleanliness`, `poopCount`, `ageSeconds`, `ageHours`, `lifespan`, `isSick`, `isAsleep`, `isDead`, `stage`, `currentAnim`, `personality`, `lastSaveTime` |
+| `tamatac.properties` | `soundOn`, `decaySpd` |
+| `cemetery.properties` | `valid0..4`, `pers0..4`, `stage0..4`, `age0..4` |
+| `achievements.properties` | `bits` (uint16 bitfield), `cleanCnt` |
 
 ## Screenshots
 

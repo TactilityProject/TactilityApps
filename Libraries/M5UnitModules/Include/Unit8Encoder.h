@@ -14,7 +14,7 @@
  *   0x60        : uint8_t  toggle switch state (0=off, 1=on)  [R]
  *   0x70 + i*3  : [R, G, B]  LED colour for encoder i (i = 0-7, 0x00RRGGBB)  [R/W]
  *   0x88        : [R, G, B]  LED colour for the toggle switch (LED8)  [R/W]
- *   0xF0        : uint8_t  firmware version  [R]
+ *   0xFE        : uint8_t  firmware version  [R]
  *   0xFF        : uint8_t  I2C address (R/W)
  *
  * LED indices: 0-7 = encoder LEDs, 8 = switch LED (total 9 LEDs).
@@ -87,4 +87,6 @@ private:
     static constexpr uint8_t REG_SWITCH     = 0x60;
     static constexpr uint8_t REG_LED        = 0x70;  // encoder LEDs 0-7 (24 bytes)
     static constexpr uint8_t REG_SWITCH_LED = 0x88;  // switch LED (3 bytes)
+    static constexpr uint8_t REG_VERSION    = 0xFE;  // firmware version  [R]
+    static constexpr uint8_t REG_ADDRESS    = 0xFF;  // I2C address      [R/W]
 };

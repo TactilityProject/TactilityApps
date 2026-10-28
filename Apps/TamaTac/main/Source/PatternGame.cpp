@@ -4,6 +4,7 @@
  */
 
 #include "PatternGame.h"
+#include "Layout.h"
 #include "TamaTac.h"
 #include "SfxEngine.h"
 #include <lvgl_window_manager/window_manager.h>
@@ -244,18 +245,27 @@ void onButtonClicked(lv_event_t* e) {
 void patternGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     PatternGameState* state = &ctx->patternGame;
 
-    // Screen size detection
-    lv_coord_t screenWidth = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenHeight = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenWidth < 280 || screenHeight < 180);
-    bool isXLarge = (screenWidth >= 600);
-    bool isLarge = !isXLarge && (screenWidth >= 400 && screenHeight >= 300);
+    // Screen size detection (shared helper)
+    TamaViewport vp = tamaGetViewport();
+    bool isSmall = tamaIsSmall(vp);
+    bool isXLarge = tamaIsXLarge(vp);
+    bool isLarge = !isXLarge && (vp.width >= 400 && vp.height >= 300);
 
     // Scaled dimensions
     int btnSize = isSmall ? 50 : (isXLarge ? 120 : (isLarge ? 90 : 70));
     int gap = isSmall ? 4 : (isXLarge ? 12 : (isLarge ? 8 : 6));
     int pad = isSmall ? 4 : (isXLarge ? 16 : 8);
     int radius = isSmall ? 6 : (isXLarge ? 16 : 10);
+
+    // Fill sizing: grow the 2x2 grid toward the display's short side,
+    // shrink it into short landscape screens (240x135). Floor 36px.
+    {
+        int avail = vp.width < vp.height ? vp.width : vp.height;
+        int fillBtn = (avail - 100 - gap * 3) / 2;
+        if (fillBtn < 32) fillBtn = 32;
+        if (fillBtn > 170) fillBtn = 170;
+        btnSize = fillBtn;
+    }
 
     // Main wrapper
     lv_obj_t* wrapper = lv_obj_create(parent);
@@ -266,14 +276,15 @@ void patternGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     lv_obj_set_flex_flow(wrapper, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(wrapper, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(wrapper, gap, 0);
-    lv_obj_remove_flag(wrapper, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(wrapper, false);
 
     // Status label
     state->statusLabel = lv_label_create(wrapper);
     lv_label_set_text(state->statusLabel, "Get ready...");
     lv_obj_set_style_text_align(state->statusLabel, LV_TEXT_ALIGN_CENTER, 0);
 
-    // 2x2 button grid
+    // 2x2 button grid: two explicit rows (a WRAP grid exact-fits its content
+    // width and can collapse to one clipped column on rounding)
     lv_obj_t* grid = lv_obj_create(wrapper);
     int gridSize = btnSize * 2 + gap * 3;
     lv_obj_set_size(grid, gridSize, gridSize);
@@ -283,20 +294,33 @@ void patternGameCreateWidgets(lv_obj_t* parent, Context* ctx) {
     lv_obj_set_style_bg_color(grid, lv_color_hex(0x1a1a2e), 0);
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_style_radius(grid, radius, 0);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(grid, false);
 
-    // Create 4 game buttons
-    for (int i = 0; i < 4; i++) {
-        state->buttons[i] = lv_btn_create(grid);
-        lv_obj_set_size(state->buttons[i], btnSize, btnSize);
-        lv_obj_set_style_bg_color(state->buttons[i], lv_color_hex(DIM_COLORS[i]), 0);
-        lv_obj_set_style_bg_color(state->buttons[i], lv_color_hex(BRIGHT_COLORS[i]), LV_STATE_PRESSED);
-        lv_obj_set_style_radius(state->buttons[i], radius, 0);
-        lv_obj_set_style_border_width(state->buttons[i], 0, 0);
-        lv_obj_set_style_shadow_width(state->buttons[i], 0, 0);
-        lv_obj_add_event_cb(state->buttons[i], onButtonClicked, LV_EVENT_CLICKED, ctx);
+    // Create 4 game buttons in 2 fixed rows
+    for (int r = 0; r < 2; r++) {
+        lv_obj_t* row = lv_obj_create(grid);
+        lv_obj_set_size(row, btnSize * 2 + gap, btnSize);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, gap, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_scrollable(row, false);
+
+        for (int c = 0; c < 2; c++) {
+            int i = r * 2 + c;
+            state->buttons[i] = lv_btn_create(row);
+            lv_obj_set_size(state->buttons[i], btnSize, btnSize);
+            lv_obj_set_style_bg_color(state->buttons[i], lv_color_hex(DIM_COLORS[i]), 0);
+            lv_obj_set_style_bg_color(state->buttons[i], lv_color_hex(BRIGHT_COLORS[i]), LV_STATE_PRESSED);
+            lv_obj_set_style_radius(state->buttons[i], radius, 0);
+            lv_obj_set_style_border_width(state->buttons[i], 0, 0);
+            lv_obj_set_style_shadow_width(state->buttons[i], 0, 0);
+            lv_obj_add_event_cb(state->buttons[i], onButtonClicked, LV_EVENT_CLICKED, ctx);
+        }
     }
 
     // Initialize game

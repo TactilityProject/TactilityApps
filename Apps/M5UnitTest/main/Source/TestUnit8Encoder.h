@@ -18,6 +18,7 @@ struct TestUnit8Encoder {
     int32_t      counters_[8]                   = {};
     uint32_t     ledColors_[Unit8Encoder::LED_COUNT] = {};
     bool         usingPaHub_                    = false;
+    uint8_t      encChannel_                    = UnitPaHub::NO_CHANNEL;
 };
 
 void testUnit8EncoderStart(TestUnit8Encoder* self, lv_obj_t* parent, Context* app);

@@ -21,7 +21,8 @@ struct ReactionGameState {
 
     // Game state
     int round = 0;
-    int score = 0;               // 0-3 based on reaction quality
+    int score = 0;               // 0-3 rounds tapped in time (any speed)
+    int fastHits = 0;            // 0-3 rounds tapped within GOOD_TIME_MS
     uint32_t targetShowTime = 0; // When target appeared (millis)
 };
 

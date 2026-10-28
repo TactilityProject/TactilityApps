@@ -8,6 +8,7 @@ static constexpr auto* TAG = "UnitLcd";
 
 static constexpr uint8_t CMD_SET_BRIGHTNESS = 0x22;
 static constexpr uint8_t CMD_SET_ROTATION   = 0x36;
+static constexpr uint8_t CMD_READ_ID        = 0x04;
 static constexpr uint8_t CMD_FILL_RECT      = 0x6A;
 static constexpr uint8_t CMD_DRAW_PIXEL     = 0x62;
 static constexpr uint8_t CMD_SET_COL_RANGE  = 0x2A;
@@ -29,22 +30,57 @@ bool UnitLcd::sendCmd(const uint8_t* data, uint16_t len) {
 // ---------------------------------------------------------------------------
 
 bool UnitLcd::begin(Device* dev, uint8_t addr) {
+    dev_  = nullptr;
+    addr_ = 0;
     if (!dev || !device_is_ready(dev)) return false;
     if (!unitProbe(dev, addr)) {
-        ESP_LOGW(TAG, "LCD unit not found at 0x%02X", addr);
+        ESP_LOGD(TAG, "LCD unit not found at 0x%02X", addr);
+        return false;
+    }
+    // CMD_READ_ID returns 0x77 0x89 followed by two version bytes. Unlike a
+    // write-only probe, this rejects the false ACKs seen on floating PaHub
+    // channels, so the scanner cannot latch onto an empty port.
+    bool identityOk = false;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint8_t cmd = CMD_READ_ID;
+        uint8_t id[4] = {};
+        if (i2c_controller_write(dev, addr, &cmd, 1,
+                                 pdMS_TO_TICKS(UNIT_I2C_TIMEOUT_MS)) == ERROR_NONE &&
+            i2c_controller_read(dev, addr, id, sizeof(id),
+                                pdMS_TO_TICKS(UNIT_I2C_TIMEOUT_MS)) == ERROR_NONE &&
+            id[0] == 0x77 && id[1] == 0x89) {
+            identityOk = true;
+            break;
+        }
+        if (attempt + 1 < 3) vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (!identityOk) {
+        // The presence probe succeeded, so the channel is not empty. If the
+        // ID cannot be confirmed, report it rather than silently skipping.
+        ESP_LOGW(TAG, "LCD identity check failed at 0x%02X", addr);
         return false;
     }
     dev_      = dev;
     addr_     = addr;
     rotation_ = 0;
+    // The LCD controller can still be busy immediately after the presence
+    // probe (especially when it is behind a freshly switched PaHub channel).
+    // Retry the two init commands instead of failing on the first NACK.
+    auto sendWithRetry = [&](const uint8_t* cmd, uint16_t len) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (sendCmd(cmd, len)) return true;
+            if (attempt + 1 < 3) vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        return false;
+    };
     uint8_t brCmd[2] = { CMD_SET_BRIGHTNESS, 128 };
-    if (!sendCmd(brCmd, 2)) {
+    if (!sendWithRetry(brCmd, 2)) {
         ESP_LOGE(TAG, "LCD setBrightness failed at 0x%02X", addr_);
         dev_ = nullptr;
         return false;
     }
     uint8_t rotCmd[2] = { CMD_SET_ROTATION, 0x00 };
-    if (!sendCmd(rotCmd, 2)) {
+    if (!sendWithRetry(rotCmd, 2)) {
         ESP_LOGE(TAG, "LCD setRotation failed at 0x%02X", addr_);
         dev_ = nullptr;
         return false;

@@ -170,9 +170,9 @@ void updateFrequencyInput(Context* ctx) {
 void updateSweepCard(Context* ctx) {
     if (ctx->sweepCard != nullptr) {
         if (ctx->playback.sweep.load()) {
-            lv_obj_remove_flag(ctx->sweepCard, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->sweepCard, false);
         } else {
-            lv_obj_add_flag(ctx->sweepCard, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(ctx->sweepCard, true);
         }
     }
 }
@@ -423,7 +423,7 @@ lv_obj_t* createCard(lv_obj_t* parent) {
     auto* card = lvgl_card_create(parent);
     lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(card, false);
     return card;
 }
 
@@ -434,7 +434,7 @@ lv_obj_t* createRow(lv_obj_t* parent, lv_coord_t gap) {
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_gap(row, gap, LV_STATE_DEFAULT);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(row, false);
     return row;
 }
 
@@ -458,7 +458,7 @@ void toneCreateWidgetsImpl(lv_obj_t* parent, Context* ctx) {
     const lv_coord_t fieldHeight = static_cast<lv_coord_t>(fontHeight * 1.8f);
 
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(parent, false);
 
     auto* toolbar = lvgl_toolbar_create(parent, "Tone");
     lvgl_toolbar_set_nav_action(toolbar, LV_SYMBOL_CLOSE, onBackPressed, ctx);
