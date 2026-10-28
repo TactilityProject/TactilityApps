@@ -2,7 +2,7 @@
 
 #include <app/instance.h>
 #include <lvgl.h>
-#include <lvgl/devices/touch.h>
+#include <lvgl/devices/pointer.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <tactility/device.h>
 #include <tactility/drivers/bluetooth.h>

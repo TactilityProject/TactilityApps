@@ -3,6 +3,10 @@
 An app package that adds a 2.8" ILI9341 SPI panel to Tactility and renders a Mystify scene on it
 (and mirrors it on the primary display).
 
+Display used in this example: 2.8TFT- ILI9341 IC  
+https://www.aliexpress.com/item/1005006323678902.html  
+https://www.lcdwiki.com/2.8inch_SPI_Module_ILI9341_SKU%3AMSP2807
+
 The package contains five binaries:
 
 | Binary | Role |
@@ -22,7 +26,7 @@ it starts; opening the demo stops LVGL, takes over the panel through `gfx::SinkT
 
 | Panel | Tab5 M-BUS | Note |
 |-------|------------|------|
-| VCC | Ext5V | The module has its own 3.3 V regulator |
+| VCC | Ext5V | The module has its own 3.3 V regulator or bridge J1 and use 3.3V instead of Ext5V |
 | GND | GND | |
 | CS | GPIO51 | |
 | RESET | GPIO4 | |
