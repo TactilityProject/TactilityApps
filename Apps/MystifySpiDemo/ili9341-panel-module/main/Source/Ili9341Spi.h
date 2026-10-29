@@ -9,22 +9,19 @@
 /**
  * ILI9341 SPI display driver.
  *
- * Used by the `ili9341-panel-module` kernel module in `Apps/MystifySpiDemo`, which owns the SPI
- * bus, creates the display device from persisted settings, and tears it down again. The module is
- * loaded from the app package at boot, so the panel exists as a normal DisplayApi device even when
- * no app is running.
+ * Used by the `ili9341-panel-module` kernel module in `Apps/MystifySpiDemo`, which creates an
+ * esp32 SPI controller device for the panel's pins and makes this display a child of it. The
+ * module is loaded from the app package at boot, so the panel exists as a normal DisplayApi device
+ * even when no app is running.
  *
- * The driver uses ESP-IDF's spi_master polling transactions directly instead of esp_lcd. That
- * makes draw_bitmap() fully synchronous with no completion callback: an app/module ELF is not
+ * The driver uses the kernel SPI controller API with blocking transfers instead of esp_lcd. That
+ * keeps draw_bitmap() fully synchronous with no completion callback: an app/module ELF is not
  * guaranteed to be executable while the firmware's SPI ISR runs with caches disabled, and a
  * callback into it could crash there.
  */
 
 /** What the panel looks like after MADCTL has been applied (its logical resolution). */
 struct Ili9341SpiConfig {
-    /** ESP-IDF SPI host that is already initialised with the panel's bus pins (e.g. SPI2_HOST). */
-    int spi_host = 1;
-
     uint16_t width = 320;
     uint16_t height = 240;
 

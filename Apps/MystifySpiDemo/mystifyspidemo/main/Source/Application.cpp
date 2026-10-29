@@ -7,6 +7,10 @@
 #include <esp_random.h>
 #include <esp_timer.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+
 #include <app/event.h>
 #include <tactility/check.h>
 #include <tactility/device.h>
@@ -18,6 +22,7 @@
 #include <gfx/Gfx.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -37,10 +42,19 @@ constexpr int PRIMARY_MIRROR_HEIGHT = 360;
 
 constexpr int TARGET_FPS = 30;
 constexpr int64_t FRAME_BUDGET_US = 1'000'000 / TARGET_FPS;
+// The primary mirror is a second full render plus a PPA scale and a 1280x720 present. It runs on
+// its own task, so it doesn't sit in the panel's frame budget, but it still competes for memory
+// bandwidth and is a mirror, so it doesn't need the panel's rate either.
+constexpr int PRIMARY_FPS = 15;
+// Plenty for drawScene()'s float maths and snprintf, plus the display driver's call depth.
+constexpr uint32_t PRIMARY_TASK_STACK = 6144;
 
 constexpr int WALKER_COUNT = 2;
 constexpr int VERTEX_COUNT = 4;
 constexpr int TRAIL_LENGTH = 6;
+// One extra snapshot so the previous frame's oldest echo (now at age TRAIL_LENGTH) can be erased
+// without clearing the whole panel every frame.
+constexpr int HISTORY_LENGTH = TRAIL_LENGTH + 1;
 // Normalised: both the 320x240 panel and the primary frame use the same simulation.
 constexpr float PLAY_MARGIN = 0.02f;
 
@@ -64,8 +78,8 @@ struct Walker {
     float velocityY[VERTEX_COUNT];
     uint16_t color = 0xFFFF;
     // history[0] is the current frame, history[TRAIL_LENGTH - 1] the oldest echo.
-    float historyX[TRAIL_LENGTH][VERTEX_COUNT];
-    float historyY[TRAIL_LENGTH][VERTEX_COUNT];
+    float historyX[HISTORY_LENGTH][VERTEX_COUNT];
+    float historyY[HISTORY_LENGTH][VERTEX_COUNT];
 };
 
 void resetWalker(Walker& walker, uint16_t color) {
@@ -76,7 +90,7 @@ void resetWalker(Walker& walker, uint16_t color) {
         walker.velocityX[vertex] = randomFloat(0.08f, 0.22f) * ((esp_random() & 1) != 0 ? 1.0f : -1.0f);
         walker.velocityY[vertex] = randomFloat(0.08f, 0.22f) * ((esp_random() & 1) != 0 ? 1.0f : -1.0f);
     }
-    for (int age = 0; age < TRAIL_LENGTH; age++) {
+    for (int age = 0; age < HISTORY_LENGTH; age++) {
         std::memcpy(walker.historyX[age], walker.x, sizeof(walker.x));
         std::memcpy(walker.historyY[age], walker.y, sizeof(walker.y));
     }
@@ -104,7 +118,7 @@ void moveWalker(Walker& walker, float deltaSeconds) {
         }
     }
 
-    for (int age = TRAIL_LENGTH - 1; age > 0; age--) {
+    for (int age = HISTORY_LENGTH - 1; age > 0; age--) {
         std::memcpy(walker.historyX[age], walker.historyX[age - 1], sizeof(walker.x));
         std::memcpy(walker.historyY[age], walker.historyY[age - 1], sizeof(walker.y));
     }
@@ -112,12 +126,46 @@ void moveWalker(Walker& walker, float deltaSeconds) {
     std::memcpy(walker.historyY[0], walker.y, sizeof(walker.y));
 }
 
-/** The whole surface is the play area: each display fills its own aspect ratio. */
-void drawScene(gfx::Surface& surface, const Walker* walkers, int fps) {
-    surface.clear(0x0000);
-
+/**
+ * The whole surface is the play area: each display fills its own aspect ratio.
+ *
+ * @param clear true for the first frame (and for targets that aren't rendered every frame); when
+ * false, only the previous frame's echoes and the two text bands are erased instead of clearing the
+ * whole frame, which keeps the panel's dirty area (and therefore SPI time) down.
+ */
+void drawScene(gfx::Surface& surface, const Walker* walkers, int fps, bool clear) {
     const float width = static_cast<float>(surface.width());
     const float height = static_cast<float>(surface.height());
+
+    const uint8_t textScale = static_cast<uint8_t>(
+        std::min(4, std::max(1, std::min(surface.width(), surface.height()) / 150))
+    );
+    const int margin = 4 * textScale;
+    const int textHeight = static_cast<int>(gfx::FONT_5X7.lineHeight) * textScale;
+    const int hintY = surface.height() - 11 * textScale;
+
+    if (clear) {
+        surface.clear(0x0000);
+    } else {
+        // After the history shift, the previous frame's echoes are at ages 1..TRAIL_LENGTH.
+        for (int index = 0; index < WALKER_COUNT; index++) {
+            const Walker& walker = walkers[index];
+            for (int age = TRAIL_LENGTH; age >= 1; age--) {
+                gfx::Point points[VERTEX_COUNT];
+                for (int vertex = 0; vertex < VERTEX_COUNT; vertex++) {
+                    points[vertex] = gfx::Point {
+                        static_cast<int>(walker.historyX[age][vertex] * width + 0.5f),
+                        static_cast<int>(walker.historyY[age][vertex] * height + 0.5f),
+                    };
+                }
+                surface.drawPolygon(points, VERTEX_COUNT, 0x0000);
+            }
+        }
+        // The static text is redrawn with an opaque background, but the fps line can get shorter
+        // and trails can cross both bands, so erase them before the new frame is drawn.
+        surface.fillRect(0, 0, surface.width(), margin + textHeight, 0x0000);
+        surface.fillRect(0, hintY, surface.width(), surface.height() - hintY, 0x0000);
+    }
 
     for (int index = 0; index < WALKER_COUNT; index++) {
         const Walker& walker = walkers[index];
@@ -137,23 +185,77 @@ void drawScene(gfx::Surface& surface, const Walker* walkers, int fps) {
         }
     }
 
-    const uint8_t textScale = static_cast<uint8_t>(
-        std::min(4, std::max(1, std::min(surface.width(), surface.height()) / 150))
-    );
-    const int margin = 4 * textScale;
-
     char info[48];
     std::snprintf(info, sizeof(info), "%dx%d  %d fps", surface.width(), surface.height(), fps);
     surface.drawText(margin, margin, info, gfx::FONT_5X7, 0x9CF3, 0x0000, textScale);
     surface.drawText(
         margin,
-        surface.height() - 11 * textScale,
+        hintY,
         "any input exits",
         gfx::FONT_5X7,
         0x632C,
         0x0000,
         textScale
     );
+}
+
+/**
+ * The primary mirror is rendered on its own task: a 640x360 draw plus PPA scale and 720x1280
+ * present takes ~29 ms, which would otherwise push every third panel frame past the 30 fps
+ * budget. The task keeps a snapshot of the walkers and renders independently.
+ */
+struct PrimaryRenderer {
+    gfx::Target* target = nullptr;
+    Walker walkers[WALKER_COUNT];
+    int fps = 0;
+    gfx::Stats stats {};
+    // A FreeRTOS mutex rather than a portMUX spinlock: portENTER_CRITICAL expands to
+    // vPortEnterCriticalMultiCore on this dual-core target, which the firmware's ELF loader
+    // doesn't export (see Doom's audio mixer). The guarded copies are a few hundred bytes.
+    SemaphoreHandle_t mutex = nullptr;
+    SemaphoreHandle_t signal = nullptr;
+    SemaphoreHandle_t finished = nullptr;
+    std::atomic<bool> stop { false };
+};
+
+bool lockMirror(PrimaryRenderer& renderer) {
+    return renderer.mutex != nullptr &&
+        xSemaphoreTake(renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE;
+}
+
+void primaryRenderTask(void* argument) {
+    auto* renderer = static_cast<PrimaryRenderer*>(argument);
+    Walker snapshot[WALKER_COUNT];
+    int snapshotFps = 0;
+
+    while (true) {
+        if (xSemaphoreTake(renderer->signal, portMAX_DELAY) != pdTRUE) {
+            break;
+        }
+        if (renderer->stop.load()) {
+            break;
+        }
+
+        // Take the latest simulation state. If the panel task is holding the mutex for longer
+        // than expected, redrawing the previous snapshot once is better than stalling here.
+        if (lockMirror(*renderer)) {
+            std::memcpy(snapshot, renderer->walkers, sizeof(snapshot));
+            snapshotFps = renderer->fps;
+            xSemaphoreGive(renderer->mutex);
+        }
+
+        renderer->target->render([&](gfx::Surface& surface) {
+            drawScene(surface, snapshot, snapshotFps, true);
+        });
+
+        if (lockMirror(*renderer)) {
+            renderer->stats = renderer->target->stats();
+            xSemaphoreGive(renderer->mutex);
+        }
+    }
+
+    xSemaphoreGive(renderer->finished);
+    vTaskDelete(nullptr);
 }
 
 bool takeExit(struct AppEventSubscription& subscription, AnyInput& input) {
@@ -280,8 +382,10 @@ const char* runApplication(struct Device* display, AnyInput& input) {
     int fps = 0;
     int64_t measurement_start_us = esp_timer_get_time();
 
-    auto render_scene = [&](gfx::Surface& surface) {
-        drawScene(surface, walkers, fps);
+    bool panel_first_frame = true;
+    auto render_panel = [&](gfx::Surface& surface) {
+        drawScene(surface, walkers, fps, panel_first_frame);
+        panel_first_frame = false;
     };
 
     // Unmistakable write-path check before the animation: red, green, blue, white, black. Both
@@ -300,14 +404,31 @@ const char* runApplication(struct Device* display, AnyInput& input) {
         tt::kernel::delayTicks(tt::kernel::millisToTicks(150));
     }
 
+    // Hand the mirror to its own task so a 29 ms primary frame no longer sits inside the panel's
+    // 33 ms budget. It renders the same simulation from a snapshot; it never touches the panel
+    // target or the walkers themselves.
+    PrimaryRenderer mirror;
+    mirror.target = &primary;
+    mirror.mutex = xSemaphoreCreateMutex();
+    mirror.signal = xSemaphoreCreateBinary();
+    mirror.finished = xSemaphoreCreateBinary();
+    bool mirror_task = primary.valid() && mirror.mutex != nullptr && mirror.signal != nullptr &&
+        mirror.finished != nullptr &&
+        xTaskCreatePinnedToCore(primaryRenderTask, "primary", PRIMARY_TASK_STACK, &mirror, 3, nullptr, 1) == pdPASS;
+    if (!mirror_task && primary.valid()) {
+        ESP_LOGW(TAG, "Primary mirror task unavailable; showing the SPI panel only");
+    }
+
     ESP_LOGI(
         TAG,
         "Running Mystify at up to %d fps on the panel%s",
         TARGET_FPS,
-        primary.valid() ? " and the primary display" : ""
+        mirror_task ? " and the primary display" : ""
     );
 
     int64_t last_frame_us = esp_timer_get_time();
+    int64_t last_primary_us = 0;
+    const int64_t primary_budget_us = 1'000'000 / PRIMARY_FPS;
 
     while (!takeExit(subscription, input)) {
         const int64_t frame_start_us = esp_timer_get_time();
@@ -319,24 +440,52 @@ const char* runApplication(struct Device* display, AnyInput& input) {
             moveWalker(walker, deltaSeconds);
         }
 
-        lcd_target.render(render_scene);
-        if (primary.valid()) {
-            primary.render(render_scene);
+        lcd_target.render(render_panel);
+        if (mirror_task && frame_start_us - last_primary_us >= primary_budget_us) {
+            if (lockMirror(mirror)) {
+                std::memcpy(mirror.walkers, walkers, sizeof(mirror.walkers));
+                mirror.fps = fps;
+                xSemaphoreGive(mirror.mutex);
+            }
+            // If the task hasn't finished the previous frame the binary semaphore is already
+            // set and this give is a no-op, which drops a mirror frame instead of queueing it.
+            xSemaphoreGive(mirror.signal);
+            last_primary_us = frame_start_us;
         }
 
         frames_this_second++;
         const int64_t now_us = esp_timer_get_time();
         if (now_us - measurement_start_us >= 1'000'000) {
             fps = frames_this_second;
-            const gfx::Stats& stats = lcd_target.stats();
-            ESP_LOGI(
-                TAG,
-                "%d fps, %d dirty px, present %d us, total %d us",
-                fps,
-                stats.dirtyPixels,
-                stats.presentUs,
-                stats.totalUs
-            );
+            const gfx::Stats& panel_stats = lcd_target.stats();
+            if (mirror_task) {
+                gfx::Stats primary_stats {};
+                if (lockMirror(mirror)) {
+                    primary_stats = mirror.stats;
+                    xSemaphoreGive(mirror.mutex);
+                }
+                ESP_LOGI(
+                    TAG,
+                    "%d fps, panel %d px/%d rects, present %d us/total %d us, primary present %d us/total %d us",
+                    fps,
+                    panel_stats.dirtyPixels,
+                    panel_stats.dirtyRects,
+                    panel_stats.presentUs,
+                    panel_stats.totalUs,
+                    primary_stats.presentUs,
+                    primary_stats.totalUs
+                );
+            } else {
+                ESP_LOGI(
+                    TAG,
+                    "%d fps, panel %d px/%d rects, present %d us/total %d us",
+                    fps,
+                    panel_stats.dirtyPixels,
+                    panel_stats.dirtyRects,
+                    panel_stats.presentUs,
+                    panel_stats.totalUs
+                );
+            }
             frames_this_second = 0;
             measurement_start_us = now_us;
         }
@@ -347,10 +496,28 @@ const char* runApplication(struct Device* display, AnyInput& input) {
         }
     }
 
+    // Join the mirror task before touching either target again: it may be mid-render, and the
+    // final clear and the target's destructor both run on this task.
+    if (mirror_task) {
+        mirror.stop.store(true);
+        xSemaphoreGive(mirror.signal);
+        xSemaphoreTake(mirror.finished, portMAX_DELAY);
+    }
+
     // Leave both panels black: their images otherwise stay on screen after the app exits.
     lcd_target.render([](gfx::Surface& surface) { surface.clear(0x0000); });
     if (primary.valid()) {
         primary.render([](gfx::Surface& surface) { surface.clear(0x0000); });
+    }
+
+    if (mirror.finished != nullptr) {
+        vSemaphoreDelete(mirror.finished);
+    }
+    if (mirror.signal != nullptr) {
+        vSemaphoreDelete(mirror.signal);
+    }
+    if (mirror.mutex != nullptr) {
+        vSemaphoreDelete(mirror.mutex);
     }
 
     device_put(lcd);

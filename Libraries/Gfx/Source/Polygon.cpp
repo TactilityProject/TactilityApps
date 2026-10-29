@@ -36,11 +36,22 @@ void Surface::drawPolygon(const Point* points, int count, uint16_t rgb565) {
     if (box.empty()) {
         return;
     }
-    markDirtyRect(box.x0, box.y0, box.x1, box.y1);
 
+    // Mark each edge's bounds rather than the whole polygon's: these are outlines, so a quad's
+    // full bounding box would make a dirty-region target present most of the screen for a few thin
+    // lines.
     for (int i = 0; i < count; i++) {
         const Point& a = points[i];
         const Point& b = points[(i + 1) % count];
+        const Rect edge = Rect {
+            std::min(a.x, b.x),
+            std::min(a.y, b.y),
+            std::max(a.x, b.x) + 1,
+            std::max(a.y, b.y) + 1,
+        }.intersect(clip_);
+        if (!edge.empty()) {
+            markDirtyRect(edge.x0, edge.y0, edge.x1, edge.y1);
+        }
         lineRaw(a.x, a.y, b.x, b.y, rgb565);
     }
 }

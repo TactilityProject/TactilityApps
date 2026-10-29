@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "Ili9341Spi.h"
 
-#include <driver/gpio.h>
-#include <driver/spi_master.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #include <tactility/device.h>
 #include <tactility/drivers/display.h>
+#include <tactility/drivers/gpio.h>
+#include <tactility/drivers/gpio_controller.h>
+#include <tactility/drivers/gpio_descriptor.h>
+#include <tactility/drivers/spi_controller.h>
 #include <tactility/error.h>
 #include <tactility/log.h>
 
 #include <algorithm>
-#include <cstring>
 #include <new>
 
 constexpr auto* TAG = "Ili9341Spi";
@@ -76,9 +77,11 @@ constexpr InitCommand INIT_COMMANDS[] = {
 };
 
 struct State {
-    spi_device_handle_t device = nullptr;
-    int pin_dc = -1;
-    int pin_cs = -1;
+    struct Device* controller = nullptr;
+    struct SpiDevice* device = nullptr;
+    GpioDescriptor* dc = nullptr;
+    GpioDescriptor* cs = nullptr;
+    GpioDescriptor* reset = nullptr;
     uint8_t madctl = 0;
     int32_t gap_x = 0;
     int32_t gap_y = 0;
@@ -87,6 +90,21 @@ struct State {
 
 State* getState(Device* device) {
     return static_cast<State*>(device_get_driver_data(device));
+}
+
+void releasePins(State* state) {
+    if (state->dc != nullptr) {
+        gpio_descriptor_release(state->dc);
+        state->dc = nullptr;
+    }
+    if (state->cs != nullptr) {
+        gpio_descriptor_release(state->cs);
+        state->cs = nullptr;
+    }
+    if (state->reset != nullptr) {
+        gpio_descriptor_release(state->reset);
+        state->reset = nullptr;
+    }
 }
 
 const Ili9341SpiConfig* getConfig(Device* device) {
@@ -98,36 +116,23 @@ const Ili9341SpiConfig* getConfig(Device* device) {
  * continues the same panel command (command byte -> parameters, or RAMWR -> pixel data).
  */
 error_t transmit(State* state, const void* data, size_t size, bool keep_cs, bool dc_high) {
-    if (state->device == nullptr || data == nullptr || size == 0 || size > state->max_transfer_bytes) {
+    if (state->controller == nullptr || state->device == nullptr ||
+        data == nullptr || size == 0 || size > state->max_transfer_bytes) {
         return ERROR_INVALID_ARGUMENT;
     }
 
-    gpio_set_level(static_cast<gpio_num_t>(state->pin_dc), dc_high ? 1 : 0);
-    if (state->pin_cs >= 0) {
-        gpio_set_level(static_cast<gpio_num_t>(state->pin_cs), 0);
+    gpio_descriptor_set_level(state->dc, dc_high);
+    if (state->cs != nullptr) {
+        gpio_descriptor_set_level(state->cs, false);
     }
 
-    spi_transaction_t transaction = {};
-    transaction.length = size * 8;
-    if (size <= sizeof(transaction.tx_data)) {
-        // Short transfers avoid a DMA bounce buffer entirely.
-        transaction.flags |= SPI_TRANS_USE_TXDATA;
-        std::memcpy(transaction.tx_data, data, size);
-    } else {
-        transaction.tx_buffer = data;
+    // The address may be PSRAM (Gfx frame buffers); the platform controller sets
+    // SPI_TRANS_DMA_USE_PSRAM for external buffers, so no bounce copy is needed.
+    const error_t result = spi_controller_transmit(state->controller, state->device, data, nullptr, size);
+    if (state->cs != nullptr && !keep_cs) {
+        gpio_descriptor_set_level(state->cs, true);
     }
-#if SOC_PSRAM_DMA_CAPABLE
-    // A Gfx frame buffer usually lives in PSRAM. Ask the SPI DMA engine to read it directly
-    // instead of bouncing every chunk through a temporary internal buffer. The flag is harmless
-    // for buffers that turn out to be internal; the driver checks the address itself.
-    transaction.flags |= SPI_TRANS_DMA_USE_PSRAM;
-#endif
-
-    const esp_err_t result = spi_device_polling_transmit(state->device, &transaction);
-    if (state->pin_cs >= 0 && !keep_cs) {
-        gpio_set_level(static_cast<gpio_num_t>(state->pin_cs), 1);
-    }
-    return result == ESP_OK ? ERROR_NONE : ERROR_RESOURCE;
+    return result;
 }
 
 /** Command byte, followed by its parameters (both with CS held across the boundary). */
@@ -162,35 +167,33 @@ error_t writePixels(State* state, const void* data, size_t size) {
 
 /** Reads as many bytes as fit in `size`, discarding any extra bytes the panel returns. */
 error_t readData(State* state, uint8_t* buffer, size_t size) {
-    spi_transaction_t transaction = {};
-    transaction.rxlength = size * 8;
-    transaction.rx_buffer = buffer;
-    transaction.length = 0;
+    if (state->controller == nullptr || state->device == nullptr) {
+        return ERROR_INVALID_STATE;
+    }
 
-    gpio_set_level(static_cast<gpio_num_t>(state->pin_dc), 1);
-    if (state->pin_cs >= 0) {
-        gpio_set_level(static_cast<gpio_num_t>(state->pin_cs), 0);
+    gpio_descriptor_set_level(state->dc, true);
+    if (state->cs != nullptr) {
+        gpio_descriptor_set_level(state->cs, false);
     }
-    const esp_err_t result = spi_device_polling_transmit(state->device, &transaction);
-    if (state->pin_cs >= 0) {
-        gpio_set_level(static_cast<gpio_num_t>(state->pin_cs), 1);
+    const error_t result = spi_controller_transmit(state->controller, state->device, nullptr, buffer, size);
+    if (state->cs != nullptr) {
+        gpio_descriptor_set_level(state->cs, true);
     }
-    return result == ESP_OK ? ERROR_NONE : ERROR_RESOURCE;
+    return result;
 }
 
 error_t applyMadctl(State* state) {
     return writeCommand(state, CMD_MADCTL, &state->madctl, 1);
 }
 
-void pulseReset(const Ili9341SpiConfig* config) {
-    if (config->pin_reset < 0) {
+void pulseReset(State* state, const Ili9341SpiConfig* config) {
+    if (state->reset == nullptr) {
         return;
     }
-    const auto pin = static_cast<gpio_num_t>(config->pin_reset);
-    const int active = config->reset_active_high ? 1 : 0;
-    gpio_set_level(pin, active);
+    const bool active = config->reset_active_high;
+    gpio_descriptor_set_level(state->reset, active);
     vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(pin, !active);
+    gpio_descriptor_set_level(state->reset, !active);
     // The ILI9341 needs 120 ms after a hardware reset before it accepts SLPOUT.
     vTaskDelay(pdMS_TO_TICKS(120));
 }
@@ -198,15 +201,8 @@ void pulseReset(const Ili9341SpiConfig* config) {
 error_t initialisePanel(State* state, const Ili9341SpiConfig* config) {
     error_t error = ERROR_NONE;
 
-    if (config->pin_reset >= 0) {
-        gpio_config_t reset_config = {};
-        reset_config.mode = GPIO_MODE_OUTPUT;
-        reset_config.pin_bit_mask = 1ULL << config->pin_reset;
-        if (gpio_config(&reset_config) != ESP_OK) {
-            LOG_E(TAG, "Failed to configure the reset pin");
-            return ERROR_RESOURCE;
-        }
-        pulseReset(config);
+    if (state->reset != nullptr) {
+        pulseReset(state, config);
     }
 
     // Always send a software reset as well: it is harmless after a hardware reset and covers a
@@ -287,51 +283,45 @@ bool readPanelId(State* state) {
  * adapter's control wires can be identified at the panel connector with a multimeter. Ends with
  * RESET and CS released (high), then the caller re-initialises the panel.
  */
-void probeControlPins(const Ili9341SpiConfig* config) {
+void probeControlPins(State* state, const Ili9341SpiConfig* config) {
     struct Pin {
         const char* name;
+        GpioDescriptor* descriptor;
         int pin;
     };
     const Pin pins[] = {
-        { "DC", config->pin_dc },
-        { "RESET", config->pin_reset },
-        { "CS", config->pin_cs },
+        { "DC", state->dc, config->pin_dc },
+        { "RESET", state->reset, config->pin_reset },
+        { "CS", state->cs, config->pin_cs },
     };
 
     LOG_W(TAG, "Panel didn't answer: identifying control pins (3 s each, measure at the panel)");
     for (const auto& probe : pins) {
-        if (probe.pin < 0) {
-            continue;
+        if (probe.descriptor != nullptr) {
+            gpio_descriptor_set_level(probe.descriptor, false);
         }
-        gpio_config_t output = {};
-        output.mode = GPIO_MODE_OUTPUT;
-        output.pin_bit_mask = 1ULL << probe.pin;
-        if (gpio_config(&output) != ESP_OK) {
-            continue;
-        }
-        gpio_set_level(static_cast<gpio_num_t>(probe.pin), 0);
     }
 
     for (const auto& probe : pins) {
-        if (probe.pin < 0) {
+        if (probe.descriptor == nullptr) {
             continue;
         }
         LOG_I(TAG, "%s (GPIO%d) HIGH for 3 s", probe.name, probe.pin);
-        gpio_set_level(static_cast<gpio_num_t>(probe.pin), 1);
+        gpio_descriptor_set_level(probe.descriptor, true);
         vTaskDelay(pdMS_TO_TICKS(3000));
-        gpio_set_level(static_cast<gpio_num_t>(probe.pin), 0);
+        gpio_descriptor_set_level(probe.descriptor, false);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
     // Leave the control lines in their idle state.
-    if (config->pin_reset >= 0) {
-        gpio_set_level(static_cast<gpio_num_t>(config->pin_reset), 1);
+    if (state->reset != nullptr) {
+        gpio_descriptor_set_level(state->reset, true);
     }
-    if (config->pin_cs >= 0) {
-        gpio_set_level(static_cast<gpio_num_t>(config->pin_cs), 1);
+    if (state->cs != nullptr) {
+        gpio_descriptor_set_level(state->cs, true);
     }
-    if (config->pin_dc >= 0) {
-        gpio_set_level(static_cast<gpio_num_t>(config->pin_dc), 0);
+    if (state->dc != nullptr) {
+        gpio_descriptor_set_level(state->dc, false);
     }
 }
 
@@ -346,73 +336,93 @@ error_t start(Device* device) {
     if (state == nullptr) {
         return ERROR_OUT_OF_MEMORY;
     }
-    state->pin_dc = config->pin_dc;
-    state->pin_cs = config->pin_cs;
     state->max_transfer_bytes = config->max_transfer_bytes;
     state->madctl = (config->swap_xy ? MADCTL_MV : 0) |
         (config->mirror_x ? MADCTL_MX : 0) |
         (config->mirror_y ? MADCTL_MY : 0) |
         (config->bgr_order ? MADCTL_BGR : 0);
 
-    gpio_config_t dc_config = {};
-    dc_config.mode = GPIO_MODE_OUTPUT;
-    dc_config.pin_bit_mask = 1ULL << config->pin_dc;
-    if (gpio_config(&dc_config) != ESP_OK) {
-        LOG_E(TAG, "Failed to configure the DC pin");
+    struct Device* gpio0 = nullptr;
+    if (device_get_by_name("gpio0", &gpio0) != ERROR_NONE || gpio0 == nullptr) {
+        LOG_E(TAG, "The native GPIO controller (gpio0) was not found");
+        delete state;
+        return ERROR_NOT_FOUND;
+    }
+
+    state->dc = gpio_descriptor_acquire(gpio0, config->pin_dc, GPIO_FLAG_DIRECTION_OUTPUT, GPIO_OWNER_GPIO);
+    if (state->dc == nullptr) {
+        LOG_E(TAG, "Failed to acquire the DC pin");
         delete state;
         return ERROR_RESOURCE;
     }
-    gpio_set_level(static_cast<gpio_num_t>(config->pin_dc), 0);
+    gpio_descriptor_set_level(state->dc, false);
 
     // Chip select is driven as a plain GPIO rather than by the SPI peripheral. That keeps the
-    // whole panel interface under our control (and survives the bring-up probe re-configuring the
-    // pin), which also makes a stubborn panel easier to diagnose.
-    gpio_config_t cs_config = {};
-    cs_config.mode = GPIO_MODE_OUTPUT;
-    cs_config.pin_bit_mask = 1ULL << config->pin_cs;
-    if (gpio_config(&cs_config) != ESP_OK) {
-        LOG_E(TAG, "Failed to configure the CS pin");
+    // whole panel interface under our control (and survives the bring-up probe), which also makes
+    // a stubborn panel easier to diagnose.
+    state->cs = gpio_descriptor_acquire(gpio0, config->pin_cs, GPIO_FLAG_DIRECTION_OUTPUT, GPIO_OWNER_GPIO);
+    if (state->cs == nullptr) {
+        LOG_E(TAG, "Failed to acquire the CS pin");
+        releasePins(state);
         delete state;
         return ERROR_RESOURCE;
     }
-    gpio_set_level(static_cast<gpio_num_t>(config->pin_cs), 1);
+    gpio_descriptor_set_level(state->cs, true);
 
-    spi_device_interface_config_t device_config = {};
-    device_config.mode = 0;
-    device_config.clock_speed_hz = static_cast<int>(config->pixel_clock_hz);
-    // -1: CS is manual (see transmit()), so the SPI peripheral must not drive it.
-    device_config.spics_io_num = -1;
-    device_config.queue_size = 1; // polling transactions only
-    // Half duplex allows receive-only transactions (the panel ID read); full duplex rejects
-    // rxlength > length, which a write-only display otherwise never needs.
-    device_config.flags = SPI_DEVICE_HALFDUPLEX;
-    esp_err_t result = spi_bus_add_device(
-        static_cast<spi_host_device_t>(config->spi_host),
-        &device_config,
-        &state->device
-    );
-    if (result != ESP_OK) {
-        LOG_E(TAG, "Failed to add the SPI device: %s", esp_err_to_name(result));
+    if (config->pin_reset >= 0) {
+        state->reset = gpio_descriptor_acquire(gpio0, config->pin_reset, GPIO_FLAG_DIRECTION_OUTPUT, GPIO_OWNER_GPIO);
+        if (state->reset == nullptr) {
+            LOG_E(TAG, "Failed to acquire the reset pin");
+            releasePins(state);
+            delete state;
+            return ERROR_RESOURCE;
+        }
+        gpio_descriptor_set_level(state->reset, true);
+    }
+
+    struct Device* parent = device_get_parent(device);
+    if (parent == nullptr || device_get_type(parent) != &SPI_CONTROLLER_TYPE) {
+        LOG_E(TAG, "The panel device is not a child of an SPI controller");
+        releasePins(state);
         delete state;
-        return ERROR_RESOURCE;
+        return ERROR_INVALID_STATE;
+    }
+    state->controller = parent;
+
+    const SpiDeviceConfig spi_config = {
+        .clock_speed_hz = config->pixel_clock_hz,
+        .mode = 0,
+        // CS is a plain GPIO driven by transmit(), so the controller must not drive one.
+        .cs_index = SPI_CS_NONE,
+        // The panel is write-mostly; half-duplex also lets the platform use the same timing
+        // calculation the old direct SPI device had at 80 MHz.
+        .half_duplex = true,
+    };
+    error_t error = spi_controller_add_device(parent, &spi_config, &state->device);
+    if (error != ERROR_NONE) {
+        LOG_E(TAG, "Failed to add the SPI device: %s", error_to_string(error));
+        releasePins(state);
+        delete state;
+        return error;
     }
 
     // Keep the bus for this panel: command and pixel transactions rely on CS staying asserted
     // between them, so no other device may interleave.
-    spi_device_acquire_bus(state->device, portMAX_DELAY);
+    spi_controller_acquire_bus(parent, state->device);
 
-    error_t error = initialisePanel(state, config);
+    error = initialisePanel(state, config);
     if (error == ERROR_NONE && config->log_panel_id) {
         if (!readPanelId(state) && config->probe_control_pins_on_id_failure) {
-            probeControlPins(config);
+            probeControlPins(state, config);
             error = initialisePanel(state, config);
         }
     }
 
     if (error != ERROR_NONE) {
         LOG_E(TAG, "Panel initialisation failed");
-        spi_device_release_bus(state->device);
-        spi_bus_remove_device(state->device);
+        spi_controller_release_bus(state->controller, state->device);
+        spi_controller_remove_device(state->controller, state->device);
+        releasePins(state);
         delete state;
         return error;
     }
@@ -434,8 +444,9 @@ error_t stop(Device* device) {
         return ERROR_NONE;
     }
 
-    spi_device_release_bus(state->device);
-    spi_bus_remove_device(state->device);
+    spi_controller_release_bus(state->controller, state->device);
+    spi_controller_remove_device(state->controller, state->device);
+    releasePins(state);
     delete state;
     device_set_driver_data(device, nullptr);
     return ERROR_NONE;
@@ -448,8 +459,8 @@ error_t reset(Device* device) {
     }
     const auto* config = getConfig(device);
 
-    if (config->pin_reset >= 0) {
-        pulseReset(config);
+    if (state->reset != nullptr) {
+        pulseReset(state, config);
         return ERROR_NONE;
     }
 

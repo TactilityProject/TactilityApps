@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "Panel.h"
 
+#include "Esp32SpiConfig.h"
 #include "Ili9341Spi.h"
 
 #include <driver/spi_master.h>
 #include <esp_err.h>
 #include <tactility/device.h>
 #include <tactility/drivers/display.h>
+#include <tactility/drivers/gpio.h>
+#include <tactility/error.h>
 #include <tactility/log.h>
 
 #include <new>
@@ -17,15 +20,33 @@ namespace {
 
 constexpr auto* TAG = "Ili9341Panel";
 constexpr auto* DEVICE_NAME = "ili9341-panel";
+constexpr auto* SPI_CONTROLLER_NAME = "ili9341-spi";
+constexpr auto* SPI_CONTROLLER_COMPATIBLE = "espressif,esp32-spi";
 
 struct PanelRuntime {
+    // The SPI controller is created from the panel settings, so the module doesn't depend on a
+    // board devicetree node for the M-BUS pins.
+    struct Device controller {};
+    struct Esp32SpiConfig controller_config {};
+    bool controller_added = false;
+
     struct Device device {};
     struct Ili9341SpiConfig driver_config {};
-    bool bus_initialized = false;
     bool device_added = false;
 };
 
 PanelRuntime runtime;
+
+struct GpioPinSpec makePin(struct Device* gpio_controller, int32_t pin) {
+    if (gpio_controller == nullptr || pin < 0) {
+        return GPIO_PIN_SPEC_NONE;
+    }
+    return GpioPinSpec {
+        gpio_controller,
+        static_cast<gpio_pin_t>(pin),
+        GPIO_FLAG_NONE,
+    };
+}
 
 } // namespace
 
@@ -34,33 +55,40 @@ error_t startPanel(const struct Ili9341PanelConfig& config) {
         return ERROR_NONE;
     }
 
-    spi_bus_config_t bus = {};
-    bus.mosi_io_num = config.pin_mosi;
-    bus.miso_io_num = config.pin_miso;
-    bus.sclk_io_num = config.pin_sck;
-    bus.quadwp_io_num = -1;
-    bus.quadhd_io_num = -1;
-    bus.data4_io_num = -1;
-    bus.data5_io_num = -1;
-    bus.data6_io_num = -1;
-    bus.data7_io_num = -1;
-    bus.data_io_default_level = false;
-    bus.max_transfer_sz = static_cast<int>(config.max_transfer_bytes);
-    bus.dma_burst_size = 0;
-    bus.flags = 0;
-    bus.isr_cpu_id = ESP_INTR_CPU_AFFINITY_AUTO;
-    bus.intr_flags = 0;
+    struct Device* gpio0 = nullptr;
+    if (device_get_by_name("gpio0", &gpio0) != ERROR_NONE || gpio0 == nullptr) {
+        LOG_E(TAG, "The native GPIO controller (gpio0) was not found");
+        return ERROR_NOT_FOUND;
+    }
 
-    const auto host = static_cast<spi_host_device_t>(config.spi_host);
-    esp_err_t bus_result = spi_bus_initialize(host, &bus, SPI_DMA_CH_AUTO);
-    if (bus_result != ESP_OK) {
-        LOG_E(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
+    runtime.controller_config = Esp32SpiConfig {
+        .host = static_cast<spi_host_device_t>(config.spi_host),
+        .pin_sclk = makePin(gpio0, config.pin_sck),
+        .pin_mosi = makePin(gpio0, config.pin_mosi),
+        .pin_miso = makePin(gpio0, config.pin_miso),
+        .pin_wp = GPIO_PIN_SPEC_NONE,
+        .pin_hd = GPIO_PIN_SPEC_NONE,
+        .max_transfer_size = static_cast<int>(config.max_transfer_bytes),
+        // CS is driven by the panel driver, so the controller owns no chip select pins.
+        .cs_gpios = nullptr,
+        .cs_gpios_count = 0,
+        .miso_pull_up = false,
+    };
+
+    runtime.controller = {};
+    runtime.controller.name = SPI_CONTROLLER_NAME;
+    runtime.controller.address = 0;
+    runtime.controller.config = &runtime.controller_config;
+    runtime.controller.parent = nullptr;
+    runtime.controller.flags = 0;
+
+    if (device_construct_add_start(&runtime.controller, SPI_CONTROLLER_COMPATIBLE) != ERROR_NONE) {
+        LOG_E(TAG, "Failed to start the SPI controller");
         return ERROR_RESOURCE;
     }
-    runtime.bus_initialized = true;
+    runtime.controller_added = true;
 
     runtime.driver_config = Ili9341SpiConfig {
-        .spi_host = config.spi_host,
         .width = config.width,
         .height = config.height,
         .swap_xy = config.swap_xy,
@@ -82,13 +110,15 @@ error_t startPanel(const struct Ili9341PanelConfig& config) {
     runtime.device.name = DEVICE_NAME;
     runtime.device.address = 0;
     runtime.device.config = &runtime.driver_config;
-    runtime.device.parent = nullptr;
+    runtime.device.parent = &runtime.controller;
     runtime.device.flags = 0;
 
     if (device_construct_add_start(&runtime.device, ILI9341_SPI_COMPATIBLE) != ERROR_NONE) {
         LOG_E(TAG, "Failed to start the ILI9341 panel");
-        spi_bus_free(host);
-        runtime.bus_initialized = false;
+        device_stop(&runtime.controller);
+        device_remove(&runtime.controller);
+        device_destruct(&runtime.controller);
+        runtime.controller_added = false;
         return ERROR_RESOURCE;
     }
     runtime.device_added = true;
@@ -118,13 +148,16 @@ error_t stopPanel() {
         }
     }
 
-    if (result == ERROR_NONE && runtime.bus_initialized) {
-        const auto host = static_cast<spi_host_device_t>(runtime.driver_config.spi_host);
-        if (spi_bus_free(host) != ESP_OK) {
-            LOG_W(TAG, "Could not free the SPI bus");
+    // The controller can only stop once its peripherals (the panel) are gone.
+    if (result == ERROR_NONE && runtime.controller_added) {
+        error_t stop_result = device_stop(&runtime.controller);
+        error_t remove_result = stop_result == ERROR_NONE ? device_remove(&runtime.controller) : ERROR_INVALID_STATE;
+        error_t destruct_result = remove_result == ERROR_NONE ? device_destruct(&runtime.controller) : ERROR_INVALID_STATE;
+        if (destruct_result != ERROR_NONE) {
+            LOG_W(TAG, "Could not tear down the SPI controller");
             result = ERROR_RESOURCE;
         } else {
-            runtime.bus_initialized = false;
+            runtime.controller_added = false;
         }
     }
 

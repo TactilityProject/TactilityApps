@@ -42,16 +42,29 @@ it starts; opening the demo stops LVGL, takes over the panel through `gfx::SinkT
 
 1. Registers the `ili9341-spi` driver (`driver_construct_add`).
 2. Loads `ili9341panel.properties` from the package's user data directory (defaults on first run).
-3. Calls `spi_bus_initialize()` for the configured host/pins and creates the display device.
+3. Creates an `espressif,esp32-spi` controller device at runtime from the saved host and pins, then
+   creates the `ili9341-panel` display device as its child.
 4. LVGL picks up the device when it starts and binds it as a second `lv_display_t`.
 
-On stop it removes the device and frees the bus. If the panel fails to start, the module still
-stays loaded so the configuration can be fixed and re-applied.
+On stop it removes the display and the controller and releases the pins. If the panel fails to
+start, the module still stays loaded so the configuration can be fixed and re-applied.
 
 The driver itself (`Ili9341Spi.h`/`Ili9341Spi.cpp`, including the DisplayApi and MADCTL handling)
 lives in the module too, next to `Panel.cpp`/`Settings.cpp`. It used to be the standalone
 `Libraries/Ili9341Spi`; since the module is the only consumer and app-packaged drivers are proven,
 keeping it there makes the package self-contained.
+
+The driver talks to the kernel SPI controller API (`spi_controller_transmit()`), not the raw IDF
+`spi_master` calls:
+
+- One half-duplex peripheral per panel: writes run at full clock with no dummy phase, which is what
+  keeps the display stable at 80 MHz.
+- CS and DC (and RESET on the way in) are owned by the driver as `gpio_descriptor`s, so the
+  controller never drives a CS line and no bus acquire/release dance is needed.
+- Frames live in PSRAM and are handed to the controller as-is. `esp32_spi` sets
+  `SPI_TRANS_DMA_USE_PSRAM` for external transmit buffers, so there is no bounce buffer and no
+  copy through internal RAM.
+- Register reads (MADCTL) go through the controller's half-duplex receive path.
 
 ### Settings API
 
@@ -136,12 +149,29 @@ display, calls `ili9341panel_apply()` and re-binds it.
 - Resolves `ili9341panel_get_device` to hold a module reference and get the panel device.
 - Stops LVGL (done by the entry point), then creates `ExternalFirstDisplaySink` +
   `gfx::SinkTarget` at the device's own resolution. The sink subclass prefers PSRAM because
-  `gfx::DisplaySink`'s default policy requires internal DMA memory; the driver sets
-  `SPI_TRANS_DMA_USE_PSRAM` so the SPI engine reads directly from PSRAM.
+  `gfx::DisplaySink`'s default policy requires internal DMA memory; `esp32_spi` sets
+  `SPI_TRANS_DMA_USE_PSRAM` for external transmit buffers, so the SPI engine reads directly from
+  PSRAM.
 - Mirrors the same normalised simulation on the primary display via `gfx::Target`, using
   `set_transform()` on portrait-native panels (Tab5) with a 640x360 logical frame that the PPA
   scales/rotates up.
 - Clears both panels and restarts LVGL on exit.
+
+### Frame budget
+
+The panel is the slow path: a 320x240 RGB565 frame is 153.6 KB and takes ~15 ms of SPI time at
+80 MHz, plus the PSRAM cache writeback the sink does before presenting.
+
+- The panel is **not** cleared every frame. Each walker keeps one extra trail snapshot, so the
+  previous frame's echoes (now at ages 1..TRAIL_LENGTH) are erased in black, together with the two
+  text bands; only the touched regions are presented.
+- `Surface::drawPolygon()` marks each edge's bounds instead of the whole quad, so outline-only
+  scenes don't dirty their entire bounding box.
+- The primary mirror runs on its own FreeRTOS task (pinned to the other core, below the app's
+  priority) at `PRIMARY_FPS`. A mirrored frame is a 640x360 draw plus a PPA scale and a 720x1280
+  present (~29 ms); keeping it out of the panel loop is what lets the panel stay at 30 fps.
+- The panel loop sleeps out the rest of the `TARGET_FPS` budget, so a fast frame doesn't spin the
+  CPU (which would starve the mirror task).
 
 ## Build and install
 
@@ -166,9 +196,14 @@ built before those were added makes those apps fail to load; rebuild and flash i
   module logs the driver's reason; check the wiring, then save/apply settings.
 - **White screen with correct wiring** — toggle `invert_color` (`true` gives a negative image on
   this module), or lower `pixel_clock_hz` to 10-20 MHz.
-- **App fails to load with a missing `spi_*` or `lv_display_get_next`/`lv_display_get_driver_data`
-  symbol** — the firmware predates those exports in `Platforms/platform-esp32/source/module.cpp`
-  and `Modules/lvgl-module/source/symbols.c`; rebuild and flash it, then re-run
-  `Scripts/check-app-symbols.py`.
-- The unit's controller doesn't implement RDDID (it returns zeros) but does answer register reads;
-  the driver logs `Panel responds; RDDID is not implemented by this controller` and continues.
+- **App fails to load with a missing `spi_controller_*`, `gpio_descriptor_*` or
+  `lv_display_get_next`/`lv_display_get_driver_data` symbol** — the firmware predates those exports
+  in `Platforms/platform-esp32/source/module.cpp` and `Modules/lvgl-module/source/symbols.c`;
+  rebuild and flash it, then re-run `Scripts/check-app-symbols.py`.
+- **Module fails to load after a firmware update** — `struct SpiDeviceConfig` gained
+  `half_duplex`, which changes the kernel API/ABI. Flash a firmware built after that field was
+  added (and regenerate the distribution SDK from it).
+- The unit's controller doesn't implement RDDID (it returns zeros) but does answer register reads
+  at 10-20 MHz; the driver logs `Panel responds; RDDID is not implemented by this controller` and
+  continues. At 40-80 MHz the MADCTL readback can return a shifted value (`3C`, `1E`) even though
+  the panel is fine; treat the readback as a diagnostic, not a failure, above 20 MHz.
