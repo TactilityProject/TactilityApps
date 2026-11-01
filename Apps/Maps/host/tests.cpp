@@ -2186,6 +2186,23 @@ void testTileCache() {
     CHECK(cache.reserve(other) != nullptr);
     cache.release(other);
     CHECK(cache.contains(native));
+
+    // A fetched tile only outdates the magnified tiles it covers at a better zoom level
+    TileCache partial;
+    CHECK(partial.init(3) == 3);
+    const TileKey inside { 14, 100, 200 };
+    const TileKey outside { 14, 300, 200 };
+    partial.reserve(inside);
+    partial.commit(inside, 10);
+    partial.reserve(outside);
+    partial.commit(outside, 10);
+    const TileKey z12 = ancestorOf(inside, 12);
+    const TileKey z9 = ancestorOf(inside, 9);
+    partial.dropMagnified(&z9, 1);
+    CHECK(partial.contains(inside));
+    partial.dropMagnified(&z12, 1);
+    CHECK(!partial.contains(inside));
+    CHECK(partial.contains(outside));
 }
 
 // ---------------------------------------------------------------------------------------------------------------

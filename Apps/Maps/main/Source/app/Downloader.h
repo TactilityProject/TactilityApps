@@ -61,7 +61,12 @@ public:
     /** The tile set version OpenFreeMap serves now, empty until a download asked for it. */
     const char* latestVersion() const { return version; }
     /** True once after tiles were added to or removed from the card. */
-    bool takeTilesChanged() { return tilesChanged.exchange(false); }
+    /**
+     * Whether tiles were stored or removed since the last call. count is the number of tiles in tiles (fetched while
+     * browsing, at most MAX_ARRIVED), or -1 when any tile may have changed.
+     */
+    bool takeTilesChanged(TileKey* tiles, int& count);
+    static constexpr int MAX_ARRIVED = 8;
 
     /** Fetches these tiles soon, after the ones already asked for, unless the server had no data for them. */
     void browse(const TileKey* tiles, int count);
@@ -130,6 +135,9 @@ private:
     std::atomic<bool> cancelRequested = false;
     std::atomic<bool> busy = false;
     std::atomic<bool> tilesChanged = false;
+    std::atomic<bool> allTilesChanged = false;
+    TileKey arrived[MAX_ARRIVED] {};
+    int arrivedCount = 0;
     Job job = Job::None;
     char jobRegion[REGION_NAME_MAX + 1] = "";
     Status current {};

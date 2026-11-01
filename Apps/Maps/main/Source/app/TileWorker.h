@@ -60,10 +60,18 @@ public:
     }
     /** Whether a tile is cached or known to have no data. Call between lock() and unlock(). */
     bool isSettled(const TileKey& tile) const;
-    /** New vector tiles are on the card: tiles without data and tiles drawn from lower zoom levels are drawn again. */
-    void tilesArrived();
+    /**
+     * New vector tiles are on the card: tiles without data and tiles drawn from lower zoom levels are drawn again,
+     * only those the given tiles cover, or all of them when count is -1.
+     */
+    void tilesArrived(const TileKey* tiles, int count);
     /** Whether new prepared tiles are written deflated. */
     void setDeflatePrepared(bool deflate) { deflatePrepared = deflate; }
+    /**
+     * No tiles are prepared while paused (during a download), they are prepared afterwards. Tiles on screen are drawn
+     * again from the downloaded tiles once, when the pause ends, not after every batch.
+     */
+    void setConversionsPaused(bool paused);
     /** Whether rendered tiles are read from and written to the SD card cache. */
     void setSdCache(bool enabled) { sdCache = enabled; }
     /** Idle: no input for a while, so prefetch, conversions and cache tidying may run. */
@@ -178,12 +186,22 @@ private:
     TileKey gaps[MAX_GAPS] {};
     int gapCount = 0;
     Conversion conversions[MAX_CONVERSIONS] {};
+    static constexpr int MAX_FAILED_CONVERSIONS = 16;
+    TileKey failedConversions[MAX_FAILED_CONVERSIONS] = {};
+    int failedConversionNext = 0;
+    int failedConversionCount = 0;
+    /** Tiles whose preparation failed once and went back into the queue. */
+    TileKey retriedConversions[MAX_FAILED_CONVERSIONS] = {};
+    int retriedConversionNext = 0;
+    int retriedConversionCount = 0;
     int conversionCount = 0;
     PreparedScanner scanner;
     ScanResult scanResult {};
     bool scanning = false;
     std::atomic<bool> rescanRequested = false;
     std::atomic<bool> deflatePrepared = true;
+    std::atomic<bool> conversionsPaused = false;
+    bool magnifiedOutdated = false;
     std::atomic<bool> sdCache = true;
     std::atomic<bool> idle = false;
     char styleId[8] = "";

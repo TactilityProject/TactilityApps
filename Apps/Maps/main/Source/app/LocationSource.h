@@ -20,12 +20,21 @@ public:
     bool subscribe(TaskEventGroup* eventGroup);
     void unsubscribe();
     /** The event group bit that is signalled for a new fix, 0 when not subscribed. */
-    uint32_t bit() const { return subscribed ? subscription.bit : 0; }
+    uint32_t bit() const { return subscribed ? storage.subscription.bit : 0; }
 
     PositionRead read(PositionFix& fix) override;
 
 private:
-    LocationSubscription subscription {};
+    /**
+     * Firmware from November 2026 on keeps a 25-byte description in the subscription's internal part, so its
+     * subscription is larger than the one of the SDK this app is built with. The service owns those internal fields
+     * and the app only reads bit (the first field in both), so room for either layout keeps both firmwares working.
+     */
+    union Storage {
+        LocationSubscription subscription;
+        uint8_t bytes[64];
+    };
+    Storage storage {};
     bool subscribed = false;
 };
 

@@ -100,6 +100,8 @@ public:
     uint8_t* writable() { return data; }
     void setSize(size_t size) { length = size <= capacity ? size : 0; }
     void clear() { length = 0; }
+    /** Frees the buffer when it grew beyond keepBytes, so one big low-zoom tile does not hold PSRAM for good. */
+    void trim(size_t keepBytes);
 };
 
 } // namespace maps

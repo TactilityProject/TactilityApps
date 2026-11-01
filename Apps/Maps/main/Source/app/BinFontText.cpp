@@ -2,9 +2,12 @@
 #include "BinFontText.h"
 
 #include "../platform/Platform.h"
-#include "../render/Raster.h"
 
 #include <binfont/binfont.h>
+#include <binfont/render.h>
+#include <graphics/pixel_buffer.h>
+#include <lvgl.h>
+#include <lvgl/fonts.h>
 
 #include <cstdio>
 #include <cstring>
@@ -55,6 +58,7 @@ bool BinFontText::open(const char* folder, const char* const* prefixes, int pref
         char path[260];
         snprintf(path, sizeof(path), "%s/%s", folder, search.name);
         if (binfont_open_file(path, &font) == ERROR_NONE) {
+            owned = true;
             BinFontMetrics metrics;
             binfont_get_metrics(font, &metrics);
             height = metrics.line_height;
@@ -67,88 +71,74 @@ bool BinFontText::open(const char* folder, const char* const* prefixes, int pref
     return false;
 }
 
+bool BinFontText::borrow(int lvglFontSize) {
+    const lv_font_t* lvFont = lvgl_get_text_font(static_cast<LvglFontSize>(lvglFontSize));
+    // Tactility's fonts come from lvgl_binfont_create(), which keeps the BinFont in dsc. Without a registered font
+    // LVGL's built-in one comes back, whose dsc is something else.
+    if (lvFont == nullptr || lvFont->dsc == nullptr || lvFont->get_glyph_dsc == lv_font_get_glyph_dsc_fmt_txt) {
+        return false;
+    }
+    font = static_cast<BinFont*>(const_cast<void*>(lvFont->dsc));
+    owned = false;
+    BinFontMetrics metrics;
+    binfont_get_metrics(font, &metrics);
+    height = metrics.line_height;
+    ascent = metrics.ascent;
+    logInfo("Font from the system, size %d, line height %d", lvglFontSize, height);
+    return true;
+}
+
 void BinFontText::close() {
-    for (auto& entry : glyphs) {
-        largeFree(entry.alpha);
-        entry = {};
+    if (target != nullptr) {
+        pixel_buffer_free(target);
+        target = nullptr;
+        targetPixels = nullptr;
     }
-    largeFree(copyright.alpha);
-    copyright = {};
-    if (font != nullptr) {
+    if (font != nullptr && owned) {
         binfont_close(font);
-        font = nullptr;
     }
-}
-
-void BinFontText::preload() {
-    for (uint32_t codepoint = 32; codepoint < 127; codepoint++) {
-        glyph(codepoint);
-    }
-    glyph(0xA9);
-}
-
-BinFontText::Glyph* BinFontText::glyph(uint32_t codepoint) {
-    Glyph* entry;
-    if (codepoint >= 32 && codepoint < 128) {
-        entry = &glyphs[codepoint - 32];
-    } else if (codepoint == 0xA9) {
-        entry = &copyright;
-    } else {
-        entry = &glyphs['?' - 32];
-        codepoint = '?';
-    }
-    if (entry->loaded || font == nullptr) {
-        return entry;
-    }
-    entry->loaded = true;
-    BinFontGlyph info;
-    if (!binfont_get_glyph(font, codepoint, &info)) {
-        return entry;
-    }
-    entry->x = info.x;
-    entry->y = info.y;
-    entry->width = info.width;
-    entry->height = info.height;
-    entry->advance = static_cast<uint16_t>((info.advance_x16 + 8) >> 4);
-    if (info.width > 0 && info.height > 0) {
-        entry->alpha = static_cast<uint8_t*>(largeAlloc(static_cast<size_t>(info.width) * info.height));
-        if (entry->alpha != nullptr && binfont_get_glyph_bitmap(font, &info, entry->alpha, info.width) != ERROR_NONE) {
-            largeFree(entry->alpha);
-            entry->alpha = nullptr;
-        }
-    }
-    return entry;
+    font = nullptr;
+    owned = false;
 }
 
 int BinFontText::textWidth(const char* text) {
-    int width = 0;
-    while (*text != '\0') {
-        width += glyph(nextCodepoint(text))->advance;
+    if (font == nullptr) {
+        return 0;
     }
-    return width;
+    // The same advances and kerning binfont_draw_text_rgb565() applies
+    int32_t widthX16 = 0;
+    uint32_t previous = 0;
+    bool hasPrevious = false;
+    while (*text != '\0') {
+        BinFontGlyph glyph;
+        if (!binfont_get_glyph(font, nextCodepoint(text), &glyph)) {
+            continue;
+        }
+        if (hasPrevious) {
+            widthX16 += binfont_get_kerning_x16(font, previous, glyph.glyph_id);
+        }
+        widthX16 += static_cast<int32_t>(glyph.advance_x16);
+        previous = glyph.glyph_id;
+        hasPrevious = true;
+    }
+    return (widthX16 + 8) >> 4;
 }
 
 void BinFontText::drawText(Canvas& canvas, int x, int y, const char* text, uint16_t color) {
     if (font == nullptr) {
         return;
     }
-    const int baseline = y + ascent;
-    while (*text != '\0') {
-        const Glyph* entry = glyph(nextCodepoint(text));
-        if (entry->alpha != nullptr) {
-            const int left = x + entry->x;
-            const int top = baseline - (entry->y + entry->height);
-            for (int row = 0; row < entry->height; row++) {
-                for (int column = 0; column < entry->width; column++) {
-                    const uint8_t alpha = entry->alpha[row * entry->width + column];
-                    if (alpha != 0) {
-                        canvas.blendPixel(left + column, top + row, color, (alpha + 4u) >> 3);
-                    }
-                }
-            }
+    if (target == nullptr || targetPixels != canvas.pixels) {
+        if (target != nullptr) {
+            pixel_buffer_free(target);
         }
-        x += entry->advance;
+        target = pixel_buffer_wrap(canvas.pixels, DISPLAY_COLOR_FORMAT_RGB565, canvas.width, canvas.height, 0);
+        targetPixels = target != nullptr ? canvas.pixels : nullptr;
+        if (target == nullptr) {
+            return;
+        }
     }
+    binfont_draw_text_rgb565(target, x, y + ascent, font, text, color, PIXEL_BUFFER_CONVERSION_AVERAGE);
 }
 
 } // namespace maps

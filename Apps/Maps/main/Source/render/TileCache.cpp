@@ -2,6 +2,7 @@
 #include "TileCache.h"
 
 #include "../platform/Platform.h"
+#include "../tiles/TileMath.h"
 
 namespace maps {
 
@@ -116,6 +117,18 @@ void TileCache::dropMagnified() {
         const int best = slots[i].key.z < MAX_SOURCE_ZOOM ? slots[i].key.z : MAX_SOURCE_ZOOM;
         if (slots[i].valid && slots[i].sourceZoom < best) {
             slots[i].stale = true;
+        }
+    }
+}
+
+void TileCache::dropMagnified(const TileKey* arrived, int count) {
+    for (int i = 0; i < count; i++) {
+        const TileKey& tile = arrived[i];
+        for (int j = 0; j < this->count; j++) {
+            Slot& slot = slots[j];
+            if (slot.valid && tile.z > slot.sourceZoom && tile.z <= slot.key.z && ancestorOf(slot.key, tile.z) == tile) {
+                slot.stale = true;
+            }
         }
     }
 }

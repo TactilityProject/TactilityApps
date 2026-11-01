@@ -36,6 +36,9 @@ public:
      * on screen until they are drawn again, so the map does not blink while a download stores tiles.
      */
     void dropMagnified();
+    /** The same, only for tiles that one of the arrived vector tiles covers at a better zoom level than they were drawn from. */
+    void dropMagnified(const TileKey* arrived, int count);
+    /** The number of tiles it holds. */
     int slotCount() const { return count; }
 
 private:

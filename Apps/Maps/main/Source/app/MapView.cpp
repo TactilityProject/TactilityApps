@@ -4,6 +4,8 @@
 #include "../platform/Platform.h"
 #include "../render/Compose.h"
 
+#include <lvgl.h>
+#include <lvgl/fonts.h>
 #include <tactility/drivers/display.h>
 
 #include <freertos/FreeRTOS.h>
@@ -18,10 +20,10 @@ namespace maps {
 namespace {
 
 /**
- * 3.5 MB of rendered tiles in PSRAM. With 32 (4 MB) a download, a conversion and panning together left as little
- * as 60 KB of PSRAM free, and downloaded tiles could not be kept.
+ * 2.5 MB of rendered tiles in PSRAM, enough for a screen and its neighbours at two zoom levels. With 28 a download of
+ * low-zoom tiles (up to 1.2 MB each) started with only 0.5 MB of PSRAM free and failed.
  */
-constexpr int TILE_CACHE_SLOTS = 28;
+constexpr int TILE_CACHE_SLOTS = 20;
 constexpr uint32_t LOOP_INTERVAL_MS = 15;
 /** The map opens at ESA ESTEC, Noordwijk, the first time, then where it was left. */
 constexpr double DEFAULT_LAT = 52.2186;
@@ -87,13 +89,11 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         regionsFound = store.scanRegions();
         char folder[160];
         snprintf(folder, sizeof(folder), "%s/cache/fonts", dataPath);
-        if (normalFont.open(folder, NORMAL_FONTS, 3)) {
-            normalFont.preload();
-        } else {
-            logError("No font found in %s, the map shows no text", folder);
+        if (!normalFont.borrow(FONT_SIZE_DEFAULT) && !normalFont.open(folder, NORMAL_FONTS, 3)) {
+            logError("No font from the system or in %s, the map shows no text", folder);
         }
-        if (smallFont.open(folder, SMALL_FONTS, 1)) {
-            smallFont.preload();
+        if (!smallFont.borrow(FONT_SIZE_SMALL)) {
+            smallFont.open(folder, SMALL_FONTS, 1);
         }
         script.open(root);
         return true;
@@ -347,8 +347,10 @@ void MapView::drawStatus() {
 }
 
 void MapView::pollDownloader(uint32_t now) {
-    if (downloader.takeTilesChanged()) {
-        worker.tilesArrived();
+    TileKey arrived[Downloader::MAX_ARRIVED];
+    int arrivedCount = 0;
+    if (downloader.takeTilesChanged(arrived, arrivedCount)) {
+        worker.tilesArrived(arrived, arrivedCount);
         dirty = true;
     }
     if (!resumeChecked) {
@@ -377,6 +379,7 @@ void MapView::pollDownloader(uint32_t now) {
     }
     lastStatusPoll = now;
     const Downloader::Status status = downloader.status();
+    worker.setConversionsPaused(status.state == Downloader::State::Connecting || status.state == Downloader::State::Downloading);
     if (status.state != lastStatus.state || status.done != lastStatus.done || strcmp(status.message, lastStatus.message) != 0) {
         if (status.state != lastStatus.state && (status.state == Downloader::State::Done || status.state == Downloader::State::Failed)) {
             messageUntil = now + MESSAGE_SHOW_MS;

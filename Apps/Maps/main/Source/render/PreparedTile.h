@@ -67,6 +67,8 @@ public:
     /** Clears and frees the buffer. */
     void release();
     bool reserve(size_t size);
+    /** Room for exactly size bytes, no doubling: for a download whose length is known. */
+    bool reserveExact(size_t size);
     void put(uint8_t value);
     void putBytes(const void* bytes, size_t count);
     void putVarint(uint64_t value);
@@ -78,6 +80,7 @@ public:
     const uint8_t* bytes() const { return data; }
     uint8_t* bytes() { return data; }
     size_t size() const { return length; }
+    size_t allocated() const { return capacity; }
     bool failed() const { return error; }
 
 private:
@@ -114,6 +117,10 @@ public:
      */
     bool convert(MvtDecoder& decoder, ByteInput* input, const TileKey& tile, uint32_t sourceSize, const char* sourceVersion,
         bool deflate, ByteWriter& out, ConvertStats* stats);
+    /** Why the last convert() failed. */
+    const char* failure() const { return failureText; }
+    /** Frees section buffers larger than keepBytes, which a large low-zoom tile leaves behind. */
+    void trim(size_t keepBytes);
 
 private:
     bool beginFeature(const FeatureInfo& info) override;
@@ -126,6 +133,7 @@ private:
     int simplifyRing(int count, float tolerance);
 
     MvtDecoder* decoder = nullptr;
+    const char* failureText = "";
     TileKey tile {};
     int minZoom = 0;
     int maxZoom = 0;
@@ -158,6 +166,5 @@ inline Stage preparedSection(Stage stage) {
 }
 
 /** Compresses data into a zlib stream. */
-bool deflateBytes(const uint8_t* data, size_t size, ByteWriter& out);
 
 } // namespace maps

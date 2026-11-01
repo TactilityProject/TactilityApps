@@ -12,10 +12,12 @@
 #include <tactility/device.h>
 #include <tactility/drivers/wifi.h>
 
+#include <strings.h>
 #include <sys/stat.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <initializer_list>
@@ -27,6 +29,8 @@ namespace {
 constexpr uint32_t CONTROL_STACK = 8192;
 constexpr uint32_t CONNECTION_STACK = 6144;
 constexpr UBaseType_t TASK_PRIORITY = 3;
+/** Tiles at this zoom level and below are downloaded one at a time. */
+constexpr int ALONE_MAX_ZOOM = 7;
 /**
  * Network tasks run on core 1. While a TLS handshake (2-3 s of CPU) ran on core 0, the map loop and the render lane
  * there made no progress for its whole length; on core 1 no stall was seen (docs/upstream/https-stall.md).
@@ -85,6 +89,14 @@ uint32_t msSince(int64_t startUs, int64_t endUs) {
 esp_err_t onHttpEvent(esp_http_client_event_t* event) {
     if (event->event_id == HTTP_EVENT_ON_CONNECTED) {
         connectedAtMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    }
+    // Low-zoom tiles are up to about 1.2 MB: room for exactly the announced length, growing by doubling needed a
+    // 2 MB block next to the old one, which a busy PSRAM did not have
+    if (event->event_id == HTTP_EVENT_ON_HEADER && event->user_data != nullptr && strcasecmp(event->header_key, "Content-Length") == 0) {
+        const unsigned long length = strtoul(event->header_value, nullptr, 10);
+        if (length > 0 && length <= MAX_TILE_BYTES) {
+            static_cast<ByteWriter*>(event->user_data)->reserveExact(length);
+        }
     }
     if (event->event_id == HTTP_EVENT_ON_DATA && event->user_data != nullptr) {
         auto* body = static_cast<ByteWriter*>(event->user_data);
@@ -494,14 +506,33 @@ bool Downloader::downloadTile(Connection& connection, const char* region, const 
 }
 
 bool Downloader::claimIndex(int64_t& index, int connectionIndex) {
-    xSemaphoreTake(mutex, portMAX_DELAY);
-    const bool available = nextIndex < meta.total && !failed && !cancelRequested;
-    if (available) {
-        index = nextIndex++;
-        activeIndex[connectionIndex] = index;
+    while (true) {
+        xSemaphoreTake(mutex, portMAX_DELAY);
+        const bool available = nextIndex < meta.total && !failed && !cancelRequested && !stopRequested;
+        if (!available) {
+            xSemaphoreGive(mutex);
+            return false;
+        }
+        // Tiles up to ALONE_MAX_ZOOM can be over 1 MB each: one is downloaded at a time, with no other tile next to it
+        TileKey tile {};
+        bool large = tileAtIndex(meta.plan(), nextIndex, tile) && tile.z <= ALONE_MAX_ZOOM;
+        bool othersActive = false;
+        for (int i = 0; i < CONNECTIONS; i++) {
+            if (i == connectionIndex || activeIndex[i] < 0) {
+                continue;
+            }
+            othersActive = true;
+            large = large || (tileAtIndex(meta.plan(), activeIndex[i], tile) && tile.z <= ALONE_MAX_ZOOM);
+        }
+        if (!large || !othersActive) {
+            index = nextIndex++;
+            activeIndex[connectionIndex] = index;
+            xSemaphoreGive(mutex);
+            return true;
+        }
+        xSemaphoreGive(mutex);
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
-    xSemaphoreGive(mutex);
-    return available;
 }
 
 void Downloader::finishIndex(int connectionIndex) {
@@ -529,6 +560,7 @@ void Downloader::finishIndex(int connectionIndex) {
     xSemaphoreGive(mutex);
     if (save) {
         saveProgress();
+        allTilesChanged = true;
         tilesChanged = true;
     }
 }
@@ -553,6 +585,16 @@ void Downloader::connectionMain(void* context) {
 }
 
 void Downloader::connectionLoop(Connection& connection) {
+    // Both connections run on one core: two TLS handshakes (2-3.6 s each) at once kept its idle task from the
+    // task watchdog, so the others start once the first one is connected
+    if (connection.index > 0) {
+        const uint32_t startMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        uint32_t nowMs = startMs;
+        while (!stopRequested && !cancelRequested && nowMs - startMs < 6000 && (connectedAtMs == 0 || connectedAtMs < startMs)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        }
+    }
     int64_t index;
     while (claimIndex(index, connection.index)) {
         TileKey tile {};
@@ -685,6 +727,7 @@ void Downloader::runDownload() {
     xSemaphoreGive(mutex);
     writeMeta(meta);
     store->setRegionVersion(meta.name, meta.version);
+    allTilesChanged = true;
     tilesChanged = true;
 
     const uint32_t seconds = (nowMs() - start) / 1000;
@@ -859,6 +902,20 @@ bool Downloader::ensureBrowseRegion(const TileKey& tile) {
     return true;
 }
 
+bool Downloader::takeTilesChanged(TileKey* tiles, int& count) {
+    if (!tilesChanged.exchange(false)) {
+        return false;
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    count = allTilesChanged.exchange(false) ? -1 : arrivedCount;
+    for (int i = 0; i < count; i++) {
+        tiles[i] = arrived[i];
+    }
+    arrivedCount = 0;
+    xSemaphoreGive(mutex);
+    return true;
+}
+
 bool Downloader::fetchBrowseTile(const TileKey& tile) {
     bool inThisRegion = false;
     if (tileOnCard(BROWSE_REGION, tile, inThisRegion)) {
@@ -902,6 +959,13 @@ bool Downloader::fetchBrowseTile(const TileKey& tile) {
         browseUnsaved = 0;
         writeMeta(browseMeta);
     }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    if (arrivedCount < MAX_ARRIVED) {
+        arrived[arrivedCount++] = tile;
+    } else {
+        allTilesChanged = true;
+    }
+    xSemaphoreGive(mutex);
     tilesChanged = true;
     return true;
 }
@@ -1008,6 +1072,7 @@ void Downloader::runDelete() {
     snprintf(folder.path, sizeof(folder.path), "%s/maps/%s", rootPath, target.name);
     folder.folder = true;
     io->run(IoPriority::Background, removeJob, &folder);
+    allTilesChanged = true;
     tilesChanged = true;
     setStatus(State::Done, cancelRequested ? "Delete stopped" : "Region deleted");
 }

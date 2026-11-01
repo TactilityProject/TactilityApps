@@ -17,16 +17,6 @@ downloading maps. Tested on Tactility 0.8.0-dev (main at 0e276da2) on a LilyGO T
 2. Start "Maps" from the app list. The first time it opens at ESA ESTEC in Noordwijk with no map data yet: move
    to your area, open the menu (M, long press or ☰) and choose Download area.
 
-| Map at z14 | Overzoom z16 | Following the position |
-|---|---|---|
-| ![Map](docs/images/map-z14.png) | ![Overzoom](docs/images/map-z16.png) | ![Follow](docs/images/follow.png) |
-
-| Download this area | Regions | About and licences |
-|---|---|---|
-| ![Download](docs/images/download-frame.png) | ![Regions](docs/images/regions.png) | ![About](docs/images/about.png) |
-
-Screenshots taken on the T-Deck. Map data © OpenMapTiles © OpenStreetMap contributors.
-
 ## How it works
 
 - Vector tiles (OpenMapTiles schema) are stored one file per tile in `maps/<region>/<z>/<x>/<y>.pbf` on the SD card.
@@ -157,9 +147,6 @@ with the originals (`--write` stores the `.prt` files, which `render_tile --prep
 
 `host/fetch_tiles.py` downloads a test area on the PC (same OpenFreeMap rules), `host/push_region.py`
 copies it to a device through the development server.
-
-Measurements on the T-Deck are in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md), the plan and its decisions in
-[docs/PLAN.md](docs/PLAN.md).
 
 ## Licence
 

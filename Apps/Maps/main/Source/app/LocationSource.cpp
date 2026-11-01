@@ -5,19 +5,28 @@
 
 namespace maps {
 
+namespace {
+
+/** location_subscribe() of newer firmware, which takes what the subscriber is. Older firmware ignores the argument. */
+using SubscribeWithDescription = error_t (*)(LocationSubscription* sub, TaskEventGroup* eventGroup, const char* description);
+
+} // namespace
+
 bool LocationSource::subscribe(TaskEventGroup* eventGroup) {
     if (subscribed) {
         return true;
     }
-    subscription = {};
-    subscribed = location_subscribe(&subscription, eventGroup) == ERROR_NONE;
+    storage = {};
+    // Through a function type without arguments, which GCC accepts as a deliberate cast between function types
+    const auto subscribeCall = reinterpret_cast<SubscribeWithDescription>(reinterpret_cast<void (*)()>(&location_subscribe));
+    subscribed = subscribeCall(&storage.subscription, eventGroup, "Maps") == ERROR_NONE;
     logInfo("Location services %s, %s", location_is_enabled() ? "on" : "off", subscribed ? "subscribed" : "not subscribed");
     return subscribed;
 }
 
 void LocationSource::unsubscribe() {
     if (subscribed) {
-        location_unsubscribe(&subscription);
+        location_unsubscribe(&storage.subscription);
         subscribed = false;
     }
 }

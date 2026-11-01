@@ -47,6 +47,16 @@ int sectionOf(Layer layer) {
     return -1;
 }
 
+size_t encodeVarint(uint8_t* out, uint64_t value) {
+    size_t count = 0;
+    while (value >= 0x80) {
+        out[count++] = static_cast<uint8_t>(value | 0x80);
+        value >>= 7;
+    }
+    out[count++] = static_cast<uint8_t>(value);
+    return count;
+}
+
 int deflateCallback(const void* buffer, int length, void* user) {
     auto* out = static_cast<ByteWriter*>(user);
     out->putBytes(buffer, static_cast<size_t>(length));
@@ -89,6 +99,24 @@ void ByteWriter::release() {
     data = nullptr;
     capacity = 0;
     clear();
+}
+
+bool ByteWriter::reserveExact(size_t size) {
+    if (size <= capacity) {
+        return true;
+    }
+    auto* grown = static_cast<uint8_t*>(largeAlloc(size));
+    if (grown == nullptr) {
+        error = true;
+        return false;
+    }
+    if (length > 0) {
+        memcpy(grown, data, length);
+    }
+    largeFree(data);
+    data = grown;
+    capacity = size;
+    return true;
 }
 
 bool ByteWriter::reserve(size_t size) {
@@ -153,20 +181,15 @@ void ByteWriter::setU32(size_t offset, uint32_t value) {
     }
 }
 
-bool deflateBytes(const uint8_t* data, size_t size, ByteWriter& out) {
-    auto* compressor = static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor)));
-    if (compressor == nullptr) {
-        return false;
-    }
-    // 128 probes per search and a zlib header, so InflateReader recognises the stream
-    const int flags = 128 | TDEFL_WRITE_ZLIB_HEADER;
-    bool ok = tdefl_init(compressor, deflateCallback, &out, flags) == TDEFL_STATUS_OKAY &&
-        tdefl_compress_buffer(compressor, data, size, TDEFL_FINISH) == TDEFL_STATUS_DONE;
-    largeFree(compressor);
-    return ok && !out.failed();
-}
-
 // ---------------------------------------------------------------------------------------------------------------
+
+void TileConverter::trim(size_t keepBytes) {
+    for (auto& writer : sections) {
+        if (writer.allocated() > keepBytes) {
+            writer.release();
+        }
+    }
+}
 
 TileConverter::~TileConverter() {
     largeFree(ringPoints);
@@ -222,7 +245,9 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         sections[i].clear();
         sectionCounts[i] = 0;
     }
+    failureText = "";
     if (!decoder->scan(input)) {
+        failureText = "reading the tile";
         return false;
     }
     Layer layers[static_cast<int>(Stage::Count)];
@@ -235,22 +260,23 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
     }
     // The sections are separate buffers, so one pass in file order collects all of them
     if (!decoder->sweep(layers, layerCount, *this)) {
+        failureText = "decoding, or no memory for the features";
         return false;
+    }
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        if (sections[i].failed()) {
+            failureText = "no memory for the features";
+            return false;
+        }
     }
 
-    ByteWriter body;
+    // The sections go straight into the output: one combined copy of them would double the memory a large tile needs
+    size_t bodySize = 1;
+    uint8_t head[1 + 2 * 10];
     for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
-        if (sectionCounts[i] == 0) {
-            continue;
+        if (sectionCounts[i] != 0) {
+            bodySize += encodeVarint(head, sectionCounts[i]) + encodeVarint(head, sections[i].size()) + 1 + sections[i].size();
         }
-        body.put(static_cast<uint8_t>(i));
-        body.putVarint(sectionCounts[i]);
-        body.putVarint(sections[i].size());
-        body.putBytes(sections[i].bytes(), sections[i].size());
-    }
-    body.put(0xFF);
-    if (body.failed()) {
-        return false;
     }
 
     out.clear();
@@ -263,7 +289,7 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
     out.putU32(static_cast<uint32_t>(tile.x));
     out.putU32(static_cast<uint32_t>(tile.y));
     out.putU32(sourceSize);
-    out.putU32(static_cast<uint32_t>(body.size()));
+    out.putU32(static_cast<uint32_t>(bodySize));
     out.putU32(0);
     // Zero padded, without a terminator when the version fills the field
     char version[PREPARED_VERSION_LENGTH] = {};
@@ -272,19 +298,50 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         memcpy(version, sourceVersion, length < PREPARED_VERSION_LENGTH ? length : PREPARED_VERSION_LENGTH);
     }
     out.putBytes(version, PREPARED_VERSION_LENGTH);
+    tdefl_compressor* compressor = nullptr;
     if (deflate) {
-        if (!deflateBytes(body.bytes(), body.size(), out)) {
+        compressor = static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor)));
+        // 128 probes per search and a zlib header, so InflateReader recognises the stream
+        if (compressor == nullptr || tdefl_init(compressor, deflateCallback, &out, 128 | TDEFL_WRITE_ZLIB_HEADER) != TDEFL_STATUS_OKAY) {
+            largeFree(compressor);
+            failureText = "no 320 KB block of memory for the compressor";
             return false;
         }
-    } else {
-        out.putBytes(body.bytes(), body.size());
+    }
+    auto emit = [&](const void* bytes, size_t count) {
+        if (compressor == nullptr) {
+            out.putBytes(bytes, count);
+            return !out.failed();
+        }
+        return tdefl_compress_buffer(compressor, bytes, count, TDEFL_NO_FLUSH) == TDEFL_STATUS_OKAY;
+    };
+    bool ok = true;
+    for (int i = 0; i < static_cast<int>(Stage::Count) && ok; i++) {
+        if (sectionCounts[i] == 0) {
+            continue;
+        }
+        size_t headSize = 0;
+        head[headSize++] = static_cast<uint8_t>(i);
+        headSize += encodeVarint(head + headSize, sectionCounts[i]);
+        headSize += encodeVarint(head + headSize, sections[i].size());
+        ok = emit(head, headSize) && emit(sections[i].bytes(), sections[i].size());
+    }
+    const uint8_t endMark = 0xFF;
+    ok = ok && emit(&endMark, 1);
+    if (compressor != nullptr) {
+        ok = ok && tdefl_compress_buffer(compressor, nullptr, 0, TDEFL_FINISH) == TDEFL_STATUS_DONE;
+        largeFree(compressor);
+    }
+    if (!ok || out.failed()) {
+        failureText = "no memory for the prepared tile";
+        return false;
     }
     const auto stored = static_cast<uint32_t>(out.size() - PREPARED_HEADER_SIZE);
     out.setU32(28, stored);
     if (stats != nullptr) {
         *stats = counters;
         stats->totalMs = nowMs() - start;
-        stats->bodyBytes = static_cast<uint32_t>(body.size());
+        stats->bodyBytes = static_cast<uint32_t>(bodySize);
         stats->storedBytes = stored;
     }
     return !out.failed();

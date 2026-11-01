@@ -24,6 +24,15 @@ bool FileBuffer::reserve(size_t size) {
     return true;
 }
 
+void FileBuffer::trim(size_t keepBytes) {
+    if (capacity > keepBytes) {
+        largeFree(data);
+        data = nullptr;
+        capacity = 0;
+        length = 0;
+    }
+}
+
 bool FileBuffer::load(const char* path) {
     length = 0;
     FILE* file = fopen(path, "rb");
