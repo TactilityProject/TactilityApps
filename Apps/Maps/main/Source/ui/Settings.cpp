@@ -21,8 +21,22 @@ constexpr Entry ENTRIES[] = {
     { "deflate_prepared", &Settings::deflatePrepared },
     { "smooth_pinch", &Settings::smoothPinch },
     { "browse_download", &Settings::browseDownload },
+    { "latin_names", &Settings::latinNames },
     { "dev_mono", &Settings::devMonochrome },
     { "dev_probe", &Settings::devProbe },
+};
+
+/** Settings with a small range of values, written as a number. */
+struct NumberEntry {
+    const char* key;
+    int Settings::*value;
+    int min;
+    int max;
+};
+
+constexpr NumberEntry NUMBER_ENTRIES[] = {
+    { "pointer_speed", &Settings::pointerSpeed, 0, 2 },
+    { "labels", &Settings::labels, 0, 2 },
 };
 
 constexpr double MICRODEGREES = 1e6;
@@ -72,6 +86,16 @@ void parseSettings(const char* text, Settings& settings) {
                 }
             }
         }
+        for (const NumberEntry& entry : NUMBER_ENTRIES) {
+            const size_t keyLength = strlen(entry.key);
+            if (length > keyLength + 1 && strncmp(text, entry.key, keyLength) == 0 && text[keyLength] == '=') {
+                char* end = nullptr;
+                const long value = strtol(text + keyLength + 1, &end, 10);
+                if (end != text + keyLength + 1 && value >= entry.min && value <= entry.max) {
+                    settings.*entry.value = static_cast<int>(value);
+                }
+            }
+        }
         text += length;
         if (*text == '\n') {
             text++;
@@ -83,6 +107,13 @@ bool formatSettings(const Settings& settings, char* out, size_t size) {
     size_t used = 0;
     for (const Entry& entry : ENTRIES) {
         const int written = snprintf(out + used, size - used, "%s=%d\n", entry.key, settings.*entry.value ? 1 : 0);
+        if (written < 0 || static_cast<size_t>(written) >= size - used) {
+            return false;
+        }
+        used += static_cast<size_t>(written);
+    }
+    for (const NumberEntry& entry : NUMBER_ENTRIES) {
+        const int written = snprintf(out + used, size - used, "%s=%d\n", entry.key, settings.*entry.value);
         if (written < 0 || static_cast<size_t>(written) >= size - used) {
             return false;
         }

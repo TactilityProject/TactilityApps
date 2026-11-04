@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TileWorker.h"
+#include "Downloader.h"
 
 #include "../platform/Platform.h"
 #include "../render/TileCodec.h"
@@ -271,6 +272,30 @@ bool scanJob(IoTask& io, void* context) {
 
 } // namespace
 
+bool TileWorker::relieveMemory(size_t bytes) {
+    lock();
+    const int before = tileCache.slotCount();
+    while (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < bytes && tileCache.slotCount() > MIN_CACHE_SLOTS && tileCache.freeSlot()) {
+    }
+    const int after = tileCache.slotCount();
+    unlock();
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    logInfo("Memory for a %u KB download: %d of %d cache slots freed, largest block %u KB", static_cast<unsigned>(bytes / 1024), before - after,
+        before, static_cast<unsigned>(largest / 1024));
+    return largest >= bytes;
+}
+
+bool TileWorker::restoreMemory() {
+    lock();
+    const int missing = tileCache.regrow();
+    const int slots = tileCache.slotCount();
+    unlock();
+    if (missing == 0) {
+        logInfo("Tile cache back to %d slots", slots);
+    }
+    return missing == 0;
+}
+
 bool TileWorker::start(TileStore* tileStore, IoTask* ioTask, const Palette* tilePalette, int cacheSlots, const char* cacheRoot) {
     store = tileStore;
     io = ioTask;
@@ -283,7 +308,7 @@ bool TileWorker::start(TileStore* tileStore, IoTask* ioTask, const Palette* tile
         return false;
     }
     logInfo("Tile cache: %d slots of %d KB", tileCache.slotCount(), TileCache::TILE_BYTES / 1024);
-    styleCacheId(palette == &monochromePalette(), styleId, sizeof(styleId));
+    styleCacheId(*palette, styleId, sizeof(styleId));
     if (!cacheIndex.init(CACHE_INDEX_ENTRIES)) {
         logError("Tile worker: no memory for the cache index");
         return false;
@@ -313,6 +338,11 @@ bool TileWorker::start(TileStore* tileStore, IoTask* ioTask, const Palette* tile
         lane.prefetching = false;
         lane.cancel = false;
         lane.renderer.setCancelFlag(&lane.cancel);
+        if (labelStore != nullptr) {
+            lane.renderer.setLabelHook([](const TileKey& source, const uint8_t* section, size_t size, int count, void* context) {
+                static_cast<LabelStore*>(context)->put(source, section, size, count);
+            }, labelStore);
+        }
         lane.writeBuffer = static_cast<uint16_t*>(largeAlloc(TileCache::TILE_BYTES));
         lane.encodeBuffer = static_cast<uint16_t*>(largeAlloc(ENCODE_CAPACITY * sizeof(uint16_t) + CACHE_HEADER_BYTES));
         if (lane.writeBuffer == nullptr || lane.encodeBuffer == nullptr || !lane.renderer.init()) {
@@ -372,9 +402,15 @@ void TileWorker::want(const TileKey* tiles, int count, int visibleCount) {
     wantedCount = std::min({ count, static_cast<int>(MAX_WANTED), room });
     visibleWanted = visibleCount < wantedCount ? visibleCount : wantedCount;
     memcpy(wanted, tiles, sizeof(TileKey) * wantedCount);
-    // The visible tiles count as just used, so tiles rendered for the ring evict others first
+    // The visible tiles count as just used, so tiles rendered for the ring evict others first. One that was drawn
+    // from coarser data while it was still in the ring is a gap now that it is on screen.
     for (int i = 0; i < visibleWanted; i++) {
         tileCache.find(wanted[i]);
+        const int sourceZoom = tileCache.sourceZoomOf(wanted[i]);
+        const int bestZoom = wanted[i].z < MAX_SOURCE_ZOOM ? wanted[i].z : MAX_SOURCE_ZOOM;
+        if (sourceZoom >= 0 && sourceZoom < bestZoom) {
+            addGap(ancestorOf(wanted[i], bestZoom));
+        }
     }
     unlock();
 }
@@ -422,7 +458,7 @@ void TileWorker::setConversionsPaused(bool paused) {
     unlock();
 }
 
-bool TileWorker::queueConversion(const TileKey& tile, int region) {
+bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent) {
     for (int i = 0; i < failedConversionCount; i++) {
         if (failedConversions[i] == tile) {
             return true;
@@ -437,6 +473,15 @@ bool TileWorker::queueConversion(const TileKey& tile, int region) {
         if (lanes[i].converting && lanes[i].convertingTile == tile) {
             return true;
         }
+    }
+    if (urgent) {
+        const int kept = conversionCount < MAX_CONVERSIONS ? conversionCount : MAX_CONVERSIONS - 1;
+        for (int i = kept; i > 0; i--) {
+            conversions[i] = conversions[i - 1];
+        }
+        conversions[0] = { tile, region };
+        conversionCount = kept + 1;
+        return true;
     }
     if (conversionCount >= MAX_CONVERSIONS) {
         return false;
@@ -514,6 +559,8 @@ bool TileWorker::convertOne(Lane& lane) {
     }
 
     const uint32_t start = nowMs();
+    // The conversion reuses the lane's buffer
+    lane.heldKind = static_cast<uint8_t>(Found::Nothing);
     ConvertReadJob read { root, region, job.tile, &lane.fileBuffer, 0, false, false };
     bool ok = region[0] != '\0' && io->run(IoPriority::Background, convertReadJob, &read);
     const uint32_t loaded = nowMs();
@@ -546,6 +593,12 @@ bool TileWorker::convertOne(Lane& lane) {
             logInfo("[%d] Prepared %d/%d/%d%s: %u -> %u bytes, read %u ms, convert %u ms, write %u ms", lane.index, job.tile.z, job.tile.x,
                 job.tile.y, streamed ? " in chunks" : "", static_cast<unsigned>(read.size), static_cast<unsigned>(lane.converted.size()), loaded - start, convertedAt - loaded,
                 nowMs() - convertedAt);
+            // Tiles drawn from the original or an older prepared copy are drawn again from the new one, which has labels
+            preparedGeneration++;
+            lock();
+            tileCache.dropMagnified(&job.tile, 1);
+            changed = true;
+            unlock();
         }
     }
     // A read or write that gave way to tiles on screen is tried again later
@@ -780,7 +833,8 @@ void TileWorker::finish(Lane& lane, const TileKey& tile, bool success, int sourc
 bool TileWorker::loadJob(IoTask& io, void* context) {
     auto* job = static_cast<LoadJob*>(context);
     TileWorker* worker = job->worker;
-    FileBuffer& buffer = job->lane->fileBuffer;
+    Lane& lane = *job->lane;
+    FileBuffer& buffer = lane.fileBuffer;
     job->found = Found::Nothing;
     job->yielded = false;
     const bool hasSource = worker->store->find(job->tile, job->source);
@@ -789,6 +843,10 @@ bool TileWorker::loadJob(IoTask& io, void* context) {
     worker->lock();
     const bool indexed = job->tryCache && worker->sdCache && (worker->cacheIndex.contains(job->tile) || !worker->cacheIndex.isComplete());
     worker->unlock();
+    const auto held = static_cast<Found>(lane.heldKind);
+    if (indexed) {
+        lane.heldKind = static_cast<uint8_t>(Found::Nothing);
+    }
     if (indexed && cachePath(path, sizeof(path), worker->root, worker->styleId, job->tile) && io.readFile(path, buffer)) {
         // A tile drawn magnified from a lower zoom level is drawn again once its own data is on the card
         int sourceZoom = 0;
@@ -808,15 +866,32 @@ bool TileWorker::loadJob(IoTask& io, void* context) {
     if (!hasSource) {
         return false;
     }
+    // The file the lane read for the last tile, when it is this one's source too
+    if (!indexed && buffer.size() > 0 && lane.heldTile == job->source.tile && lane.heldRegion == job->source.region &&
+        ((held == Found::Prepared && !job->skipPrepared) ||
+            (held == Found::Original && lane.heldGeneration == worker->preparedGeneration.load()))) {
+        job->found = held;
+        job->olderPrepared = lane.heldOlder;
+        return true;
+    }
+    lane.heldKind = static_cast<uint8_t>(Found::Nothing);
+    lane.heldTile = job->source.tile;
+    lane.heldRegion = job->source.region;
+    lane.heldGeneration = worker->preparedGeneration.load();
     PreparedHeader header {};
     if (!job->skipPrepared && preparedPath(path, sizeof(path), worker->root, worker->store->regionName(job->source.region), job->source.tile) &&
         io.readFile(path, buffer) && readPreparedHeader(buffer.bytes(), buffer.size(), header) &&
-        isPreparedCurrent(header, job->source.tile, job->source.size)) {
+        isPreparedReadable(header, job->source.tile, job->source.size)) {
         job->found = Found::Prepared;
+        job->olderPrepared = header.version < PREPARED_FORMAT_VERSION;
+        lane.heldKind = static_cast<uint8_t>(Found::Prepared);
+        lane.heldOlder = job->olderPrepared;
         return true;
     }
     if (!io.yielded() && io.readFile(job->source.path, buffer)) {
         job->found = Found::Original;
+        lane.heldKind = static_cast<uint8_t>(Found::Original);
+        lane.heldOlder = false;
         return true;
     }
     job->yielded = io.yielded();
@@ -868,6 +943,12 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
         if (lane.renderer.wasCancelled()) {
             return false;
         }
+        if (rendered && job.olderPrepared) {
+            // A tile on screen from an older format (no labels) is made again before the idle scan gets to it
+            lock();
+            queueConversion(job.source.tile, job.source.region, true);
+            unlock();
+        }
         if (!rendered) {
             // A damaged prepared tile: the original is drawn and the copy made again
             job.tryCache = false;
@@ -884,9 +965,9 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
         if (lane.renderer.wasCancelled()) {
             return false;
         }
-        // No current prepared copy: converted in idle time
+        // No current prepared copy: converted in idle time, before the tiles the scan found
         lock();
-        queueConversion(job.source.tile, job.source.region);
+        queueConversion(job.source.tile, job.source.region, true);
         unlock();
     }
     lane.fileBuffer.trim(KEEP_FILE_BUFFER);
@@ -909,6 +990,11 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
 
 void TileWorker::loop(Lane& lane) {
     while (!stopRequested) {
+        // A TLS handshake is 2-3.6 s of CPU at a lower priority: rendering beside it on the same core starved it and
+        // the core's idle task, which the task watchdog reported. It gets the core, at most 5 s.
+        for (int wait = 0; lane.index == Downloader::NETWORK_CORE && Downloader::isHandshaking() && wait < 250 && !stopRequested; wait++) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
         TileKey tile {};
         uint16_t* pixels = nullptr;
         // Tiles on screen first, then the SD card cache, then the tiles around the screen, then conversions

@@ -10,8 +10,8 @@ namespace maps {
 /**
  * The position from Tactility's location module, the app's only position source. Subscribing makes the
  * location service run its providers (GPS, IP lookup) while the map is open, and signals a bit of the app's
- * event group for each new fix. Location settings belong to the user: this never enables location or
- * changes its precision.
+ * event group for each new fix. Location settings belong to the user: only the menu's Location switch turns the
+ * service on or off, and the precision is never changed.
  */
 class LocationSource final : public PositionSource {
 public:
@@ -23,6 +23,10 @@ public:
     uint32_t bit() const { return subscribed ? storage.subscription.bit : 0; }
 
     PositionRead read(PositionFix& fix) override;
+
+    static bool isEnabled();
+    /** Starts or stops Tactility's location service and stores the choice in its settings. */
+    static bool setEnabled(bool enabled);
 
 private:
     /**

@@ -22,6 +22,12 @@ struct Settings {
     bool smoothPinch = true;
     /** Fetch the tiles on screen that have no detail on the card, while Wi-Fi is connected. */
     bool browseDownload = true;
+    /** Trackball pointer speed in mouse mode: 0 slow, 1 normal, 2 fast (PointerAcceleration). */
+    int pointerSpeed = 1;
+    /** Map labels: 0 off, 1 few, 2 normal (LabelDensity). */
+    int labels = 2;
+    /** Show OpenMapTiles' Latin-script name where a place has one, instead of the local name. */
+    bool latinNames = false;
     /** Developer options, only in settings.txt: the monochrome palette on any display, and stall probes. */
     bool devMonochrome = false;
     bool devProbe = false;

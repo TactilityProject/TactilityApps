@@ -34,12 +34,18 @@ int Gestures::update(const TouchSample& sample, uint32_t now, Gesture* out) {
             pinchStartX = centerX;
             pinchStartY = centerY;
             pinchScale = 1.0f;
-            emit(out, count, { GestureType::PinchStart, centerX, centerY, 0, 0, 1.0f, centerX, centerY });
+            pinchStartAngle = std::atan2(dy, dx);
+            pinchRotation = 0.0f;
+            emit(out, count, { GestureType::PinchStart, centerX, centerY, 0, 0, 1.0f, centerX, centerY, 0.0f });
         } else {
             const float scale = distance / pinchStartDistance;
-            if (std::fabs(scale - pinchScale) > 0.005f || centerX != pinchX || centerY != pinchY) {
+            // The turn since the start, the shorter way round
+            float rotation = (std::atan2(dy, dx) - pinchStartAngle) * 57.29578f;
+            rotation -= 360.0f * std::floor((rotation + 180.0f) / 360.0f);
+            if (std::fabs(scale - pinchScale) > 0.005f || std::fabs(rotation - pinchRotation) > 0.5f || centerX != pinchX || centerY != pinchY) {
                 pinchScale = scale;
-                emit(out, count, { GestureType::PinchMove, centerX, centerY, 0, 0, scale, pinchStartX, pinchStartY });
+                pinchRotation = rotation;
+                emit(out, count, { GestureType::PinchMove, centerX, centerY, 0, 0, scale, pinchStartX, pinchStartY, rotation });
             }
         }
         pinchX = centerX;
@@ -51,7 +57,7 @@ int Gestures::update(const TouchSample& sample, uint32_t now, Gesture* out) {
     if (pinching) {
         // Lifting one finger ends the pinch where it was
         pinching = false;
-        emit(out, count, { GestureType::PinchEnd, pinchX, pinchY, 0, 0, pinchScale, pinchStartX, pinchStartY });
+        emit(out, count, { GestureType::PinchEnd, pinchX, pinchY, 0, 0, pinchScale, pinchStartX, pinchStartY, pinchRotation });
     }
 
     if (sample.count == 0) {
@@ -67,6 +73,10 @@ int Gestures::update(const TouchSample& sample, uint32_t now, Gesture* out) {
                 pendingX = lastX;
                 pendingY = lastY;
             }
+        }
+        const int swipeX = lastX - startX;
+        if (fingers == 1 && !spent && moved && swipeX >= SWIPE_DISTANCE && std::abs(lastY - startY) * 2 < swipeX) {
+            emit(out, count, { GestureType::SwipeBack, lastX, lastY, swipeX, lastY - startY, 1.0f, startX, startY });
         }
         fingers = 0;
         spent = false;

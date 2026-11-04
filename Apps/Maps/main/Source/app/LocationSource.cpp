@@ -31,6 +31,17 @@ void LocationSource::unsubscribe() {
     }
 }
 
+bool LocationSource::isEnabled() {
+    return location_is_enabled();
+}
+
+bool LocationSource::setEnabled(bool enabled) {
+    // The subscription stays registered while the service is stopped, new fixes signal it again once it runs
+    const error_t error = location_set_enabled(enabled);
+    logInfo("Location services switched %s: %s", enabled ? "on" : "off", error == ERROR_NONE ? "done" : "failed");
+    return error == ERROR_NONE;
+}
+
 PositionRead LocationSource::read(PositionFix& fix) {
     if (!location_is_enabled()) {
         return PositionRead::Off;

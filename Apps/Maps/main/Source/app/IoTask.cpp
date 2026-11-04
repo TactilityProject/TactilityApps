@@ -87,6 +87,13 @@ bool IoTask::run(IoPriority priority, IoJob job, void* context) {
     return request.result;
 }
 
+void IoTask::waitWhileHeld() {
+    // A frame goes to the display in strips, each of which waited for a whole card chunk: 150-250 ms per frame
+    for (int wait = 0; held && !stopRequested && wait < MAX_HOLD_MS / 5; wait++) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
 bool IoTask::shouldYield() const {
     if (running == IoPriority::Visible) {
         return false;
@@ -112,6 +119,7 @@ void IoTask::loop() {
             if (request == nullptr) {
                 break;
             }
+            waitWhileHeld();
             if (stopRequested) {
                 request->result = false;
             } else {
@@ -165,6 +173,7 @@ bool IoTask::readFile(const char* path, FileBuffer& buffer) {
             // Between chunks the display gets the shared SPI bus
             vTaskDelay(1);
         }
+        waitWhileHeld();
         const size_t wanted = static_cast<size_t>(size) - done < CHUNK_BYTES ? static_cast<size_t>(size) - done : CHUNK_BYTES;
         const size_t count = fread(buffer.writable() + done, 1, wanted, file);
         ok = count == wanted;
@@ -178,24 +187,47 @@ bool IoTask::readFile(const char* path, FileBuffer& buffer) {
 }
 
 bool IoTask::writeFile(const char* path, const char* temporaryPath, const uint8_t* bytes, size_t size, bool canYield) {
+    const uint8_t* parts[1] = { bytes };
+    const size_t sizes[1] = { size };
+    return writeParts(path, temporaryPath, parts, sizes, 1, canYield);
+}
+
+bool IoTask::writeFile(const char* path, const char* temporaryPath, const ChunkedBody& body, bool canYield) {
+    const uint8_t* parts[ChunkedBody::MAX_CHUNKS];
+    size_t sizes[ChunkedBody::MAX_CHUNKS];
+    const int count = body.chunkCount();
+    for (int i = 0; i < count; i++) {
+        parts[i] = body.chunk(i);
+        sizes[i] = body.chunkSize(i);
+    }
+    return writeParts(path, temporaryPath, parts, sizes, count, canYield);
+}
+
+bool IoTask::writeParts(const char* path, const char* temporaryPath, const uint8_t* const* parts, const size_t* sizes, int partCount,
+    bool canYield) {
     FILE* file = fopen(temporaryPath, "wb");
     if (file == nullptr) {
         return false;
     }
     bool ok = true;
-    size_t done = 0;
-    while (ok && done < size) {
-        if (canYield && done > 0 && shouldYield()) {
-            markYielded();
-            ok = false;
-            break;
+    bool started = false;
+    for (int part = 0; ok && part < partCount; part++) {
+        size_t done = 0;
+        while (ok && done < sizes[part]) {
+            if (canYield && started && shouldYield()) {
+                markYielded();
+                ok = false;
+                break;
+            }
+            if (started) {
+                vTaskDelay(1);
+            }
+            waitWhileHeld();
+            const size_t count = sizes[part] - done < CHUNK_BYTES ? sizes[part] - done : CHUNK_BYTES;
+            ok = fwrite(parts[part] + done, 1, count, file) == count;
+            done += count;
+            started = true;
         }
-        if (done > 0) {
-            vTaskDelay(1);
-        }
-        const size_t count = size - done < CHUNK_BYTES ? size - done : CHUNK_BYTES;
-        ok = fwrite(bytes + done, 1, count, file) == count;
-        done += count;
     }
     ok = fclose(file) == 0 && ok;
     // Most files are new: the old one is only removed when the rename finds it, each FAT operation holds the card

@@ -11,7 +11,7 @@ namespace maps {
 
 namespace {
 
-constexpr uint32_t RESCAN_INTERVAL_MS = 2000;
+constexpr uint32_t RESCAN_INTERVAL_MS = 500;
 
 struct Collect {
     Device** devices;
@@ -42,6 +42,7 @@ Input::~Input() {
 
 void Input::begin() {
     rescan();
+    devicesChanged = false;
     if (device_get_first_active_by_type(&TOUCH_TYPE, &touch) != ERROR_NONE) {
         touch = nullptr;
     }
@@ -63,19 +64,50 @@ void Input::end() {
     }
 }
 
+int Input::dropStopped(Device** devices, int& count) {
+    int dropped = 0;
+    for (int i = 0; i < count;) {
+        if (device_is_ready(devices[i])) {
+            i++;
+            continue;
+        }
+        logInfo("Input: %s stopped", devices[i]->name != nullptr ? devices[i]->name : "a device");
+        device_put(devices[i]);
+        devices[i] = devices[--count];
+        dropped++;
+    }
+    return dropped;
+}
+
 void Input::rescan() {
     lastScanMs = nowMs();
+    const int keyboardsBefore = keyboardCount;
+    const int miceBefore = mouseCount;
+    const int dropped = dropStopped(keyboards, keyboardCount) + dropStopped(mice, mouseCount);
     Collect keyboardCollect { keyboards, &keyboardCount };
     device_for_each_of_type(&KEYBOARD_TYPE, &keyboardCollect, collectDevice);
     Collect mouseCollect { mice, &mouseCount };
     device_for_each_of_type(&MOUSE_TYPE, &mouseCollect, collectDevice);
+    if (dropped > 0 || keyboardCount != keyboardsBefore || mouseCount != miceBefore) {
+        devicesChanged = true;
+        logInfo("Input: %d keyboards, %d mice", keyboardCount, mouseCount);
+    }
 }
 
-int Input::readKeys(KeyEvent* events, int maxEvents) {
-    // The trackball driver swaps between a keyboard and a mouse device when its settings change
+void Input::refreshIfDue() {
     if (nowMs() - lastScanMs > RESCAN_INTERVAL_MS) {
         rescan();
     }
+}
+
+bool Input::takeDevicesChanged() {
+    const bool changed = devicesChanged;
+    devicesChanged = false;
+    return changed;
+}
+
+int Input::readKeys(KeyEvent* events, int maxEvents) {
+    refreshIfDue();
     int count = 0;
     for (int i = 0; i < keyboardCount && count < maxEvents; i++) {
         if (!device_is_ready(keyboards[i])) {
@@ -93,6 +125,7 @@ int Input::readKeys(KeyEvent* events, int maxEvents) {
 }
 
 bool Input::readMouse(int32_t& dx, int32_t& dy) {
+    refreshIfDue();
     dx = 0;
     dy = 0;
     bool pressed = false;

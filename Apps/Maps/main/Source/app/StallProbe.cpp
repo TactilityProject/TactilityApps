@@ -15,8 +15,19 @@ constexpr uint32_t PROBE_STACK = 3072;
 
 } // namespace
 
+bool StallProbe::startWatchdog() {
+    stopRequested = false;
+    watchdogOnly = true;
+    if (xTaskCreatePinnedToCore(probeMain, "maps-watchdog", PROBE_STACK, this, PROBE_PRIORITY, &tasks[0], tskNO_AFFINITY) != pdPASS) {
+        return false;
+    }
+    running++;
+    return true;
+}
+
 bool StallProbe::start() {
     stopRequested = false;
+    watchdogOnly = false;
     for (int core = 0; core < 2; core++) {
         if (xTaskCreatePinnedToCore(probeMain, core == 0 ? "maps-probe0" : "maps-probe1", PROBE_STACK, this, PROBE_PRIORITY,
                 &tasks[core], core) != pdPASS) {
@@ -45,8 +56,8 @@ void StallProbe::watch(TaskHandle_t task, const char* name) {
 
 void StallProbe::logTaskStates(uint32_t stalledMs) {
     static const char* const STATES[] = { "running", "ready", "blocked", "suspended", "deleted", "invalid" };
-    char line[160];
-    int used = snprintf(line, sizeof(line), "Loop stalled %u ms:", static_cast<unsigned>(stalledMs));
+    char line[200];
+    int used = snprintf(line, sizeof(line), "Loop stalled %u ms in %s:", static_cast<unsigned>(stalledMs), currentPhase.load());
     for (int i = 0; i < watchedCount && used < static_cast<int>(sizeof(line)); i++) {
         TaskStatus_t status {};
         vTaskGetInfo(watched[i].task, &status, pdFALSE, eInvalid);
@@ -64,7 +75,17 @@ void StallProbe::probeMain(void* context) {
     const int64_t tickUs = static_cast<int64_t>(portTICK_PERIOD_MS) * 1000;
     int64_t last = esp_timer_get_time();
     int64_t nextMemory = last;
-    while (!probe->stopRequested) {
+    while (probe->watchdogOnly && !probe->stopRequested) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        const uint32_t beat = probe->lastBeat;
+        const auto nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (beat != 0 && nowMs - beat > WATCHDOG_MS && probe->reportedBeat != beat) {
+            probe->reportedBeat = beat;
+            probe->logTaskStates(nowMs - beat);
+            logMemory("stall");
+        }
+    }
+    while (!probe->watchdogOnly && !probe->stopRequested) {
         vTaskDelay(1);
         const int64_t now = esp_timer_get_time();
         const int64_t lateUs = now - last - tickUs;

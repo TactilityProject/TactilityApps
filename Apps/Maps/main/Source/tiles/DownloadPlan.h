@@ -36,4 +36,7 @@ DownloadPlan planDownload(const BoundingBox& box, int requestedMaxZoom);
  */
 bool tileAtIndex(const DownloadPlan& plan, int64_t index, TileKey& tile);
 
+/** The position of a tile in the download order, or -1 when the plan does not have it. */
+int64_t indexOfTile(const DownloadPlan& plan, const TileKey& tile);
+
 } // namespace maps

@@ -21,6 +21,10 @@ struct TouchState {
 /**
  * Reads keyboards (the T-Deck keyboard and a trackball in keyboard mode), mice (a trackball in mouse mode) and
  * the touch screen directly from their drivers while LVGL is stopped.
+ *
+ * A trackball driver replaces its child device when its mode changes: the keyboard one is stopped and removed, a
+ * mouse one is added, or the other way round. The device lists are refreshed twice a second, devices that stopped
+ * are let go at once (a held reference keeps the driver from destroying the old child), and new ones are taken.
  */
 class Input {
 public:
@@ -39,9 +43,14 @@ public:
     bool hasTouch() const { return touch != nullptr; }
     bool hasKeyboard() const { return keyboardCount > 0; }
     bool hasPointer() const { return mouseCount > 0; }
+    /** True once after a keyboard or mouse came or went, so the overlay can adapt. */
+    bool takeDevicesChanged();
 
 private:
     void rescan();
+    void refreshIfDue();
+    /** Lets go of devices that stopped. Returns how many. */
+    static int dropStopped(Device** devices, int& count);
 
     Device* keyboards[MAX_DEVICES] {};
     int keyboardCount = 0;
@@ -49,6 +58,7 @@ private:
     int mouseCount = 0;
     Device* touch = nullptr;
     uint32_t lastScanMs = 0;
+    bool devicesChanged = false;
 };
 
 } // namespace maps

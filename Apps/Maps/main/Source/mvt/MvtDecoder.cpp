@@ -31,21 +31,35 @@ uint16_t integerCode(int64_t value) {
     return static_cast<uint16_t>(INTEGER_FLAG | (value > 0x7FFF ? 0x7FFF : value));
 }
 
+int32_t clampRank(int64_t value) {
+    if (value < INT32_MIN) {
+        return INT32_MIN;
+    }
+    if (value > INT32_MAX) {
+        return INT32_MAX;
+    }
+    return static_cast<int32_t>(value);
+}
+
 } // namespace
 
 MvtDecoder::~MvtDecoder() {
     largeFree(valuePool);
+    largeFree(namePool);
     largeFree(chunk);
 }
 
 bool MvtDecoder::init() {
     if (valuePool == nullptr) {
-        valuePool = static_cast<uint16_t*>(largeAlloc(VALUE_POOL_SIZE * sizeof(uint16_t)));
+        valuePool = static_cast<ValueEntry*>(largeAlloc(VALUE_POOL_SIZE * sizeof(ValueEntry)));
+    }
+    if (namePool == nullptr) {
+        namePool = static_cast<char*>(largeAlloc(NAME_POOL_SIZE));
     }
     if (chunk == nullptr) {
         chunk = static_cast<TilePoint*>(largeAlloc(CHUNK_POINTS * sizeof(TilePoint)));
     }
-    return reader.init() && valuePool != nullptr && chunk != nullptr;
+    return reader.init() && valuePool != nullptr && namePool != nullptr && chunk != nullptr;
 }
 
 bool MvtDecoder::readVarint(uint64_t& value) {
@@ -79,11 +93,11 @@ bool MvtDecoder::skipField(uint32_t wireType) {
     }
 }
 
-uint16_t MvtDecoder::valueCode(const LayerTable& table, uint32_t index) const {
+const MvtDecoder::ValueEntry* MvtDecoder::valueEntry(const LayerTable& table, uint32_t index) const {
     if (index >= table.valueCount) {
-        return 0;
+        return nullptr;
     }
-    return valuePool[table.valueOffset + index];
+    return &valuePool[table.valueOffset + index];
 }
 
 bool MvtDecoder::readLayerName(size_t layerEnd, Layer& layer) {
@@ -115,8 +129,14 @@ bool MvtDecoder::readLayerName(size_t layerEnd, Layer& layer) {
     return true;
 }
 
-bool MvtDecoder::scanValue(size_t valueEnd, uint16_t& code) {
-    code = 0;
+bool MvtDecoder::scanValue(size_t valueEnd, ValueEntry& entry) {
+    entry = {};
+    entry.rank = -1;
+    uint16_t code = 0;
+    int32_t rank = -1;
+    uint32_t textOffset = 0;
+    uint8_t textLength = 0;
+    bool hasText = false;
     while (reader.tell() < valueEnd) {
         uint64_t key;
         if (!readVarint(key)) {
@@ -130,28 +150,64 @@ bool MvtDecoder::scanValue(size_t valueEnd, uint16_t& code) {
             if (!readVarint(length)) {
                 return false;
             }
-            char text[32];
-            if (length < sizeof(text)) {
-                if (reader.read(reinterpret_cast<uint8_t*>(text), static_cast<size_t>(length)) != length) {
+            char text[256];
+            size_t stored = 0;
+            if (length > 0) {
+                const size_t wanted = static_cast<size_t>(length);
+                stored = wanted < sizeof(text) ? wanted : sizeof(text) - 1;
+                if (reader.read(reinterpret_cast<uint8_t*>(text), stored) != stored) {
                     return false;
                 }
-                code = static_cast<uint16_t>(valueFromString(text, static_cast<size_t>(length)));
-            } else if (!reader.skip(static_cast<size_t>(length))) {
-                return false;
+                if (wanted > stored) {
+                    if (!reader.skip(wanted - stored)) {
+                        return false;
+                    }
+                    while (stored > 0 && (static_cast<uint8_t>(text[stored - 1]) & 0xC0) == 0x80) {
+                        stored--;
+                    }
+                    if (stored > 0 && (static_cast<uint8_t>(text[stored - 1]) & 0xC0) == 0xC0) {
+                        stored--;
+                    }
+                }
+                code = static_cast<uint16_t>(valueFromString(text, stored));
+                if (stored > 0 && namePool != nullptr && namePoolUsed + stored <= static_cast<size_t>(NAME_POOL_SIZE)) {
+                    memcpy(namePool + namePoolUsed, text, stored);
+                    textOffset = namePoolUsed;
+                    textLength = static_cast<uint8_t>(stored);
+                    hasText = true;
+                    namePoolUsed += static_cast<uint32_t>(stored);
+                }
             }
-        } else if ((field == 4 || field == 5 || field == 7) && wire == WIRE_VARINT) {
+        } else if ((field == 4 || field == 5) && wire == WIRE_VARINT) {
             if (!readVarint(number)) {
                 return false;
             }
-            code = integerCode(static_cast<int64_t>(number));
+            const int64_t value = static_cast<int64_t>(number);
+            code = integerCode(value);
+            rank = clampRank(value);
         } else if (field == 6 && wire == WIRE_VARINT) {
             if (!readVarint(number)) {
                 return false;
             }
-            code = integerCode(zigzag(static_cast<uint32_t>(number)));
+            const int64_t value = zigzag(static_cast<uint32_t>(number));
+            code = integerCode(value);
+            rank = clampRank(value);
+        } else if (field == 7 && wire == WIRE_VARINT) {
+            if (!readVarint(number)) {
+                return false;
+            }
+            code = integerCode(static_cast<int64_t>(number));
         } else if (!skipField(wire)) {
             return false;
         }
+    }
+    entry.code = code;
+    entry.textLength = textLength;
+    entry.hasText = static_cast<uint8_t>(hasText ? 1 : 0);
+    if (hasText) {
+        entry.textOffset = textOffset;
+    } else {
+        entry.rank = rank;
     }
     return true;
 }
@@ -192,6 +248,12 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.maritimeKey = index;
                 } else if (strcmp(name, "ramp") == 0) {
                     table.rampKey = index;
+                } else if (strcmp(name, "name") == 0) {
+                    table.nameKey = index;
+                } else if (strcmp(name, "name:latin") == 0) {
+                    table.nameLatinKey = index;
+                } else if (strcmp(name, "rank") == 0) {
+                    table.rankKey = index;
                 }
             } else if (!reader.skip(static_cast<size_t>(length))) {
                 return false;
@@ -202,12 +264,12 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
             if (!readVarint(length)) {
                 return false;
             }
-            uint16_t code;
-            if (!scanValue(reader.tell() + static_cast<size_t>(length), code)) {
+            ValueEntry entry;
+            if (!scanValue(reader.tell() + static_cast<size_t>(length), entry)) {
                 return false;
             }
             if (valuePoolUsed < VALUE_POOL_SIZE) {
-                valuePool[valuePoolUsed++] = code;
+                valuePool[valuePoolUsed++] = entry;
                 table.valueCount++;
             }
         } else if (field == 5 && wire == WIRE_VARINT) {
@@ -226,9 +288,10 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
 bool MvtDecoder::scan(ByteInput* source) {
     input = source;
     valuePoolUsed = 0;
+    namePoolUsed = 0;
     totalSize = 0;
     for (auto& table : tables) {
-        table = { -1, -1, -1, -1, -1, -1, -1, 0, 0, 4096 };
+        table = {};
     }
     if (!reader.begin(input)) {
         return false;
@@ -270,7 +333,11 @@ bool MvtDecoder::scan(ByteInput* source) {
 
 void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value, FeatureInfo& info) const {
     const auto keyIndex = static_cast<int16_t>(key);
-    const uint16_t code = valueCode(table, value);
+    const ValueEntry* entry = valueEntry(table, value);
+    if (entry == nullptr) {
+        return;
+    }
+    const uint16_t code = entry->code;
     const bool isInteger = (code & INTEGER_FLAG) != 0;
     if (keyIndex == table.classKey && !isInteger) {
         info.featureClass = static_cast<Value>(code);
@@ -284,6 +351,14 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
         info.maritime = (code & 0x7FFF) != 0;
     } else if (keyIndex == table.rampKey && isInteger) {
         info.ramp = (code & 0x7FFF) != 0;
+    } else if (keyIndex == table.nameKey && entry->hasText != 0) {
+        info.name = namePool + entry->textOffset;
+        info.nameLength = entry->textLength;
+    } else if (keyIndex == table.nameLatinKey && entry->hasText != 0) {
+        info.nameLatin = namePool + entry->textOffset;
+        info.nameLatinLength = entry->textLength;
+    } else if (keyIndex == table.rankKey && isInteger) {
+        info.rank = entry->rank;
     }
 }
 

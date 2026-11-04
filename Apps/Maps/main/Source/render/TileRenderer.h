@@ -7,6 +7,7 @@
 #include "Style.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 namespace maps {
@@ -42,6 +43,10 @@ public:
     bool render(ByteInput* input, const TileKey& source, const TileKey& target, const Palette& palette, uint16_t* pixels, RenderStats* stats);
     /** Renders from a prepared tile (see PreparedTile.h), whose header names the source tile. */
     bool renderPrepared(const uint8_t* data, size_t size, const TileKey& target, const Palette& palette, uint16_t* pixels, RenderStats* stats);
+
+    /** Gets the label section of a prepared tile as it is drawn; source is the tile the .prt belongs to. */
+    using LabelHook = void (*)(const TileKey& source, const uint8_t* section, size_t size, int count, void* context);
+    void setLabelHook(LabelHook hook, void* context);
 
     /** The decoder, lent to a TileConverter so a lane needs only one decompressor. */
     MvtDecoder& tileDecoder() { return decoder; }
@@ -99,6 +104,8 @@ private:
     int preparedExtent = 0;
     uint8_t* body = nullptr;
     size_t bodyCapacity = 0;
+    LabelHook labelHook = nullptr;
+    void* labelContext = nullptr;
     const std::atomic<bool>* cancelFlag = nullptr;
     bool cancelled = false;
 };

@@ -23,6 +23,8 @@ public:
     bool contains(const TileKey& tile) const;
     /** The pixels of a cached tile without marking it as used. */
     const uint16_t* peek(const TileKey& tile) const;
+    /** The zoom level of the vector tile a cached tile was drawn from, -1 when it is not cached. */
+    int sourceZoomOf(const TileKey& tile) const;
 
     /** A slot for a new tile, which is not findable until commit() and is not reused until commit() or release(). */
     uint16_t* reserve(const TileKey& tile);
@@ -36,10 +38,22 @@ public:
      * on screen until they are drawn again, so the map does not blink while a download stores tiles.
      */
     void dropMagnified();
-    /** The same, only for tiles that one of the arrived vector tiles covers at a better zoom level than they were drawn from. */
+    /**
+     * The same, only for tiles that one of the arrived vector tiles covers at a better zoom level than they were drawn
+     * from, or that were drawn from an arrived tile that replaced an older version (an update).
+     */
     void dropMagnified(const TileKey* arrived, int count);
-    /** The number of tiles it holds. */
-    int slotCount() const { return count; }
+    /** The number of tiles it can hold now: slots given back with freeSlot() do not count. */
+    int slotCount() const { return count - freed; }
+    /**
+     * Gives the memory of one slot back to the heap, the least recently used one that no tile is being drawn into,
+     * for a download that needs a large block. Returns false when no slot can go.
+     */
+    bool freeSlot();
+    /** Takes memory for the slots given back again, as far as there is memory. Returns how many are still missing. */
+    int regrow();
+    /** How many slots were given back. */
+    int freedSlots() const { return freed; }
 
 private:
     struct Slot {
@@ -54,6 +68,7 @@ private:
 
     Slot* slots = nullptr;
     int count = 0;
+    int freed = 0;
     uint32_t useCounter = 0;
 };
 

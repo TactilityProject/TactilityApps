@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "../tiles/ChunkedBody.h"
 #include "../mvt/ByteInput.h"
 #include "../tiles/IoQueue.h"
 
@@ -37,6 +38,12 @@ public:
 
     /** For jobs: whether the running job should stop because a more urgent one waits, or prefetch was cancelled. */
     bool shouldYield() const;
+    /**
+     * Holds back card work while true: no new job and no next chunk starts, for at most MAX_HOLD_MS. For zoom
+     * animations, whose frames otherwise wait for the card on the SPI bus the T-Deck's display shares.
+     */
+    void hold(bool value) { held = value; }
+    static constexpr int MAX_HOLD_MS = 400;
     /** For jobs: whether the running job stopped early through shouldYield(). Reset for each job. */
     bool yielded() const { return runningYielded; }
     void markYielded() { runningYielded = true; }
@@ -49,6 +56,8 @@ public:
     bool readFile(const char* path, FileBuffer& buffer);
     /** For jobs: writes bytes to path through path.tmp and a rename, in large chunks. */
     bool writeFile(const char* path, const char* temporaryPath, const uint8_t* bytes, size_t size, bool canYield);
+    /** The same for a file in pieces. */
+    bool writeFile(const char* path, const char* temporaryPath, const ChunkedBody& body, bool canYield);
 
     /** Statistics for the log: jobs run, and the longest wait of a visible job. */
     uint32_t longestVisibleWaitMs() const { return longestVisibleWait; }
@@ -57,6 +66,7 @@ public:
     uint32_t stackLeft() const { return task != nullptr ? static_cast<uint32_t>(uxTaskGetStackHighWaterMark(task)) : 0; }
 
 private:
+    bool writeParts(const char* path, const char* temporaryPath, const uint8_t* const* parts, const size_t* sizes, int partCount, bool canYield);
     struct Request {
         IoJob job;
         void* context;
@@ -74,6 +84,8 @@ private:
     SemaphoreHandle_t wake = nullptr;
     SemaphoreHandle_t stopped = nullptr;
     std::atomic<bool> stopRequested = false;
+    std::atomic<bool> held = false;
+    void waitWhileHeld();
     std::atomic<bool> runningTask = false;
     IoQueue<Request*, 16> queue;
     IoPriority running = IoPriority::Background;

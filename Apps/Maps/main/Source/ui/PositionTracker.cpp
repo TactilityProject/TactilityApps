@@ -44,7 +44,7 @@ float PositionTracker::accuracyRadius(double metresPerPixel) const {
 
 const char* PositionTracker::unavailableMessage() const {
     if (currentState == PositionState::Off) {
-        return "Location is off. Enable it in Tactility's Settings.";
+        return "Location is off. Menu, Location turns it on.";
     }
     return "No position yet. Check Location in Tactility's Settings.";
 }

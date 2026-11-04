@@ -22,8 +22,16 @@ public:
     /** The map loop counts as stalled when it has not come round for this long. */
     static constexpr uint32_t LOOP_STALL_MS = 300;
     static constexpr int MAX_WATCHED = 8;
+    static constexpr uint32_t WATCHDOG_MS = 3000;
 
     bool start();
+    /**
+     * The quiet mode used when dev_probe is off: one task that only logs, once per stall, the step the map loop is in
+     * and the states of the watched tasks when the loop has not come round for WATCHDOG_MS.
+     */
+    bool startWatchdog();
+    /** The step of the map loop, logged with a stall; a string literal. */
+    void phase(const char* name) { currentPhase = name; }
     void stop();
     /** A task whose state is logged when the map loop stalls. Call before start(). */
     void watch(TaskHandle_t task, const char* name);
@@ -42,6 +50,8 @@ private:
     int watchedCount = 0;
     std::atomic<uint32_t> lastBeat = 0;
     uint32_t reportedBeat = 0;
+    std::atomic<const char*> currentPhase = "start";
+    bool watchdogOnly = false;
 
     TaskHandle_t tasks[2] {};
     std::atomic<bool> stopRequested = false;

@@ -64,7 +64,7 @@ bool DebugScript::open(const char* root) {
     if (file == nullptr) {
         return false;
     }
-    constexpr size_t MAX_SCRIPT = 16 * 1024;
+    constexpr size_t MAX_SCRIPT = 128 * 1024;
     text = static_cast<char*>(largeAlloc(MAX_SCRIPT));
     if (text != nullptr) {
         const size_t length = fread(text, 1, MAX_SCRIPT - 1, file);

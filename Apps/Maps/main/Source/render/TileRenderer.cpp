@@ -27,6 +27,11 @@ bool TileRenderer::init() {
     return decoder.init() && raster.init(TILE_SIZE, TILE_SIZE);
 }
 
+void TileRenderer::setLabelHook(LabelHook hook, void* context) {
+    labelHook = hook;
+    labelContext = context;
+}
+
 void TileRenderer::begin(const TileKey& source, const TileKey& target, const Palette& tilePalette, uint16_t* out) {
     palette = &tilePalette;
     pixels = out;
@@ -144,7 +149,8 @@ int32_t unzigzag(uint64_t value) {
 bool TileRenderer::renderPrepared(const uint8_t* data, size_t size, const TileKey& target, const Palette& tilePalette, uint16_t* out, RenderStats* stats) {
     const uint32_t start = nowMs();
     PreparedHeader header {};
-    if (!readPreparedHeader(data, size, header) || header.extent <= 0 || PREPARED_HEADER_SIZE + header.storedSize > size) {
+    if (!readPreparedHeader(data, size, header) || !isPreparedReadable(header, header.tile, header.sourceSize) ||
+        PREPARED_HEADER_SIZE + header.storedSize > size) {
         logError("Prepared tile for %d/%d/%d is damaged", target.z, target.x, target.y);
         return false;
     }
@@ -177,21 +183,36 @@ bool TileRenderer::renderPrepared(const uint8_t* data, size_t size, const TileKe
     // Where each section starts, then the stages in draw order
     const uint8_t* sectionData[static_cast<int>(Stage::Count)] = {};
     const uint8_t* sectionEnd[static_cast<int>(Stage::Count)] = {};
+    const uint8_t* labelSection = nullptr;
+    size_t labelSize = 0;
+    int labelCount = 0;
     const uint8_t* cursor = bodyStart;
     while (cursor < bodyEnd && *cursor != 0xFF) {
         const uint8_t id = *cursor++;
         uint64_t count;
         uint64_t length;
-        if (id >= static_cast<uint8_t>(Stage::Count) || !readVarint(cursor, bodyEnd, count) || !readVarint(cursor, bodyEnd, length) ||
+        if (!readVarint(cursor, bodyEnd, count) || !readVarint(cursor, bodyEnd, length) ||
             length > static_cast<uint64_t>(bodyEnd - cursor)) {
             logError("Prepared tile %d/%d/%d is damaged", header.tile.z, header.tile.x, header.tile.y);
             return false;
         }
-        sectionData[id] = cursor;
-        sectionEnd[id] = cursor + length;
+        if (id == PREPARED_LABEL_SECTION) {
+            labelSection = cursor;
+            labelSize = static_cast<size_t>(length);
+            labelCount = static_cast<int>(count);
+        } else if (id >= static_cast<uint8_t>(Stage::Count)) {
+            logError("Prepared tile %d/%d/%d is damaged", header.tile.z, header.tile.x, header.tile.y);
+            return false;
+        } else {
+            sectionData[id] = cursor;
+            sectionEnd[id] = cursor + length;
+        }
         cursor += length;
     }
 
+    if (header.version == PREPARED_FORMAT_VERSION && labelHook != nullptr && labelSection != nullptr) {
+        labelHook(header.tile, labelSection, labelSize, labelCount, labelContext);
+    }
     preparedExtent = header.extent;
     begin(header.tile, target, tilePalette, out);
     for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
@@ -307,7 +328,8 @@ bool TileRenderer::beginFeature(const FeatureInfo& info) {
     featureStartUs = nowUs();
     // At the tile's own z14 buildings are many and small, overzoomed views keep full detail
     cheapFeature = stage == Stage::Building && dz == 0 && zoom == MAX_SOURCE_ZOOM;
-    raster.setAntialias(!cheapFeature);
+    // The 1-bit palette has no greys to show, so every feature skips the soft edge
+    raster.setAntialias(!palette->binary && !cheapFeature);
     boundsMinX = 1e30f;
     boundsMinY = 1e30f;
     boundsMaxX = -1e30f;
@@ -394,7 +416,7 @@ void TileRenderer::endFeature() {
     if (cheapFeature && boundsMaxX - boundsMinX < MIN_BUILDING_PIXELS && boundsMaxY - boundsMinY < MIN_BUILDING_PIXELS) {
         raster.clear();
     } else {
-        raster.fill(pixels, TILE_SIZE, style.color, style.opacity);
+        raster.fill(pixels, TILE_SIZE, style.color, style.opacity, style.pattern);
     }
     if (cheapFeature) {
         raster.setAntialias(true);

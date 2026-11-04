@@ -80,10 +80,12 @@ bool formatRegionMeta(const RegionMeta& meta, char* out, size_t size) {
         "  \"date\": \"%s\",\n"
         "  \"total\": %" PRId64 ",\n"
         "  \"done\": %" PRId64 ",\n"
-        "  \"bytes\": %" PRIu64 "\n"
+        "  \"bytes\": %" PRIu64 ",\n"
+        "  \"outline\": \"%s\",\n"
+        "  \"title\": \"%s\"\n"
         "}\n",
         meta.name, meta.box.west, meta.box.south, meta.box.east, meta.box.north, meta.minZoom, meta.maxZoom,
-        meta.source, meta.version, meta.date, meta.total, meta.done, meta.bytes);
+        meta.source, meta.version, meta.date, meta.total, meta.done, meta.bytes, meta.outline, meta.title);
     return written > 0 && static_cast<size_t>(written) < size;
 }
 
@@ -105,6 +107,9 @@ bool parseRegionMeta(const char* text, RegionMeta& meta) {
     readString(text, "source", meta.source, sizeof(meta.source));
     readString(text, "version", meta.version, sizeof(meta.version));
     readString(text, "date", meta.date, sizeof(meta.date));
+    // Written last, so a title that looks like a key cannot be taken for one of the keys above
+    readString(text, "outline", meta.outline, sizeof(meta.outline));
+    readString(text, "title", meta.title, sizeof(meta.title));
     int64_t bytes = 0;
     readInteger(text, "bytes", bytes);
     meta.bytes = static_cast<uint64_t>(bytes);
@@ -117,8 +122,61 @@ bool parseRegionMeta(const char* text, RegionMeta& meta) {
     return true;
 }
 
+void setRegionTitle(RegionMeta& meta, const char* title) {
+    // Quotes and backslashes would end the JSON string early, the title only needs to read well
+    size_t length = 0;
+    for (; title[length] != '\0' && length + 1 < sizeof(meta.title); length++) {
+        const char c = title[length];
+        meta.title[length] = c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20 ? '\'' : c;
+    }
+    // Never end inside a UTF-8 sequence: when the title was cut, drop a last character that lost bytes
+    if (title[length] != '\0') {
+        size_t lead = length;
+        while (lead > 0 && (static_cast<unsigned char>(meta.title[lead - 1]) & 0xC0) == 0x80) {
+            lead--;
+        }
+        if (lead > 0 && (static_cast<unsigned char>(meta.title[lead - 1]) & 0x80) != 0) {
+            const auto first = static_cast<unsigned char>(meta.title[lead - 1]);
+            const size_t needed = first >= 0xF0 ? 4 : (first >= 0xE0 ? 3 : 2);
+            if (length - (lead - 1) < needed) {
+                length = lead - 1;
+            }
+        }
+    }
+    meta.title[length] = '\0';
+}
+
+void regionFolderName(const char* title, int number, char* out, size_t size) {
+    char base[REGION_NAME_MAX + 1];
+    size_t length = 0;
+    for (const char* c = title; *c != '\0' && length < REGION_NAME_MAX; c++) {
+        if (*c >= 'A' && *c <= 'Z') {
+            base[length++] = static_cast<char>(*c - 'A' + 'a');
+        } else if ((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9')) {
+            base[length++] = *c;
+        }
+    }
+    base[length] = '\0';
+    if (length == 0) {
+        snprintf(base, sizeof(base), "area");
+        length = 4;
+    }
+    if (number <= 0) {
+        snprintf(out, size, "%s", base);
+        return;
+    }
+    char suffix[12];
+    const int digits = snprintf(suffix, sizeof(suffix), "%d", number);
+    const size_t keep = length + static_cast<size_t>(digits) <= REGION_NAME_MAX ? length : REGION_NAME_MAX - static_cast<size_t>(digits);
+    snprintf(out, size, "%.*s%s", static_cast<int>(keep), base, suffix);
+}
+
+const char* regionTitle(const RegionMeta& meta) {
+    return meta.title[0] != '\0' ? meta.title : meta.name;
+}
+
 bool writeRegionMeta(const char* path, const RegionMeta& meta) {
-    char text[640];
+    char text[896];
     if (!formatRegionMeta(meta, text, sizeof(text))) {
         return false;
     }

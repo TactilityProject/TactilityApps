@@ -99,12 +99,16 @@ void MapOverlay::drawScaleBar(Canvas& canvas, double metresPerPixel, const Palet
     canvas.fillRect(barX + barPixels - 1, barY - 3, 1, 5, palette.text);
 }
 
-void MapOverlay::drawPill(Canvas& canvas, const char* text, const Palette& palette) {
-    const int width = normal->textWidth(text) + 4 * MARGIN;
+Rect MapOverlay::drawPill(Canvas& canvas, const char* text, const Palette& palette) {
+    const int maxText = canvas.width - 8 - 4 * MARGIN;
+    Font& font = normal->textWidth(text) > maxText ? *small : *normal;
+    const int textWidth = std::min(font.textWidth(text), maxText);
+    const int width = textWidth + 4 * MARGIN;
     const int height = normal->lineHeight() + 2;
     const int x = (canvas.width - width) / 2;
     canvas.fillRoundRect(x, 2, width, height, height / 2, palette.text, 200);
-    normal->drawText(canvas, x + 2 * MARGIN, 3, text, palette.halo);
+    drawClippedText(canvas, font, x + 2 * MARGIN, 3 + (normal->lineHeight() - font.lineHeight()) / 2, text, textWidth, palette.halo);
+    return { x, 2, width, height };
 }
 
 void MapOverlay::drawToast(Canvas& canvas, const char* text, const UiTheme& theme) {

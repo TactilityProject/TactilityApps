@@ -2,6 +2,7 @@
 #pragma once
 
 #include "IoTask.h"
+#include "LabelStore.h"
 
 #include "../mvt/ByteInput.h"
 #include "../render/CacheIndex.h"
@@ -40,6 +41,8 @@ public:
     static constexpr int LANES = 2;
 
     bool start(TileStore* store, IoTask* io, const Palette* palette, int cacheSlots, const char* cacheRoot);
+    /** Where the lanes put the label sections of the prepared tiles they draw. Set before start(). */
+    void setLabelStore(LabelStore* store) { labelStore = store; }
     void stop();
 
     /** Replaces the wanted tiles. The first visibleCount are on screen, the rest are fetched ahead. */
@@ -49,6 +52,21 @@ public:
     void lock() { xSemaphoreTake(mutex, portMAX_DELAY); }
     void unlock() { xSemaphoreGive(mutex); }
     TileCache& cache() { return tileCache; }
+    /**
+     * Frees tile cache slots, least recently used first, until PSRAM has a free block of bytes, keeping at least
+     * MIN_CACHE_SLOTS. For downloads of large low-zoom tiles late in a session. Returns whether the block is there.
+     */
+    bool relieveMemory(size_t bytes);
+    /** Takes the freed slots back when memory allows; true when none is missing any more. */
+    bool restoreMemory();
+    bool cacheShrunk() {
+        lock();
+        const bool shrunk = tileCache.freedSlots() > 0;
+        unlock();
+        return shrunk;
+    }
+    /** relieveMemory() leaves the cache at least this many slots. */
+    static constexpr int MIN_CACHE_SLOTS = 12;
 
     /** True once since the last call when a tile was added to the cache. */
     bool takeChanged() { return changed.exchange(false); }
@@ -90,6 +108,15 @@ private:
         int index;
         TileRenderer renderer;
         FileBuffer fileBuffer;
+        /**
+         * The source file fileBuffer still holds from the last tile, so the tiles drawn magnified from one large
+         * low-zoom file read it from the card once instead of once each. Only the lane's own jobs use it, one at a time.
+         */
+        uint8_t heldKind;
+        TileKey heldTile;
+        int heldRegion;
+        bool heldOlder;
+        uint32_t heldGeneration;
         TaskHandle_t task;
         TileKey current;
         bool active;
@@ -124,12 +151,17 @@ private:
         Original
     };
 
+    /** Counts finished conversions: an original held in a lane's buffer is not reused once a prepared copy exists. */
+    std::atomic<uint32_t> preparedGeneration = 0;
+
     struct LoadJob {
         TileWorker* worker;
         Lane* lane;
         TileKey tile;
         bool tryCache;
         bool skipPrepared;
+        /** The prepared copy is of an older format: drawn as it is, made again soon. */
+        bool olderPrepared;
         Found found;
         TileFile source;
         int cachedSourceZoom;
@@ -150,7 +182,8 @@ private:
     /** Call between lock() and unlock(). */
     void addGap(const TileKey& tile);
     /** Adds a tile to the conversion queue unless it is there already. Call between lock() and unlock(). */
-    bool queueConversion(const TileKey& tile, int region);
+    /** Queues a tile for conversion; urgent ones (on screen) go first and push the last queued one out when full. */
+    bool queueConversion(const TileKey& tile, int region, bool urgent = false);
     static bool collectFromScan(const TileKey& tile, int region, void* context);
     /** Converts one queued tile, or looks at one more folder for tiles to convert. Returns false when there is nothing to do. */
     bool convertOne(Lane& lane);
@@ -161,6 +194,7 @@ private:
     static void unlockIndex(void* context);
 
     TileStore* store = nullptr;
+    LabelStore* labelStore = nullptr;
     IoTask* io = nullptr;
     const Palette* palette = nullptr;
     Lane lanes[LANES] {};

@@ -33,8 +33,12 @@ public:
      */
     void setAntialias(bool enabled) { antialias = enabled; }
 
-    /** Blends the accumulated shape into pixels with the given colour and clears the buffer. */
-    void fill(uint16_t* pixels, int stride, uint16_t color, uint8_t opacity);
+    /**
+     * Blends the accumulated shape into pixels with the given colour and clears the buffer. With a pattern
+     * (see Style.h) only covered pixels that belong to it are set, in solid colour, which is what 1-bit
+     * displays need. originX and originY place the pattern on the whole map, so tiles line up.
+     */
+    void fill(uint16_t* pixels, int stride, uint16_t color, uint8_t opacity, uint8_t pattern = 0, int originX = 0, int originY = 0);
     void clear();
 
     bool isEmpty() const { return minRow > maxRow; }

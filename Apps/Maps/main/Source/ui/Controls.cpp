@@ -105,6 +105,10 @@ void Controls::drawIcon(Canvas& canvas, Control control, const Rect& r, uint16_t
             canvas.line(cx + 7.0f, cy, cx + 11.0f, cy, 2.0f, color);
             if (position == PositionButton::Following) {
                 canvas.fillCircle(cx, cy, 3.0f, color);
+            } else if (position == PositionButton::FollowingHeading) {
+                // A pointer to the top: the direction of travel is up
+                canvas.line(cx, cy - 4.0f, cx - 3.0f, cy + 3.0f, 2.2f, color);
+                canvas.line(cx, cy - 4.0f, cx + 3.0f, cy + 3.0f, 2.2f, color);
             } else if (position == PositionButton::Unavailable) {
                 // Crossed out, with a gap in the panel colour so the slash reads on the icon
                 canvas.line(cx - 10.0f, cy + 10.0f, cx + 10.0f, cy - 10.0f, 4.5f, theme.panel);
@@ -124,8 +128,8 @@ void Controls::draw(Canvas& canvas, Font& font, const UiTheme& theme, PositionBu
     for (int i = 0; i < static_cast<int>(Control::Count); i++) {
         const auto control = static_cast<Control>(i);
         const Rect& r = rects[i];
-        const bool filled = control == Control::Position && position == PositionButton::Following;
-        const bool focusedNow = usesFocus() && control == focus;
+        const bool filled = control == Control::Position && (position == PositionButton::Following || position == PositionButton::FollowingHeading);
+        const bool focusedNow = (usesFocus() && control == focus) || control == hover;
         canvas.fillRoundRect(r.x, r.y, r.width, r.height, 7, filled ? theme.accent : theme.panel, filled ? 255 : theme.controlOpacity);
         if (focusedNow) {
             canvas.ring(r.x + r.width / 2.0f, r.y + r.height / 2.0f, r.width / 2.0f + 2.0f, 2.0f, theme.accent);

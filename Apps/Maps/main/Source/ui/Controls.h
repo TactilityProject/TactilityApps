@@ -18,9 +18,11 @@ enum class Control : uint8_t {
     None = Count
 };
 
-/** How the position button looks: filled while following, outline when not, crossed out without a position. */
+/** How the position button looks: filled while following (with a pointer in heading-up), outline when not, crossed out without a position. */
 enum class PositionButton : uint8_t {
     Following,
+    /** Following with the map turned to the direction of travel. */
+    FollowingHeading,
     Free,
     Unavailable
 };
@@ -64,6 +66,9 @@ public:
 
     Control focused() const { return focus; }
     void moveFocus(int steps);
+    /** The button under the pointer, highlighted like the focus; Control::None when the pointer is elsewhere. */
+    void setHover(Control control) { hover = control; }
+    Control hovered() const { return hover; }
 
     void draw(Canvas& canvas, Font& font, const UiTheme& theme, PositionButton position);
 
@@ -74,6 +79,7 @@ private:
     InputKinds inputs { true, true, false };
     bool visible = false;
     Control focus = Control::Menu;
+    Control hover = Control::None;
 };
 
 /**

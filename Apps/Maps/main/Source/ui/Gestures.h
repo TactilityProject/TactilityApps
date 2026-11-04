@@ -23,7 +23,9 @@ enum class GestureType : uint8_t {
     PinchStart,
     /** scale is the finger distance against the start, around centerX, centerY; startX, startY is the first centre. */
     PinchMove,
-    PinchEnd
+    PinchEnd,
+    /** One finger moved to the right and lifted, mostly sideways: back one level in lists. dx is the distance. */
+    SwipeBack
 };
 
 struct Gesture {
@@ -35,6 +37,8 @@ struct Gesture {
     float scale;
     int startX;
     int startY;
+    /** For pinches: how far the line between the fingers turned since the start, degrees, clockwise on screen. */
+    float rotation = 0.0f;
 };
 
 /**
@@ -48,6 +52,7 @@ public:
     static constexpr uint32_t LONG_PRESS_MS = 600;
     static constexpr int TAP_SLOP = 10;
     static constexpr int DOUBLE_TAP_DISTANCE = 30;
+    static constexpr int SWIPE_DISTANCE = 60;
     static constexpr int MAX_GESTURES = 4;
 
     /** Feeds one reading. Returns the number of gestures written to out, at most MAX_GESTURES. */
@@ -77,6 +82,8 @@ private:
     int pinchStartX = 0;
     int pinchStartY = 0;
     float pinchScale = 1.0f;
+    float pinchStartAngle = 0.0f;
+    float pinchRotation = 0.0f;
     int pinchX = 0;
     int pinchY = 0;
     bool pendingTap = false;

@@ -21,12 +21,26 @@ struct RegionMeta {
     int64_t total;
     int64_t done;
     uint64_t bytes;
+    /** The catalog region whose outline the tiles follow, empty for a rectangle (Download this area). */
+    char outline[64];
+    /** The name shown to the user, e.g. "Szeged"; the folder name stays the short 8.3 name. Empty: the folder name. */
+    char title[64];
 
     bool isComplete() const { return total > 0 && done >= total; }
     DownloadPlan plan() const { return { box, minZoom, maxZoom, total, 0, true }; }
 };
 
 bool writeRegionMeta(const char* path, const RegionMeta& meta);
+/** Sets the display title, made safe for meta.json and cut at a UTF-8 character boundary. */
+void setRegionTitle(RegionMeta& meta, const char* title);
+/** The title, or the folder name when there is none. */
+const char* regionTitle(const RegionMeta& meta);
+/**
+ * A folder name for a region titled title: its ASCII letters and digits in lower case, at most REGION_NAME_MAX
+ * characters, so every path element stays a valid 8.3 name; number > 0 replaces the end with that number, for a
+ * name that is taken. "Zuid-Holland" gives "zuidholl", with number 2 "zuidhol2"; a title without letters gives "area".
+ */
+void regionFolderName(const char* title, int number, char* out, size_t size);
 bool readRegionMeta(const char* path, RegionMeta& meta);
 bool formatRegionMeta(const RegionMeta& meta, char* out, size_t size);
 bool parseRegionMeta(const char* text, RegionMeta& meta);

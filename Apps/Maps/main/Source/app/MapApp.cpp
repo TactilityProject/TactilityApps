@@ -12,16 +12,52 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_heap_caps.h>
 #include <sys/stat.h>
 
 #include <cstdio>
+#include <cstring>
 #include <new>
 
 namespace maps {
 
 namespace {
 
-constexpr const char* APP_ID = "tactility.maps";
+/**
+ * One line per run in sessions.txt: uptime in seconds, then free PSRAM and internal RAM in KB at the start and at the
+ * exit. Memory that another run or app kept shows as a low start value. The file keeps its last lines only.
+ */
+void logSession(const char* root, uint32_t startPsram, uint32_t startInternal) {
+    char path[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/sessions.txt", root);
+    char kept[1536] = "";
+    size_t used = 0;
+    if (FILE* file = fopen(path, "r")) {
+        used = fread(kept, 1, sizeof(kept) - 1, file);
+        fclose(file);
+    }
+    kept[used] = '\0';
+    // Old lines go once the file passes about 1 KB
+    const char* from = kept;
+    while (strlen(from) > 1024) {
+        const char* next = strchr(from, '\n');
+        if (next == nullptr) {
+            break;
+        }
+        from = next + 1;
+    }
+    char line[96];
+    snprintf(line, sizeof(line), "uptime %u s  start %u/%u KB  exit %u/%u KB (PSRAM/internal)\n", static_cast<unsigned>(nowMs() / 1000),
+        static_cast<unsigned>(startPsram / 1024), static_cast<unsigned>(startInternal / 1024),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    if (FILE* file = fopen(path, "w")) {
+        fputs(from, file);
+        fputs(line, file);
+        fclose(file);
+    }
+}
+
 
 void runFullscreen(Device* display, const char* root, const char* dataPath) {
     const bool lvglActive = module_is_started(&lvgl_module);
@@ -84,8 +120,11 @@ extern "C" int main(int argc, char* argv[]) {
         maps::logError("No display");
         return 0;
     }
+    const auto startPsram = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    const auto startInternal = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     maps::runFullscreen(display, root, dataPath);
     device_put(display);
     maps::logMemory("exit");
+    maps::logSession(root, startPsram, startInternal);
     return 0;
 }

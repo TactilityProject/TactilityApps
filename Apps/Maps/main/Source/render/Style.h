@@ -26,10 +26,17 @@ enum class Stage : uint8_t {
 Layer stageLayer(Stage stage);
 
 /** Changes whenever the style changes, so tiles rendered with an older style are rendered again. */
-constexpr uint32_t STYLE_VERSION = 3;
+constexpr uint32_t STYLE_VERSION = 4;
 
-/** A short, 8.3-safe name for the style and palette, the SD card cache folder of their rendered tiles. */
-void styleCacheId(bool monochrome, char* out, size_t size);
+/** Pattern numbers for DrawStyle::pattern, all with period 4 so they join across tile edges. */
+constexpr uint8_t PATTERN_NONE = 0;
+constexpr uint8_t PATTERN_DOTS = 1;
+constexpr uint8_t PATTERN_LINES = 2;
+constexpr uint8_t PATTERN_DIAGONAL = 3;
+constexpr uint8_t PATTERN_DOTS_OFFSET = 4;
+
+/** True where a pixel belongs to the pattern, in the coordinates of the whole map so tiles stay aligned. */
+bool patternBit(uint8_t pattern, int x, int y);
 
 struct Palette {
     uint16_t background;
@@ -71,17 +78,26 @@ struct Palette {
     uint16_t text;
     uint16_t halo;
     uint16_t marker;
+    /** Draw only pure black and white, using patterns instead of greys. */
+    bool binary;
 };
 
 const Palette& colorPalette();
 /** High contrast palette for monochrome and grayscale displays. */
 const Palette& monochromePalette();
+/** Pure black and white for 1-bit displays, where anti-aliased greys would turn invisible. */
+const Palette& binaryPalette();
+
+/** A short, 8.3-safe name for the style and palette, the SD card cache folder of their rendered tiles. */
+void styleCacheId(const Palette& palette, char* out, size_t size);
 
 struct DrawStyle {
     uint16_t color;
     uint8_t opacity;
     /** Filled polygon when 0, otherwise a stroke of this width in pixels. */
     float lineWidth;
+    /** PATTERN_* number for pattern fills, PATTERN_NONE for a solid fill. */
+    uint8_t pattern;
 };
 
 /**

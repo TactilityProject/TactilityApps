@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 
@@ -17,13 +18,24 @@ constexpr auto* TAG = "Maps";
 
 namespace maps {
 
+namespace {
+/** What the app's own large blocks hold, so the memory log tells the app's share from the system's. */
+std::atomic<uint32_t> largeBytes { 0 };
+std::atomic<uint32_t> largeBlocks { 0 };
+} // namespace
+
 void* largeAlloc(size_t size) {
     const MemoryPolicy policy = {
         .required = 0,
         .desired = MEMORY_CAPABILITY_EXTERNAL,
         .alignment = 0,
     };
-    return memory_alloc_with_policy(size, &policy);
+    void* pointer = memory_alloc_with_policy(size, &policy);
+    if (pointer != nullptr) {
+        largeBytes += static_cast<uint32_t>(heap_caps_get_allocated_size(pointer));
+        largeBlocks++;
+    }
+    return pointer;
 }
 
 void* fastAlloc(size_t size) {
@@ -32,11 +44,18 @@ void* fastAlloc(size_t size) {
         .desired = MEMORY_CAPABILITY_INTERNAL,
         .alignment = 0,
     };
-    return memory_alloc_with_policy(size, &policy);
+    void* pointer = memory_alloc_with_policy(size, &policy);
+    if (pointer != nullptr) {
+        largeBytes += static_cast<uint32_t>(heap_caps_get_allocated_size(pointer));
+        largeBlocks++;
+    }
+    return pointer;
 }
 
 void largeFree(void* pointer) {
     if (pointer != nullptr) {
+        largeBytes -= static_cast<uint32_t>(heap_caps_get_allocated_size(pointer));
+        largeBlocks--;
         memory_free(pointer);
     }
 }
@@ -68,11 +87,14 @@ void logError(const char* format, ...) {
 }
 
 void logMemory(const char* label) {
-    LOG_I(TAG, "Memory %s: internal %u free (largest %u), PSRAM %u free",
+    LOG_I(TAG, "Memory %s: internal %u free (largest %u), PSRAM %u free (largest %u), app large blocks %u in %u",
         label,
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
-        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(largeBytes.load()),
+        static_cast<unsigned>(largeBlocks.load()));
 }
 
 bool fileExists(const char* path) {

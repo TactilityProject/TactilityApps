@@ -3,6 +3,7 @@
 
 #include "../platform/Platform.h"
 #include "../tiles/TileStore.h"
+#include "PreparedLabels.h"
 
 #include <miniz.h>
 
@@ -17,6 +18,8 @@ constexpr char MAGIC[4] = { 'T', 'M', 'P', 'T' };
 constexpr size_t RING_START_CAPACITY = 1024;
 /** Longer rings are stored without simplification. */
 constexpr size_t RING_MAX_POINTS = 65536;
+/** Labels beyond this many bytes are dropped, they are for the screen around the current tile only. */
+constexpr size_t LABEL_MAX_BYTES = 48 * 1024;
 constexpr uint8_t FLAG_MARITIME = 1 << 2;
 constexpr uint8_t FLAG_RAMP = 1 << 3;
 constexpr uint8_t FLAG_SUBCLASS = 1 << 4;
@@ -45,6 +48,24 @@ int sectionOf(Layer layer) {
         }
     }
     return -1;
+}
+
+/** The label kind of a layer, -1 for layers without labels. */
+int labelKindOf(Layer layer) {
+    switch (layer) {
+        case Layer::Place:
+            return static_cast<int>(LabelKind::Place);
+        case Layer::TransportationName:
+            return static_cast<int>(LabelKind::Road);
+        case Layer::WaterName:
+            return static_cast<int>(LabelKind::Water);
+        case Layer::Waterway:
+            return static_cast<int>(LabelKind::Waterway);
+        case Layer::MountainPeak:
+            return static_cast<int>(LabelKind::Peak);
+        default:
+            return -1;
+    }
 }
 
 size_t encodeVarint(uint8_t* out, uint64_t value) {
@@ -86,6 +107,11 @@ bool readPreparedHeader(const uint8_t* data, size_t size, PreparedHeader& header
 bool isPreparedCurrent(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize) {
     return header.version == PREPARED_FORMAT_VERSION && header.tile == tile && header.sourceSize == sourceSize &&
         header.extent == PREPARED_EXTENT;
+}
+
+bool isPreparedReadable(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize) {
+    return header.version >= PREPARED_MIN_READABLE_VERSION && header.version <= PREPARED_FORMAT_VERSION &&
+        header.tile == tile && header.sourceSize == sourceSize && header.extent == PREPARED_EXTENT;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -189,6 +215,9 @@ void TileConverter::trim(size_t keepBytes) {
             writer.release();
         }
     }
+    if (labels.allocated() > keepBytes) {
+        labels.release();
+    }
 }
 
 TileConverter::~TileConverter() {
@@ -245,12 +274,14 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         sections[i].clear();
         sectionCounts[i] = 0;
     }
+    labels.clear();
+    labelCount = 0;
     failureText = "";
     if (!decoder->scan(input)) {
         failureText = "reading the tile";
         return false;
     }
-    Layer layers[static_cast<int>(Stage::Count)];
+    Layer layers[static_cast<int>(Stage::Count) + 5];
     int layerCount = 0;
     for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
         const auto stage = static_cast<Stage>(i);
@@ -258,6 +289,11 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
             layers[layerCount++] = stageLayer(stage);
         }
     }
+    layers[layerCount++] = Layer::Place;
+    layers[layerCount++] = Layer::TransportationName;
+    layers[layerCount++] = Layer::WaterName;
+    layers[layerCount++] = Layer::Waterway;
+    layers[layerCount++] = Layer::MountainPeak;
     // The sections are separate buffers, so one pass in file order collects all of them
     if (!decoder->sweep(layers, layerCount, *this)) {
         failureText = "decoding, or no memory for the features";
@@ -269,6 +305,10 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
             return false;
         }
     }
+    if (labels.failed()) {
+        failureText = "no memory for the labels";
+        return false;
+    }
 
     // The sections go straight into the output: one combined copy of them would double the memory a large tile needs
     size_t bodySize = 1;
@@ -277,6 +317,9 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         if (sectionCounts[i] != 0) {
             bodySize += encodeVarint(head, sectionCounts[i]) + encodeVarint(head, sections[i].size()) + 1 + sections[i].size();
         }
+    }
+    if (labelCount != 0) {
+        bodySize += encodeVarint(head, labelCount) + encodeVarint(head, labels.size()) + 1 + labels.size();
     }
 
     out.clear();
@@ -326,6 +369,13 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         headSize += encodeVarint(head + headSize, sections[i].size());
         ok = emit(head, headSize) && emit(sections[i].bytes(), sections[i].size());
     }
+    if (ok && labelCount != 0) {
+        size_t headSize = 0;
+        head[headSize++] = PREPARED_LABEL_SECTION;
+        headSize += encodeVarint(head + headSize, labelCount);
+        headSize += encodeVarint(head + headSize, labels.size());
+        ok = emit(head, headSize) && emit(labels.bytes(), labels.size());
+    }
     const uint8_t endMark = 0xFF;
     ok = ok && emit(&endMark, 1);
     if (compressor != nullptr) {
@@ -350,23 +400,27 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
 bool TileConverter::beginFeature(const FeatureInfo& info) {
     counters.featuresIn++;
     section = sectionOf(info.layer);
-    if (section < 0) {
-        return false;
-    }
+    const int kind = labelKindOf(info.layer);
+    const bool hasLabel = kind >= 0 && info.name != nullptr && info.nameLength > 0;
     // Kept when the style draws it in one of the section's stages at one of the zoom levels the tile is used for
     const Palette& palette = colorPalette();
     bool drawn = false;
-    for (int zoom = minZoom; zoom <= maxZoom && !drawn; zoom++) {
-        for (int i = 0; i < static_cast<int>(Stage::Count) && !drawn; i++) {
-            const auto stage = static_cast<Stage>(i);
-            DrawStyle style {};
-            drawn = static_cast<int>(preparedSection(stage)) == section && styleFor(info, stage, zoom, palette, style);
+    if (section >= 0) {
+        for (int zoom = minZoom; zoom <= maxZoom && !drawn; zoom++) {
+            for (int i = 0; i < static_cast<int>(Stage::Count) && !drawn; i++) {
+                const auto stage = static_cast<Stage>(i);
+                DrawStyle style {};
+                drawn = static_cast<int>(preparedSection(stage)) == section && styleFor(info, stage, zoom, palette, style);
+            }
         }
     }
-    if (!drawn) {
+    if (!drawn && !hasLabel) {
         return false;
     }
     feature = info;
+    drawFeature = drawn;
+    labelFeature = hasLabel;
+    labelKind = static_cast<uint8_t>(kind);
     rings.clear();
     ringCount = 0;
     lastX = 0;
@@ -494,6 +548,15 @@ void TileConverter::endRing(bool closed) {
     if (closed && kept > 1 && quantised[0] == quantised[kept * 2 - 2] && quantised[1] == quantised[kept * 2 - 1]) {
         kept--;
     }
+    if (labelFeature) {
+        const int minimum = feature.geometryType == GEOMETRY_POINT ? 1 : 2;
+        if (kept >= minimum) {
+            writeLabel(quantised, kept);
+        }
+    }
+    if (!drawFeature) {
+        return;
+    }
     if (kept < (closed ? 3 : 2)) {
         return;
     }
@@ -506,6 +569,35 @@ void TileConverter::endRing(bool closed) {
     }
     counters.pointsKept += static_cast<uint32_t>(kept);
     ringCount++;
+}
+
+void TileConverter::writeLabel(const int32_t* points, int count) {
+    if (labels.size() >= LABEL_MAX_BYTES) {
+        return;
+    }
+    labels.put(labelKind);
+    labels.put(static_cast<uint8_t>(feature.featureClass));
+    labels.putVarint(feature.rank >= 0 ? static_cast<uint64_t>(feature.rank) + 1 : 0);
+    labels.putVarint(feature.nameLength);
+    labels.putBytes(feature.name, feature.nameLength);
+    const bool sameLatin = feature.nameLatin != nullptr && feature.nameLatinLength > 0 &&
+        feature.nameLatinLength == feature.nameLength && memcmp(feature.name, feature.nameLatin, feature.nameLength) == 0;
+    if (feature.nameLatin != nullptr && feature.nameLatinLength > 0 && !sameLatin) {
+        labels.putVarint(feature.nameLatinLength);
+        labels.putBytes(feature.nameLatin, feature.nameLatinLength);
+    } else {
+        labels.putVarint(0);
+    }
+    labels.putVarint(static_cast<uint64_t>(count));
+    int32_t x = 0;
+    int32_t y = 0;
+    for (int i = 0; i < count; i++) {
+        labels.putZigzag(points[i * 2] - x);
+        labels.putZigzag(points[i * 2 + 1] - y);
+        x = points[i * 2];
+        y = points[i * 2 + 1];
+    }
+    labelCount++;
 }
 
 void TileConverter::endFeature() {

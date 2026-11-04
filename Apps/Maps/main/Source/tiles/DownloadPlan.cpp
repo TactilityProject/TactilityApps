@@ -64,4 +64,20 @@ bool tileAtIndex(const DownloadPlan& plan, int64_t index, TileKey& tile) {
     return false;
 }
 
+int64_t indexOfTile(const DownloadPlan& plan, const TileKey& tile) {
+    int64_t before = 0;
+    for (int z = plan.minZoom; z <= plan.maxZoom; z++) {
+        const TileRange range = tileRange(plan.box, z);
+        if (z == tile.z) {
+            if (tile.x < range.minX || tile.x > range.maxX || tile.y < range.minY || tile.y > range.maxY) {
+                return -1;
+            }
+            const int64_t width = range.maxX - range.minX + 1;
+            return before + static_cast<int64_t>(tile.y - range.minY) * width + (tile.x - range.minX);
+        }
+        before += range.count();
+    }
+    return -1;
+}
+
 } // namespace maps

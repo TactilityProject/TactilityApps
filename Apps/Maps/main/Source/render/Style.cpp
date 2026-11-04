@@ -52,6 +52,7 @@ constexpr Palette COLOR_PALETTE = {
     .text = rgb(0x202020),
     .halo = rgb(0xFFFFFF),
     .marker = rgb(0x1A73E8),
+    .binary = false,
 };
 
 constexpr Palette MONOCHROME_PALETTE = {
@@ -94,6 +95,51 @@ constexpr Palette MONOCHROME_PALETTE = {
     .text = rgb(0x000000),
     .halo = rgb(0xFFFFFF),
     .marker = rgb(0x000000),
+    .binary = false,
+};
+
+/** Every colour is black or white; patterns decide how much black an area gets. */
+constexpr Palette BINARY_PALETTE = {
+    .background = rgb(0xFFFFFF),
+    .placeholder = rgb(0xFFFFFF),
+    .water = rgb(0x000000),
+    .wood = rgb(0x000000),
+    .grass = rgb(0x000000),
+    .farmland = rgb(0x000000),
+    .wetland = rgb(0x000000),
+    .sand = rgb(0x000000),
+    .ice = rgb(0x000000),
+    .rock = rgb(0x000000),
+    .residential = rgb(0x000000),
+    .commercial = rgb(0x000000),
+    .industrial = rgb(0x000000),
+    .cemetery = rgb(0x000000),
+    .hospital = rgb(0x000000),
+    .school = rgb(0x000000),
+    .pitch = rgb(0x000000),
+    .military = rgb(0x000000),
+    .park = rgb(0x000000),
+    .building = rgb(0x000000),
+    .aerodrome = rgb(0xFFFFFF),
+    .runway = rgb(0x000000),
+    .boundary = rgb(0x000000),
+    .motorway = rgb(0x000000),
+    .motorwayCasing = rgb(0xFFFFFF),
+    .trunk = rgb(0x000000),
+    .trunkCasing = rgb(0xFFFFFF),
+    .primary = rgb(0x000000),
+    .primaryCasing = rgb(0xFFFFFF),
+    .secondary = rgb(0x000000),
+    .secondaryCasing = rgb(0xFFFFFF),
+    .minor = rgb(0x000000),
+    .minorCasing = rgb(0xFFFFFF),
+    .path = rgb(0x000000),
+    .rail = rgb(0x000000),
+    .pier = rgb(0x000000),
+    .text = rgb(0x000000),
+    .halo = rgb(0xFFFFFF),
+    .marker = rgb(0x000000),
+    .binary = true,
 };
 
 enum class RoadKind : uint8_t {
@@ -180,7 +226,7 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
         if (kind != RoadKind::Pier || stage != Stage::RoadFill) {
             return false;
         }
-        style = { palette.pier, 255, 0.0f };
+        style = { palette.pier, 255, 0.0f, PATTERN_NONE };
         return true;
     }
     if (info.geometryType != GEOMETRY_LINE) {
@@ -231,7 +277,7 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
         if (tunnel || zoom < spec.casingMinZoom) {
             return false;
         }
-        style = { casing, 255, width + std::fmax(1.0f, width * 0.35f) };
+        style = { casing, 255, width + std::fmax(1.0f, width * 0.35f), PATTERN_NONE };
         return true;
     }
     // Roads without a casing at this zoom level use the casing colour, so white roads stay visible
@@ -240,7 +286,7 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
     if (kind == RoadKind::Path) {
         opacity = zoom < 15 ? 120 : 190;
     }
-    style = { cased || kind == RoadKind::Path || kind == RoadKind::Rail ? fill : casing, opacity, width };
+    style = { cased || kind == RoadKind::Path || kind == RoadKind::Rail ? fill : casing, opacity, width, PATTERN_NONE };
     return true;
 }
 
@@ -271,7 +317,7 @@ bool waterwayStyle(const FeatureInfo& info, int zoom, const Palette& palette, Dr
     if (zoom < minZoom) {
         return false;
     }
-    style = { palette.water, static_cast<uint8_t>(info.brunnel == Value::tunnel ? 90 : 255), std::fmax(0.6f, width * zoomScale(zoom)) };
+    style = { palette.water, static_cast<uint8_t>(info.brunnel == Value::tunnel ? 90 : 255), std::fmax(0.6f, width * zoomScale(zoom)), PATTERN_NONE };
     return true;
 }
 
@@ -364,6 +410,149 @@ bool areaColor(const FeatureInfo& info, const Palette& palette, uint16_t& color,
     }
 }
 
+bool binaryWaterwayStyle(const FeatureInfo& info, int zoom, DrawStyle& style) {
+    if (info.geometryType != GEOMETRY_LINE) {
+        return false;
+    }
+    float width;
+    int minZoom;
+    switch (info.featureClass) {
+        case Value::river:
+            width = 2.2f;
+            minZoom = 8;
+            break;
+        case Value::canal:
+            width = 1.8f;
+            minZoom = 11;
+            break;
+        case Value::stream:
+            width = 0.9f;
+            minZoom = 13;
+            break;
+        default:
+            width = 0.7f;
+            minZoom = 14;
+            break;
+    }
+    if (zoom < minZoom) {
+        return false;
+    }
+    width = std::fmax(1.0f, width * zoomScale(zoom));
+    // A river has to stay clearly wider than a stream at 1 bit
+    if (info.featureClass == Value::river) {
+        width = std::fmax(1.5f, width);
+    }
+    style = { rgb(0x000000), 255, width, PATTERN_NONE };
+    return true;
+}
+
+bool binaryRoadStyle(const FeatureInfo& info, Stage stage, int zoom, DrawStyle& style) {
+    const RoadKind kind = roadKind(info.featureClass);
+    if (kind == RoadKind::None) {
+        return false;
+    }
+    const RoadSpec& spec = ROAD_SPECS[static_cast<int>(kind)];
+    if (zoom < spec.minZoom) {
+        return false;
+    }
+    if (info.geometryType == GEOMETRY_POLYGON) {
+        if (kind != RoadKind::Pier || stage != Stage::RoadFill) {
+            return false;
+        }
+        style = { rgb(0x000000), 255, 0.0f, PATTERN_NONE };
+        return true;
+    }
+    if (info.geometryType != GEOMETRY_LINE) {
+        return false;
+    }
+    // Paths and rails are already thin, a white casing would erase them
+    if (kind == RoadKind::Path || kind == RoadKind::Rail) {
+        if (stage == Stage::RoadCasing) {
+            return false;
+        }
+        style = { rgb(0x000000), 255, 1.0f, PATTERN_NONE };
+        return true;
+    }
+    const float width = std::fmax(0.6f, spec.widthAt14 * zoomScale(zoom));
+    if (stage == Stage::RoadCasing) {
+        if (info.brunnel == Value::tunnel || zoom < spec.casingMinZoom) {
+            return false;
+        }
+        // One pixel wider than in colour, so the black fill never touches a neighbouring pattern
+        style = { rgb(0xFFFFFF), 255, width + std::fmax(1.0f, width * 0.35f) + 1.0f, PATTERN_NONE };
+        return true;
+    }
+    style = { rgb(0x000000), 255, std::fmax(1.0f, width), PATTERN_NONE };
+    return true;
+}
+
+/** The 1-bit style: no greys, no anti-aliasing, and pattern fills to suggest area colours. */
+bool binaryStyle(const FeatureInfo& info, Stage stage, int zoom, DrawStyle& style) {
+    switch (stage) {
+        case Stage::Water:
+            if (info.geometryType != GEOMETRY_POLYGON) {
+                return false;
+            }
+            style = { rgb(0x000000), 255, 0.0f, PATTERN_LINES };
+            return true;
+        case Stage::Landcover:
+            if (info.geometryType != GEOMETRY_POLYGON) {
+                return false;
+            }
+            switch (info.featureClass) {
+                case Value::wood:
+                    style = { rgb(0x000000), 255, 0.0f, PATTERN_DOTS };
+                    return true;
+                case Value::wetland:
+                    style = { rgb(0x000000), 255, 0.0f, PATTERN_LINES };
+                    return true;
+                default:
+                    // Grass, farmland, sand, ice and rock stay white, like the background
+                    return false;
+            }
+        case Stage::Park:
+            if (info.geometryType != GEOMETRY_POLYGON) {
+                return false;
+            }
+            style = { rgb(0x000000), 255, 0.0f, PATTERN_DIAGONAL };
+            return true;
+        case Stage::Landuse:
+            // Residential, commercial, industrial and the like are left white
+            return false;
+        case Stage::Waterway:
+            return binaryWaterwayStyle(info, zoom, style);
+        case Stage::Aeroway:
+            // The aerodrome itself is white; only runways and taxiways are drawn
+            if (info.geometryType == GEOMETRY_LINE && (info.featureClass == Value::runway || info.featureClass == Value::taxiway)) {
+                if (zoom < 11) {
+                    return false;
+                }
+                const float width = info.featureClass == Value::runway ? 6.0f : 2.0f;
+                style = { rgb(0x000000), 255, std::fmax(0.8f, width * zoomScale(zoom)), PATTERN_NONE };
+                return true;
+            }
+            return false;
+        case Stage::Boundary:
+            if (info.geometryType != GEOMETRY_LINE || info.maritime || info.adminLevel < 0 || info.adminLevel > 4) {
+                return false;
+            }
+            style = { rgb(0x000000), 255, 1.0f, PATTERN_NONE };
+            return true;
+        case Stage::Building:
+            // Below z15 an outline would merge the buildings into a black block
+            if (info.geometryType != GEOMETRY_POLYGON || zoom < 15) {
+                return false;
+            }
+            style = { rgb(0x000000), 255, 1.0f, PATTERN_NONE };
+            return true;
+        case Stage::RoadCasing:
+        case Stage::RoadFill:
+            return binaryRoadStyle(info, stage, zoom, style);
+        default:
+            return false;
+    }
+}
+
 } // namespace
 
 Layer stageLayer(Stage stage) {
@@ -392,8 +581,33 @@ Layer stageLayer(Stage stage) {
     }
 }
 
-void styleCacheId(bool monochrome, char* out, size_t size) {
-    snprintf(out, size, "%c%u", monochrome ? 'm' : 'c', static_cast<unsigned>(STYLE_VERSION));
+bool patternBit(uint8_t pattern, int x, int y) {
+    // Periods of 4 and 8 divide the 256-pixel tile, so patterns join across tiles; negative coordinates stay in range
+    const int px = ((x % 8) + 8) % 8;
+    const int py = ((y % 8) + 8) % 8;
+    switch (pattern) {
+        case PATTERN_DOTS:
+            return px % 4 == 0 && py % 4 == 0;
+        case PATTERN_LINES:
+            // Dashed lines, 1 in 8 black: water reads as water without turning grey on a small screen
+            return py % 4 == 0 && px % 2 == 0;
+        case PATTERN_DIAGONAL:
+            return (px + py) % 8 == 0;
+        case PATTERN_DOTS_OFFSET:
+            return px % 4 == 2 && py % 4 == 2;
+        default:
+            return false;
+    }
+}
+
+void styleCacheId(const Palette& palette, char* out, size_t size) {
+    char kind = 'c';
+    if (palette.binary) {
+        kind = 'b';
+    } else if (&palette == &monochromePalette()) {
+        kind = 'm';
+    }
+    snprintf(out, size, "%c%u", kind, static_cast<unsigned>(STYLE_VERSION));
 }
 
 const Palette& colorPalette() {
@@ -404,7 +618,14 @@ const Palette& monochromePalette() {
     return MONOCHROME_PALETTE;
 }
 
+const Palette& binaryPalette() {
+    return BINARY_PALETTE;
+}
+
 bool styleFor(const FeatureInfo& info, Stage stage, int zoom, const Palette& palette, DrawStyle& style) {
+    if (palette.binary) {
+        return binaryStyle(info, stage, zoom, style);
+    }
     switch (stage) {
         case Stage::Landcover:
         case Stage::Landuse:
@@ -422,7 +643,7 @@ bool styleFor(const FeatureInfo& info, Stage stage, int zoom, const Palette& pal
             if (!areaColor(info, palette, color, opacity)) {
                 return false;
             }
-            style = { color, opacity, 0.0f };
+            style = { color, opacity, 0.0f, PATTERN_NONE };
             return true;
         }
         case Stage::Waterway:
@@ -430,12 +651,12 @@ bool styleFor(const FeatureInfo& info, Stage stage, int zoom, const Palette& pal
         case Stage::Aeroway:
             if (info.geometryType == GEOMETRY_POLYGON) {
                 const bool paved = info.featureClass == Value::runway || info.featureClass == Value::taxiway || info.featureClass == Value::apron;
-                style = { paved ? palette.runway : palette.aerodrome, 255, 0.0f };
+                style = { paved ? palette.runway : palette.aerodrome, 255, 0.0f, PATTERN_NONE };
                 return info.featureClass != Value::None;
             }
             if (info.geometryType == GEOMETRY_LINE && (info.featureClass == Value::runway || info.featureClass == Value::taxiway)) {
                 const float width = info.featureClass == Value::runway ? 6.0f : 2.0f;
-                style = { palette.runway, 255, std::fmax(0.8f, width * zoomScale(zoom)) };
+                style = { palette.runway, 255, std::fmax(0.8f, width * zoomScale(zoom)), PATTERN_NONE };
                 return zoom >= 11;
             }
             return false;
@@ -443,7 +664,7 @@ bool styleFor(const FeatureInfo& info, Stage stage, int zoom, const Palette& pal
             if (info.geometryType != GEOMETRY_LINE || info.maritime || info.adminLevel < 0 || info.adminLevel > 4) {
                 return false;
             }
-            style = { palette.boundary, 170, info.adminLevel <= 2 ? 1.4f : 0.9f };
+            style = { palette.boundary, 170, info.adminLevel <= 2 ? 1.4f : 0.9f, PATTERN_NONE };
             return true;
         case Stage::RoadCasing:
         case Stage::RoadFill:

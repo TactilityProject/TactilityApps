@@ -14,16 +14,19 @@ namespace {
 
 constexpr int KEY_PAN_PIXELS = 48;
 constexpr int TRACKBALL_PAN_PIXELS = 16;
-constexpr int MOUSE_PAN_SCALE = 4;
-/** Trackball movement in mouse mode that moves a list by one row. */
-constexpr int MOUSE_ROW_STEP = 6;
 constexpr uint32_t LONG_PRESS_MS = 600;
-constexpr int CURSOR_SCALE = 3;
+/** Pointer movement while its button is held that makes the press a drag of the map instead of a click. */
+constexpr int MOUSE_DRAG_SLOP = 6;
 
 } // namespace
 
 void MapView::markInput(uint32_t now) {
     lastInputAt = now;
+    if (updatesAllowed) {
+        // Idle-time updates pause at once, the fetch running now ends and the rest waits for the next quiet spell
+        updatesAllowed = false;
+        downloader.setUpdatesAllowed(false);
+    }
     // Prefetch and other idle work stop at once, so the card and the lanes serve what is on screen
     if (idle) {
         idle = false;
@@ -34,10 +37,24 @@ void MapView::markInput(uint32_t now) {
 
 void MapView::handleKey(uint32_t key) {
     dirty = true;
+    if (prompt.isOpen()) {
+        if (prompt.handleKey(key) == UiAction::Chosen) {
+            confirmPrompt();
+        }
+        return;
+    }
     if (dialog.isOpen()) {
         if (dialog.handleKey(key) == UiAction::Chosen) {
-            deleteRegion();
+            confirmDialog();
         }
+        return;
+    }
+    if (downloadCard.isOpen()) {
+        handleCardButton(downloadCard.handleKey(key));
+        return;
+    }
+    if (sheet.isOpen() && !menuOpen && screen == Screen::Map) {
+        handleSheetButton(sheet.handleKey(key));
         return;
     }
     if (menuOpen) {
@@ -65,6 +82,14 @@ void MapView::handleKey(uint32_t key) {
             }
             break;
         default:
+            if (screen == Screen::Regions && (key == 'r' || key == 'R')) {
+                askRenameRegion();
+                break;
+            }
+            if (screen == Screen::Waypoints && (key == 'r' || key == 'R')) {
+                askRenameWaypoint(listedWaypoint());
+                break;
+            }
             handleListAction(activeList()->handleKey(key));
             break;
     }
@@ -77,10 +102,10 @@ void MapView::pressControl(Control control) {
             openMenu();
             break;
         case Control::ZoomIn:
-            setZoom(zoom + 1, width / 2, height / 2);
+            zoomBy(1, width / 2, height / 2);
             break;
         case Control::ZoomOut:
-            setZoom(zoom - 1, width / 2, height / 2);
+            zoomBy(-1, width / 2, height / 2);
             break;
         case Control::Position:
             startFollowing();
@@ -91,9 +116,20 @@ void MapView::pressControl(Control control) {
 }
 
 bool MapView::pressAt(int x, int y) {
+    if ((isRotated() || turn.active) && compassRect().contains(x, y)) {
+        headingUp = false;
+        setBearing(0.0f, true);
+        return true;
+    }
     const Control control = controls.hit(x, y);
     if (control != Control::None) {
         pressControl(control);
+        return true;
+    }
+    // A pin opens its sheet
+    const int pin = waypointAt(x, y);
+    if (pin >= 0) {
+        openWaypointSheet(pin);
         return true;
     }
     switch (attribution.tap(x, y, attributionBar, attributionMark(), nowMs())) {
@@ -140,6 +176,10 @@ void MapView::handleMapKey(uint32_t key) {
         case keys::BACKSPACE:
             exitRequested = true;
             break;
+        case 'p':
+        case 'P':
+            openNewWaypointAtPosition();
+            break;
         case 'w':
         case 'W':
             pan(0, -KEY_PAN_PIXELS);
@@ -169,15 +209,31 @@ void MapView::handleMapKey(uint32_t key) {
             break;
         case 'i':
         case 'I':
-            setZoom(zoom + 1, width / 2, height / 2);
+            zoomBy(1, width / 2, height / 2);
             break;
         case 'o':
         case 'O':
-            setZoom(zoom - 1, width / 2, height / 2);
+            zoomBy(-1, width / 2, height / 2);
             break;
         case 'g':
         case 'G':
             startFollowing();
+            break;
+        case 'q':
+        case 'Q':
+            // Turned by hand the map stops turning with the direction of travel
+            headingUp = false;
+            setBearing((turn.active ? turn.to : bearing) - KEY_TURN_DEGREES, true);
+            break;
+        case 'e':
+        case 'E':
+            headingUp = false;
+            setBearing((turn.active ? turn.to : bearing) + KEY_TURN_DEGREES, true);
+            break;
+        case 'n':
+        case 'N':
+            headingUp = false;
+            setBearing(0.0f, true);
             break;
         case 'm':
         case 'M':
@@ -186,6 +242,10 @@ void MapView::handleMapKey(uint32_t key) {
         case 'D':
             // Lower case d pans, so the download frame is Shift and D
             screen = Screen::Download;
+            // The download frame works north up
+            following = false;
+            headingUp = false;
+            setBearing(0.0f, false);
             controls.hide();
             cursorShown = false;
             break;
@@ -194,35 +254,61 @@ void MapView::handleMapKey(uint32_t key) {
     }
 }
 
+void MapView::pointerClick() {
+    dirty = true;
+    if (!cursorShown) {
+        // The pointer hid itself after a while: a click brings it back where it was
+        cursorShown = true;
+        cursorMovedAt = nowMs();
+        controls.setHover(menuOpen ? Control::None : controls.hit(cursorX, cursorY));
+        return;
+    }
+    cursorMovedAt = nowMs();
+    if (prompt.isOpen() || dialog.isOpen() || menuOpen || sheet.isOpen() || downloadCard.isOpen() || screen != Screen::Map ||
+        (pillRect.width > 0 && pillRect.contains(cursorX, cursorY))) {
+        handleTap(cursorX, cursorY);
+        return;
+    }
+    // On the map: a button presses, a pin opens its sheet, a click on empty map shows or hides the controls
+    if (!pressAt(cursorX, cursorY)) {
+        controls.toggle();
+    }
+    controls.setHover(controls.hit(cursorX, cursorY));
+}
+
 void MapView::click(bool fromPointer) {
     dirty = true;
-    if (dialog.isOpen()) {
+    if (fromPointer && input.hasPointer()) {
+        pointerClick();
+        return;
+    }
+    if (prompt.isOpen()) {
+        if (prompt.handleKey(keys::ENTER) == UiAction::Chosen) {
+            confirmPrompt();
+        }
+    } else if (dialog.isOpen()) {
         if (dialog.press() == UiAction::Chosen) {
-            deleteRegion();
+            confirmDialog();
         }
-    } else if (menuOpen || screen != Screen::Map) {
+    } else if (menuOpen || sheet.isOpen() || downloadCard.isOpen() || screen != Screen::Map) {
         handleKey(keys::ENTER);
-    } else if (fromPointer && cursorShown) {
-        // A click on a button presses it, a click on empty map hides the controls
-        if (!pressAt(cursorX, cursorY)) {
-            controls.hide();
-            cursorShown = false;
-        }
     } else if (controls.isVisible() && controls.usesFocus()) {
         pressControl(controls.focused());
     } else {
         controls.toggle();
-        // With a pointer the controls are reached with a cursor, it starts in the middle of the screen
-        cursorShown = fromPointer && controls.isVisible();
-        cursorX = width / 2;
-        cursorY = height / 2;
     }
 }
 
 void MapView::longClick() {
     // The menu opens from the map, a long click elsewhere goes back
-    if (dialog.isOpen()) {
+    if (prompt.isOpen()) {
+        prompt.close();
+    } else if (dialog.isOpen()) {
         dialog.close();
+    } else if (downloadCard.isOpen()) {
+        downloadCard.close();
+    } else if (sheet.isOpen() && screen == Screen::Map) {
+        handleSheetButton(WaypointSheet::Button::Cancel);
     } else if (menuOpen) {
         closeMenu();
     } else if (screen == Screen::Map) {
@@ -253,63 +339,91 @@ void MapView::handleEnter(bool pressed, uint32_t now) {
 }
 
 void MapView::handleMouse(uint32_t now) {
-    int32_t dx;
-    int32_t dy;
-    const bool pressed = input.readMouse(dx, dy);
-    if (pressed || dx != 0 || dy != 0) {
+    int32_t rawX;
+    int32_t rawY;
+    const bool pressed = input.readMouse(rawX, rawY);
+    if (pressed || rawX != 0 || rawY != 0) {
         markInput(now);
     }
-    ListView* list = menuOpen ? &menu : activeList();
-    if (dialog.isOpen()) {
-        if (dx != 0 || dy != 0) {
-            mouseRowAccumulator += dx + dy;
-            if (std::abs(mouseRowAccumulator) >= MOUSE_ROW_STEP) {
-                dialog.handleKey(keys::TAB);
-                mouseRowAccumulator = 0;
-                dirty = true;
+    // A trackball in mouse mode is a pointer on every screen: it moves the pointer, a click is a tap where it points
+    int dx;
+    int dy;
+    pointerAcceleration.apply(rawX, rawY, now, dx, dy);
+    if (dx != 0 || dy != 0) {
+        int overflowX;
+        int overflowY;
+        const int fromX = cursorX;
+        const int fromY = cursorY;
+        moveCursor(dx, dy, now, overflowX, overflowY);
+        dirty = true;
+        ListView* list = menuOpen ? &menu : activeList();
+        const bool onMap = !menuOpen && !dialog.isOpen() && !prompt.isOpen() && (screen == Screen::Map || screen == Screen::Download);
+        if (mouseHeld && onMap && !mouseLong) {
+            // Rolling with the button held drags the map under the pointer, which stays where it is
+            mouseDragDistance += std::abs(dx) + std::abs(dy);
+            if (mouseDragged || mouseDragDistance >= MOUSE_DRAG_SLOP) {
+                mouseDragged = true;
+                cursorX = fromX;
+                cursorY = fromY;
+                pan(-dx, -dy);
             }
-        }
-    } else if (list != nullptr || screen == Screen::About) {
-        // In lists the trackball steps through the rows
-        mouseRowAccumulator += dy;
-        while (std::abs(mouseRowAccumulator) >= MOUSE_ROW_STEP) {
-            const int step = mouseRowAccumulator > 0 ? 1 : -1;
-            mouseRowAccumulator -= step * MOUSE_ROW_STEP;
-            if (list != nullptr) {
+        } else if (onMap && (overflowX != 0 || overflowY != 0)) {
+            // Pushing against a screen edge moves the map that way
+            pan(overflowX, overflowY);
+        } else if (list != nullptr && !dialog.isOpen() && !prompt.isOpen()) {
+            // The row under the pointer is the highlighted one; pushing against the top or bottom scrolls the list
+            const int row = list->rowAt(cursorX, cursorY);
+            if (row >= 0) {
+                list->select(row);
+                list->setHighlighted(true);
+            }
+            mouseRowAccumulator += overflowY;
+            while (std::abs(mouseRowAccumulator) >= list->rowHeight() / 2) {
+                const int step = mouseRowAccumulator > 0 ? 1 : -1;
+                mouseRowAccumulator -= step * list->rowHeight() / 2;
                 list->move(step);
-            } else {
+            }
+        } else if (screen == Screen::About && overflowY != 0) {
+            mouseRowAccumulator += overflowY;
+            while (std::abs(mouseRowAccumulator) >= normalFont.lineHeight() / 2) {
+                const int step = mouseRowAccumulator > 0 ? 1 : -1;
+                mouseRowAccumulator -= step * normalFont.lineHeight() / 2;
                 scrollAbout(step);
             }
-            dirty = true;
         }
-    } else if (controls.isVisible() && screen == Screen::Map) {
-        // While the controls show, the trackball moves the pointer instead of the map
-        if (dx != 0 || dy != 0) {
-            if (!cursorShown) {
-                cursorShown = true;
-                cursorX = width / 2;
-                cursorY = height / 2;
-            }
-            cursorX = std::clamp(cursorX + static_cast<int>(dx) * CURSOR_SCALE, 0, width - 1);
-            cursorY = std::clamp(cursorY + static_cast<int>(dy) * CURSOR_SCALE, 0, height - 1);
-            dirty = true;
-        }
-    } else {
-        pan(dx * MOUSE_PAN_SCALE, dy * MOUSE_PAN_SCALE);
     }
     if (pressed && !mouseHeld) {
         mouseHeld = true;
         mouseLong = false;
+        mouseDragged = false;
+        mouseDragDistance = 0;
         mouseDownAt = now;
-    } else if (pressed && mouseHeld && !mouseLong && now - mouseDownAt >= LONG_PRESS_MS) {
-        mouseLong = true;
-        longClick();
     } else if (!pressed && mouseHeld) {
         mouseHeld = false;
-        if (!mouseLong) {
+        // Holding the button does nothing by itself, the menu is on the button at the top left
+        if (!mouseDragged && now - mouseDownAt < LONG_PRESS_MS) {
             click(true);
         }
+        mouseDragged = false;
     }
+}
+
+void MapView::moveCursor(int dx, int dy, uint32_t now, int& overflowX, int& overflowY) {
+    if (!cursorShown) {
+        cursorShown = true;
+        if (cursorMovedAt == 0) {
+            cursorX = width / 2;
+            cursorY = height / 2;
+        }
+    }
+    const int wantedX = cursorX + dx;
+    const int wantedY = cursorY + dy;
+    cursorX = std::clamp(wantedX, 0, width - 1);
+    cursorY = std::clamp(wantedY, 0, height - 1);
+    overflowX = wantedX - cursorX;
+    overflowY = wantedY - cursorY;
+    cursorMovedAt = now;
+    controls.setHover(menuOpen || screen != Screen::Map ? Control::None : controls.hit(cursorX, cursorY));
 }
 
 void MapView::handleTouch(uint32_t now) {
@@ -329,9 +443,16 @@ void MapView::handleTouch(uint32_t now) {
 void MapView::handleTap(int x, int y) {
     // Taps on something answer at once, taps on the map wait to tell a single from a double tap
     dirty = true;
+    if (prompt.isOpen()) {
+        if (prompt.handleTap(x, y) == UiAction::Chosen) {
+            confirmPrompt();
+        }
+        gestures.consumeTap();
+        return;
+    }
     if (dialog.isOpen()) {
         if (dialog.handleTap(x, y) == UiAction::Chosen) {
-            deleteRegion();
+            confirmDialog();
         }
         gestures.consumeTap();
         return;
@@ -341,9 +462,25 @@ void MapView::handleTap(int x, int y) {
         gestures.consumeTap();
         return;
     }
+    if (downloadCard.isOpen()) {
+        handleCardButton(downloadCard.handleTap(x, y));
+        gestures.consumeTap();
+        return;
+    }
+    if (screen == Screen::Map && !menuOpen && pillRect.width > 0 && pillRect.contains(x, y)) {
+        openDownloadCard();
+        gestures.consumeTap();
+        return;
+    }
+    if (sheet.isOpen() && screen == Screen::Map) {
+        // A tap outside the sheet closes it and does nothing else
+        handleSheetButton(sheet.handleTap(x, y));
+        gestures.consumeTap();
+        return;
+    }
     if (screen == Screen::About) {
-        // The title bar goes back, the page itself scrolls by dragging
-        if (y < normalFont.lineHeight() + 8) {
+        // The < in the header goes back, the page itself scrolls by dragging
+        if (aboutHeader.back.contains(x, y)) {
             closeScreen();
         }
         gestures.consumeTap();
@@ -376,18 +513,36 @@ void MapView::handleTap(int x, int y) {
 
 void MapView::handleLongPress(int x, int y) {
     dirty = true;
-    if (screen == Screen::Regions && !dialog.isOpen()) {
+    // Holding a row opens its actions, like a tap
+    if (screen == Screen::Regions && !dialog.isOpen() && !menuOpen) {
         const int row = regionList.rowAt(x, y);
         if (row >= 0) {
             regionList.select(row);
-            askDeleteRegion();
+            openRegionActions();
+        }
+        return;
+    }
+    if (screen == Screen::Waypoints && !dialog.isOpen() && !menuOpen) {
+        const int row = waypointList.rowAt(x, y);
+        if (row >= 0) {
+            waypointList.select(row);
+            openWaypointActions();
         }
         return;
     }
     if (screen == Screen::Map && !dialog.isOpen()) {
         if (menuOpen) {
             closeMenu();
-        } else {
+        } else if (controls.hit(x, y) == Control::Position) {
+            // Holding the position button opens a waypoint sheet where I am
+            openNewWaypointAtPosition();
+        } else if (controls.hit(x, y) == Control::None && !sheet.contains(x, y)) {
+            // Holding the map opens a waypoint sheet for that point; the menu is on the button
+            double offsetX;
+            double offsetY;
+            screenToWorldOffset(x - width / 2.0, y - height / 2.0, offsetX, offsetY);
+            openNewWaypoint(worldYToLat(centerY + offsetY, zoom), worldXToLon(centerX + offsetX, zoom));
+        } else if (!sheet.isOpen()) {
             openMenu();
         }
     }
@@ -409,7 +564,7 @@ void MapView::handleGesture(const Gesture& gesture) {
             break;
         case GestureType::DoubleTap:
             if (onMap) {
-                setZoom(zoom + 1, gesture.x, gesture.y);
+                zoomBy(1, gesture.x, gesture.y);
             }
             break;
         case GestureType::LongPress:
@@ -418,8 +573,8 @@ void MapView::handleGesture(const Gesture& gesture) {
         case GestureType::Drag:
             if (onMap) {
                 pan(-gesture.dx, -gesture.dy);
-            } else if (!dialog.isOpen()) {
-                // Lists and the About page scroll with the finger, a row at a time
+            } else if (!dialog.isOpen() && !prompt.isOpen() && std::abs(gesture.dy) >= std::abs(gesture.dx)) {
+                // Lists and the About page scroll with the finger, a row at a time; the highlight stays where it is
                 ListView* list = menuOpen ? &menu : activeList();
                 const int rowHeight = list != nullptr ? list->rowHeight() : normalFont.lineHeight();
                 dragRowAccumulator -= gesture.dy;
@@ -427,7 +582,7 @@ void MapView::handleGesture(const Gesture& gesture) {
                     const int step = dragRowAccumulator > 0 ? 1 : -1;
                     dragRowAccumulator -= step * rowHeight;
                     if (list != nullptr) {
-                        list->move(step);
+                        list->scrollBy(step);
                     } else {
                         scrollAbout(step);
                     }
@@ -435,17 +590,38 @@ void MapView::handleGesture(const Gesture& gesture) {
                 }
             }
             break;
+        case GestureType::SwipeBack:
+            // One level back in lists, popups and About; on the map a swipe is only a drag
+            if (!onMap && !dialog.isOpen() && !prompt.isOpen()) {
+                dragRowAccumulator = 0;
+                goBack();
+            }
+            break;
         case GestureType::PinchStart:
             if (!onMap) {
                 break;
             }
             pinchStepped = false;
-            if (pinchBase != nullptr) {
-                // The map as it is now, scaled live while the fingers move, without drawing vectors again
-                worker.lock();
-                composeView(pinchBase, width, height, centerX, centerY, zoom, lookupTile, this, palette->placeholder);
-                worker.unlock();
+            if (smoothZoom()) {
+                // The cached tiles scaled live while the fingers move, without drawing vectors again
+                animation.active = false;
+                io.hold(false);
                 pinching = true;
+                // Card work waits while the fingers move, so frames do not wait for the shared bus
+                io.hold(true);
+                double offsetX;
+                double offsetY;
+                screenToWorldOffset(gesture.startX - width / 2.0, gesture.startY - height / 2.0, offsetX, offsetY);
+                pinchWorldX = centerX + offsetX;
+                pinchWorldY = centerY + offsetY;
+                if (turn.active) {
+                    // A turn under way ends where it was going
+                    turn.active = false;
+                    applyBearing(turn.to, false);
+                }
+                pinchTurning = false;
+                pinchStartBearing = bearing;
+                headingUp = false;
                 pinchScale = 1.0f;
                 pinchStartX = gesture.startX;
                 pinchStartY = gesture.startY;
@@ -460,7 +636,20 @@ void MapView::handleGesture(const Gesture& gesture) {
                 pinchScale = gesture.scale;
                 pinchX = gesture.x;
                 pinchY = gesture.y;
+                // Turning starts once the fingers twisted far enough, and from there follows them; fingers turning
+                // clockwise turn the map clockwise, so the bearing goes the other way
+                if (!pinchTurning && std::fabs(gesture.rotation) >= (pinchStartBearing == 0.0f ? PINCH_TURN_START_NORTH : PINCH_TURN_START)) {
+                    pinchTurning = true;
+                    pinchTwistStart = gesture.rotation;
+                }
+                if (pinchTurning) {
+                    applyBearing(pinchStartBearing - (gesture.rotation - pinchTwistStart), false);
+                }
                 dirty = true;
+            } else if (!pinchStepped && onMap && std::fabs(gesture.rotation) >= 3.0f * PINCH_TURN_START) {
+                // Without live drawing (e-paper, or switched off) a clear twist turns the map once by 45 degrees
+                setBearing(bearing + (gesture.rotation > 0.0f ? -45.0f : 45.0f), false);
+                pinchStepped = true;
             } else if (!pinchStepped && onMap) {
                 // Without live scaling (e-paper, or switched off) one zoom step per pinch
                 if (gesture.scale > 1.5f) {

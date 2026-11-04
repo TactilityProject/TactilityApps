@@ -62,13 +62,28 @@ bool BinFontText::open(const char* folder, const char* const* prefixes, int pref
             BinFontMetrics metrics;
             binfont_get_metrics(font, &metrics);
             height = metrics.line_height;
-            ascent = metrics.ascent;
+            ascentPixels = metrics.ascent;
             logInfo("Font %s, line height %d", search.name, height);
             return true;
         }
         font = nullptr;
     }
     return false;
+}
+
+bool BinFontText::openFile(const char* path) {
+    close();
+    if (binfont_open_file(path, &font) != ERROR_NONE) {
+        font = nullptr;
+        return false;
+    }
+    owned = true;
+    BinFontMetrics metrics;
+    binfont_get_metrics(font, &metrics);
+    height = metrics.line_height;
+    ascentPixels = metrics.ascent;
+    logInfo("Font file %s, line height %d", path, height);
+    return true;
 }
 
 bool BinFontText::borrow(int lvglFontSize) {
@@ -83,7 +98,7 @@ bool BinFontText::borrow(int lvglFontSize) {
     BinFontMetrics metrics;
     binfont_get_metrics(font, &metrics);
     height = metrics.line_height;
-    ascent = metrics.ascent;
+    ascentPixels = metrics.ascent;
     logInfo("Font from the system, size %d, line height %d", lvglFontSize, height);
     return true;
 }
@@ -138,7 +153,31 @@ void BinFontText::drawText(Canvas& canvas, int x, int y, const char* text, uint1
             return;
         }
     }
-    binfont_draw_text_rgb565(target, x, y + ascent, font, text, color, PIXEL_BUFFER_CONVERSION_AVERAGE);
+    binfont_draw_text_rgb565(target, x, y + ascentPixels, font, text, color, PIXEL_BUFFER_CONVERSION_AVERAGE);
+}
+
+bool BinFontText::glyph(uint32_t codepoint, LabelGlyph& out, bool withMask) {
+    BinFontGlyph found;
+    if (font == nullptr || !binfont_get_glyph(font, codepoint, &found)) {
+        return false;
+    }
+    out.id = found.glyph_id;
+    out.advanceX16 = static_cast<int>(found.advance_x16);
+    out.left = found.x;
+    // binfont gives the box's bottom above the baseline, labels want its top below it
+    out.top = -(found.y + found.height);
+    out.width = found.width;
+    out.height = found.height;
+    out.alpha = nullptr;
+    if (withMask && found.width > 0 && found.height > 0 && found.width * found.height <= MASK_BYTES &&
+        binfont_get_glyph_bitmap(font, &found, mask, found.width) == ERROR_NONE) {
+        out.alpha = mask;
+    }
+    return true;
+}
+
+int BinFontText::kerningX16(uint32_t leftId, uint32_t rightId) {
+    return font != nullptr ? binfont_get_kerning_x16(font, leftId, rightId) : 0;
 }
 
 } // namespace maps

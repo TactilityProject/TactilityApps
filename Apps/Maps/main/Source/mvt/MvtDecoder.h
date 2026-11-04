@@ -40,6 +40,7 @@ class MvtDecoder {
 public:
     static constexpr int CHUNK_POINTS = 256;
     static constexpr int VALUE_POOL_SIZE = 8192;
+    static constexpr int NAME_POOL_SIZE = 24576;
 
     MvtDecoder() = default;
     ~MvtDecoder();
@@ -60,34 +61,49 @@ public:
     InflateReader::Format format() const { return reader.format(); }
 
 private:
+    struct ValueEntry {
+        uint16_t code;
+        uint8_t textLength;
+        uint8_t hasText;
+        union {
+            uint32_t textOffset;
+            int32_t rank;
+        };
+    };
+
     struct LayerTable {
-        int8_t fileIndex;
-        int16_t classKey;
-        int16_t subclassKey;
-        int16_t brunnelKey;
-        int16_t adminLevelKey;
-        int16_t maritimeKey;
-        int16_t rampKey;
-        uint32_t valueOffset;
-        uint32_t valueCount;
-        int32_t extent;
+        int8_t fileIndex = -1;
+        int16_t classKey = -1;
+        int16_t subclassKey = -1;
+        int16_t brunnelKey = -1;
+        int16_t adminLevelKey = -1;
+        int16_t maritimeKey = -1;
+        int16_t rampKey = -1;
+        int16_t nameKey = -1;
+        int16_t nameLatinKey = -1;
+        int16_t rankKey = -1;
+        uint32_t valueOffset = 0;
+        uint32_t valueCount = 0;
+        int32_t extent = 4096;
     };
 
     bool readVarint(uint64_t& value);
     bool readLayerName(size_t layerEnd, Layer& layer);
     bool scanLayer(size_t layerEnd, LayerTable& table, Layer layer);
-    bool scanValue(size_t valueEnd, uint16_t& code);
+    bool scanValue(size_t valueEnd, ValueEntry& entry);
     bool decodeFeature(size_t featureEnd, Layer layer, GeometrySink& sink);
     void applyTag(const LayerTable& table, uint32_t key, uint32_t value, FeatureInfo& info) const;
     bool decodeGeometry(size_t geometryEnd, GeometrySink& sink);
     bool skipField(uint32_t wireType);
-    uint16_t valueCode(const LayerTable& table, uint32_t index) const;
+    const ValueEntry* valueEntry(const LayerTable& table, uint32_t index) const;
 
     InflateReader reader;
     ByteInput* input = nullptr;
     LayerTable tables[static_cast<int>(Layer::Count)] {};
-    uint16_t* valuePool = nullptr;
+    ValueEntry* valuePool = nullptr;
     uint32_t valuePoolUsed = 0;
+    char* namePool = nullptr;
+    uint32_t namePoolUsed = 0;
     TilePoint* chunk = nullptr;
     size_t totalSize = 0;
 };

@@ -39,6 +39,15 @@ const uint16_t* TileCache::find(const TileKey& tile) {
     return nullptr;
 }
 
+int TileCache::sourceZoomOf(const TileKey& tile) const {
+    for (int i = 0; i < count; i++) {
+        if (slots[i].valid && slots[i].key == tile) {
+            return slots[i].sourceZoom;
+        }
+    }
+    return -1;
+}
+
 const uint16_t* TileCache::peek(const TileKey& tile) const {
     for (int i = 0; i < count; i++) {
         if (slots[i].valid && slots[i].key == tile) {
@@ -63,7 +72,7 @@ uint16_t* TileCache::reserve(const TileKey& tile) {
     }
     int victim = -1;
     for (int i = 0; i < count; i++) {
-        if (slots[i].reserved) {
+        if (slots[i].reserved || slots[i].pixels == nullptr) {
             continue;
         }
         if (!slots[i].valid) {
@@ -126,11 +135,50 @@ void TileCache::dropMagnified(const TileKey* arrived, int count) {
         const TileKey& tile = arrived[i];
         for (int j = 0; j < this->count; j++) {
             Slot& slot = slots[j];
-            if (slot.valid && tile.z > slot.sourceZoom && tile.z <= slot.key.z && ancestorOf(slot.key, tile.z) == tile) {
+            if (slot.valid && tile.z >= slot.sourceZoom && tile.z <= slot.key.z && ancestorOf(slot.key, tile.z) == tile) {
                 slot.stale = true;
             }
         }
     }
+}
+
+bool TileCache::freeSlot() {
+    int victim = -1;
+    for (int i = 0; i < count; i++) {
+        if (slots[i].reserved || slots[i].pixels == nullptr) {
+            continue;
+        }
+        if (!slots[i].valid) {
+            victim = i;
+            break;
+        }
+        if (victim < 0 || slots[i].lastUse < slots[victim].lastUse) {
+            victim = i;
+        }
+    }
+    if (victim < 0) {
+        return false;
+    }
+    largeFree(slots[victim].pixels);
+    slots[victim].pixels = nullptr;
+    slots[victim].valid = false;
+    freed++;
+    return true;
+}
+
+int TileCache::regrow() {
+    for (int i = 0; i < count && freed > 0; i++) {
+        if (slots[i].pixels != nullptr) {
+            continue;
+        }
+        auto* pixels = static_cast<uint16_t*>(largeAlloc(TILE_BYTES));
+        if (pixels == nullptr) {
+            break;
+        }
+        slots[i] = { { -1, 0, 0 }, 0, false, false, false, 0, pixels };
+        freed--;
+    }
+    return freed;
 }
 
 void TileCache::clear() {

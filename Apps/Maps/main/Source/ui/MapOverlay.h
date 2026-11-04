@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Canvas.h"
+#include "Widgets.h"
 
 #include <cstdint>
 
@@ -31,8 +32,11 @@ public:
     /** The top of the scale bar box, buttons above it keep clear of it. */
     int scaleBarTop(const Canvas& canvas) const;
     void drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette);
-    /** A small rounded message at the top of the screen, for progress. */
-    void drawPill(Canvas& canvas, const char* text, const Palette& palette);
+    /**
+     * A small rounded message at the top of the screen, for progress. Text too wide for the screen uses the small font
+     * and is cut. Returns where the pill is, so a tap on it can open the details.
+     */
+    Rect drawPill(Canvas& canvas, const char* text, const Palette& palette);
     /** A short message of up to two lines above the bottom edge. */
     void drawToast(Canvas& canvas, const char* text, const UiTheme& theme);
     void drawMarker(Canvas& canvas, int x, int y, bool hasCourse, float courseDegrees, const Palette& palette);

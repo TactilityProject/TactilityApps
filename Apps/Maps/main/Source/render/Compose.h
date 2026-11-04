@@ -26,4 +26,55 @@ void scaleView(const uint16_t* source, uint16_t* target, int width, int height, 
 /** The whole zoom level nearest to zoom scaled by scale, within 0 and maxZoom. */
 int snapZoom(int zoom, float scale, int maxZoom);
 
+/**
+ * Where the screen samples the world: the world pixel at zoom of the screen point (sx, sy), measured from the
+ * screen centre, is (centerX + a * sx + b * sy, centerY + c * sx + d * sy). A plain view is a = d = 1, b = c = 0;
+ * a = d = 1 / scale magnifies by scale; a rotation fills in b and c.
+ */
+struct AffineView {
+    double centerX;
+    double centerY;
+    int zoom;
+    float a;
+    float b;
+    float c;
+    float d;
+};
+
+/**
+ * The view of a map magnified by scale around the screen point (anchorX, anchorY), which shows the world point at zoom
+ * (worldX, worldY), turned by the angle whose cosine and sine are given (a screen offset turns by it into a world offset).
+ */
+AffineView scaledView(double worldX, double worldY, int zoom, float scale, float anchorX, float anchorY, int width, int height,
+    float cosine = 1.0f, float sine = 0.0f);
+
+/** Working memory of composeAffine, about 6 KB: too much for a task stack, so the caller keeps one (in PSRAM). */
+struct AffineScratch {
+    static constexpr int MAX_GRID = 12;
+    static constexpr int MAX_WIDTH = 1024;
+
+    /** How the pixels of one tile of the view are found: in the tile itself, in an ancestor, or in its four children. */
+    struct Cell {
+        const uint16_t* pixels;
+        /** Children, top left, top right, bottom left, bottom right, when pixels is null. */
+        const uint16_t* children[4];
+        /** Where the tile lies in the ancestor's pixels, and how many levels up (0 for the tile itself). */
+        int16_t originX;
+        int16_t originY;
+        uint8_t shift;
+        bool hasChildren;
+    };
+
+    Cell cells[MAX_GRID * MAX_GRID];
+    int16_t columns[MAX_WIDTH];
+};
+
+/**
+ * Draws the view through an affine transform from rendered tiles, nearest pixel: for zoom animations and pinch, and
+ * later rotation. A tile that is not ready is stood in for by a cached ancestor (magnified) or by its four children
+ * (shrunk). lookup must return only tiles that are really rendered. Returns the number of tiles drawn as placeholder.
+ */
+int composeAffine(uint16_t* view, int width, int height, const AffineView& transform, TileLookup lookup, void* context, uint16_t placeholder,
+    AffineScratch& scratch);
+
 } // namespace maps

@@ -2,6 +2,7 @@
 #include "Raster.h"
 
 #include "../platform/Platform.h"
+#include "Style.h"
 
 #include <algorithm>
 #include <cmath>
@@ -283,10 +284,11 @@ void Raster::addDot(float x, float y, float radius) {
     }
 }
 
-void Raster::fill(uint16_t* pixels, int pixelStride, uint16_t color, uint8_t opacity) {
+void Raster::fill(uint16_t* pixels, int pixelStride, uint16_t color, uint8_t opacity, uint8_t pattern, int originX, int originY) {
     if (isEmpty()) {
         return;
     }
+    const bool patterned = pattern != PATTERN_NONE;
     const float scale = static_cast<float>(opacity) * (32.0f / 255.0f);
     for (int row = minRow; row <= maxRow; row++) {
         const int first = rowFirst[row];
@@ -305,11 +307,18 @@ void Raster::fill(uint16_t* pixels, int pixelStride, uint16_t color, uint8_t opa
                 continue;
             }
             const float coverage = std::min(1.0f, std::fabs(sum));
-            const auto alpha = static_cast<uint32_t>(coverage * scale + 0.5f);
-            if (alpha >= 32) {
-                out[column] = color;
-            } else if (alpha > 0) {
-                out[column] = blendRgb565(color, out[column], alpha);
+            if (patterned) {
+                // No anti-aliasing: a partly covered pixel is either in or out
+                if (coverage >= 0.5f && patternBit(pattern, originX + column, originY + row)) {
+                    out[column] = color;
+                }
+            } else {
+                const auto alpha = static_cast<uint32_t>(coverage * scale + 0.5f);
+                if (alpha >= 32) {
+                    out[column] = color;
+                } else if (alpha > 0) {
+                    out[column] = blendRgb565(color, out[column], alpha);
+                }
             }
             if (column == last && last < rasterWidth - 1 && std::fabs(sum) > 1e-3f) {
                 last = rasterWidth - 1;

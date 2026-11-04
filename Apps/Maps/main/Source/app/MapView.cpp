@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "MapView.h"
 
+#include <app/paths.h>
+
 #include "../platform/Platform.h"
 #include "../render/Compose.h"
 
 #include <lvgl.h>
 #include <lvgl/fonts.h>
 #include <tactility/drivers/display.h>
+#include <tactility/drivers/power_supply.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_timer.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -25,6 +30,13 @@ namespace {
  */
 constexpr int TILE_CACHE_SLOTS = 20;
 constexpr uint32_t LOOP_INTERVAL_MS = 15;
+/** How long a +/- or double tap zoom step is animated. */
+constexpr float ZOOM_ANIMATION_MS = 220.0f;
+constexpr uint32_t POINTER_HIDE_MS = 3000;
+/** Idle-time updates start after this long without input, on Wi-Fi, charging or above UPDATE_MIN_BATTERY percent. */
+constexpr uint32_t UPDATE_IDLE_MS = 30000;
+constexpr uint32_t POWER_CHECK_MS = 10000;
+constexpr int UPDATE_MIN_BATTERY = 40;
 /** The map opens at ESA ESTEC, Noordwijk, the first time, then where it was left. */
 constexpr double DEFAULT_LAT = 52.2186;
 constexpr double DEFAULT_LON = 4.4206;
@@ -36,6 +48,10 @@ constexpr uint32_t LOCATION_CHECK_MS = 3000;
 constexpr uint32_t TOAST_SHOW_MS = 3500;
 constexpr uint32_t STATUS_POLL_MS = 500;
 constexpr uint32_t MESSAGE_SHOW_MS = 4000;
+/** A failed download says so longer, and tries again after a while, a few times. */
+constexpr uint32_t FAILED_MESSAGE_SHOW_MS = 10000;
+constexpr uint32_t RETRY_AFTER_MS = 30000;
+constexpr int MAX_RETRIES = 3;
 constexpr uint32_t ENTER_RELEASE_MS = 150;
 constexpr uint32_t GAP_POLL_MS = 300;
 constexpr uint32_t SLOW_LOOP_MS = 150;
@@ -50,6 +66,8 @@ constexpr int MIN_LINE_HEIGHT = 15;
 } // namespace
 
 bool MapView::begin(Device* display, const char* root, const char* dataPath) {
+    // Idle time is counted from the start, not from boot
+    lastInputAt = nowMs();
     snprintf(rootPath, sizeof(rootPath), "%s", root);
     if (!output.begin(display)) {
         logError("Display output failed");
@@ -62,7 +80,8 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     theme = uiTheme(*palette, monochrome);
     frame = static_cast<uint16_t*>(largeAlloc(static_cast<size_t>(width) * height * sizeof(uint16_t)));
     preview = static_cast<uint16_t*>(largeAlloc(TileCache::TILE_BYTES));
-    if (frame == nullptr || preview == nullptr) {
+    scratch = static_cast<AffineScratch*>(largeAlloc(sizeof(AffineScratch)));
+    if (frame == nullptr || preview == nullptr || scratch == nullptr) {
         logError("Out of memory");
         return false;
     }
@@ -95,40 +114,72 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         if (!smallFont.borrow(FONT_SIZE_SMALL)) {
             smallFont.open(folder, SMALL_FONTS, 1);
         }
+        largeFont.borrow(FONT_SIZE_LARGE);
+        // The label fonts made on an earlier run; the ones missing are made in the background after the labels start
+        for (int i = 0; i < LabelFontMaker::COUNT; i++) {
+            char fontPath[200];
+            LabelFontMaker::cachePath(root, i, fontPath, sizeof(fontPath));
+            if (!fileExists(fontPath) || !labelFonts[i].openFile(fontPath)) {
+                missingLabelFonts |= 1u << i;
+            }
+        }
         script.open(root);
         return true;
     };
     runOnCard(io, loadState);
     logInfo("Map root %s, %d regions", root, regionsFound);
+    loadWaypoints();
+    // Known before any download resumes: a region with a catalog outline needs it for its tile list
+    app_paths_get_assets_path(APP_ID, "regions.bin", catalogPath, sizeof(catalogPath));
+    downloader.setCatalogPath(catalogPath);
+    TrackRecorder::closeUnfinished(io, rootPath);
+    // GPX files are dropped into gpx/ at the top of the card, where users find it
+    const char* second = strchr(rootPath + 1, '/');
+    snprintf(gpxFolder, sizeof(gpxFolder), "%.*s/gpx", second != nullptr ? static_cast<int>(second - rootPath) : 0, rootPath);
+    loadShownGpx();
     overlay.setFonts(&normalFont, smallFont.isOpen() && smallFont.lineHeight() >= MIN_LINE_HEIGHT ? &smallFont : &normalFont);
-    // Live pinch scaling is off on monochrome displays, e-paper could not show it
-    if (settings.smoothPinch && !monochrome) {
-        pinchBase = static_cast<uint16_t*>(largeAlloc(static_cast<size_t>(width) * height * sizeof(uint16_t)));
-    }
     worker.setDeflatePrepared(settings.deflatePrepared);
     worker.setSdCache(settings.sdCache);
+    // Labels: sections copied by the render lanes, placed by the map loop; without memory the map has none
+    labelsReady = labelStore.begin() && labels.begin(largeAlloc, largeFree);
+    if (labelsReady) {
+        worker.setLabelStore(&labelStore);
+        labels.setClock([] { return static_cast<uint32_t>(esp_timer_get_time()); });
+        applyLabelFonts();
+        applyLabelSettings();
+    } else {
+        logError("No memory for labels");
+    }
+    if (labelsReady && missingLabelFonts != 0) {
+        char ttfPath[260];
+        app_paths_get_assets_path(APP_ID, "fonts/LabelSans.ttf", ttfPath, sizeof(ttfPath));
+        fontMaker.configure(io, root, ttfPath);
+        fontMaker.start(missingLabelFonts);
+    }
     if (!worker.start(&store, &io, palette, TILE_CACHE_SLOTS, root)) {
         return false;
     }
     input.begin();
+    pointerAcceleration.setSpeed(settings.pointerSpeed);
+    cursorX = width / 2;
+    cursorY = height / 2;
     // The overlay adapts to the inputs the board has: key hints with a keyboard, focus without touch or pointer
     controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
     controls.layout(width, height, overlay.scaleBarTop(canvas));
     downloadView = downloadLayout(width, height, overlay.font().lineHeight());
     downloader.setTiming(settings.devProbe);
+    downloader.setMemoryRelief([](void* context, size_t bytes) { return static_cast<TileWorker*>(context)->relieveMemory(bytes); }, &worker);
     if (!downloader.start(root, &store, &io)) {
         logError("Downloader not started");
     }
-    if (settings.devProbe) {
-        probe.watch(xTaskGetCurrentTaskHandle(), "main");
-        probe.watch(worker.laneTask(0), "lane0");
-        probe.watch(worker.laneTask(1), "lane1");
-        probe.watch(io.taskHandle(), "io");
-        probe.watch(downloader.controlTaskHandle(), "download");
-        probe.watch(downloader.browseTaskHandle(), "browse");
-        if (!probe.start()) {
-            logError("Stall probes not started");
-        }
+    probe.watch(xTaskGetCurrentTaskHandle(), "main");
+    probe.watch(worker.laneTask(0), "lane0");
+    probe.watch(worker.laneTask(1), "lane1");
+    probe.watch(io.taskHandle(), "io");
+    probe.watch(downloader.controlTaskHandle(), "download");
+    probe.watch(downloader.browseTaskHandle(), "browse");
+    if (!(settings.devProbe ? probe.start() : probe.startWatchdog())) {
+        logError("Stall probes not started");
     }
 
     if (hasSavedView) {
@@ -153,6 +204,20 @@ void MapView::end() {
         saveView();
         viewReady = false;
     }
+    // The track file gets its end tags; recording only runs while the app is open
+    recorder.stop(io, nowMs());
+    for (int wait = 0; gpxImport.state() == GpxImport::State::Busy && wait < 500; wait++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    gpxImport.acknowledge();
+    for (int i = 0; i < gpxFileCount; i++) {
+        if (gpxFiles[i].layer != nullptr) {
+            gpxFiles[i].layer->~GpxLayer();
+            largeFree(gpxFiles[i].layer);
+            gpxFiles[i].layer = nullptr;
+        }
+    }
+    fontMaker.stop();
     downloader.stop();
     worker.stop();
     io.stop();
@@ -167,15 +232,21 @@ void MapView::end() {
         eventGroupReady = false;
     }
     input.end();
+    labels.end();
+    labelStore.end();
     normalFont.close();
     smallFont.close();
+    largeFont.close();
+    for (BinFontText& font : labelFonts) {
+        font.close();
+    }
     output.end();
     largeFree(frame);
     frame = nullptr;
     largeFree(preview);
     preview = nullptr;
-    largeFree(pinchBase);
-    pinchBase = nullptr;
+    largeFree(scratch);
+    scratch = nullptr;
     largeFree(aboutBuffer);
     aboutBuffer = nullptr;
 }
@@ -193,8 +264,9 @@ void MapView::setZoom(int newZoom, int anchorX, int anchorY) {
         return;
     }
     // The world point under the anchor stays where it is on the screen
-    const double offsetX = anchorX - width / 2.0;
-    const double offsetY = anchorY - height / 2.0;
+    double offsetX;
+    double offsetY;
+    screenToWorldOffset(anchorX - width / 2.0, anchorY - height / 2.0, offsetX, offsetY);
     const double scale = std::ldexp(1.0, newZoom - zoom);
     centerX = (centerX + offsetX) * scale - offsetX;
     centerY = (centerY + offsetY) * scale - offsetY;
@@ -203,26 +275,188 @@ void MapView::setZoom(int newZoom, int anchorX, int anchorY) {
     updateWanted();
 }
 
+void MapView::zoomBy(int steps, int anchorX, int anchorY) {
+    const int target = std::min(std::max(zoom + steps, 0), MAX_VIEW_ZOOM);
+    if (target == zoom) {
+        return;
+    }
+    if (!smoothZoom()) {
+        animation.active = false;
+        io.hold(false);
+        setZoom(target, anchorX, anchorY);
+        return;
+    }
+    // Where the animation shows the map now: the current scale, or 1 when none runs. A second press during an
+    // animation starts from what is on screen.
+    const uint32_t now = nowMs();
+    float scale = 1.0f;
+    double anchorWorldX;
+    double anchorWorldY;
+    screenToWorldOffset(anchorX - width / 2.0, anchorY - height / 2.0, anchorWorldX, anchorWorldY);
+    double worldX = centerX + anchorWorldX;
+    double worldY = centerY + anchorWorldY;
+    if (animation.active) {
+        const float t = std::min(1.0f, static_cast<float>(now - animation.startMs) / ZOOM_ANIMATION_MS);
+        const float eased = 1.0f - (1.0f - t) * (1.0f - t);
+        scale = powf(animation.fromScale, 1.0f - eased);
+        double movedX;
+        double movedY;
+        screenToWorldOffset((anchorX - animation.anchorX) / scale, (anchorY - animation.anchorY) / scale, movedX, movedY);
+        worldX = animation.worldX + movedX;
+        worldY = animation.worldY + movedY;
+    }
+    // The world point under the anchor stays there through the animation and after it
+    const double factor = std::ldexp(1.0, target - zoom);
+    const double worldSize = std::ldexp(static_cast<double>(TILE_SIZE), target);
+    worldX *= factor;
+    worldY *= factor;
+    centerX = std::fmod(worldX - anchorWorldX + worldSize, worldSize);
+    centerY = std::fmin(std::fmax(worldY - anchorWorldY, 0.0), worldSize);
+    animation.active = true;
+    io.hold(true);
+    animation.startMs = now;
+    animation.fromScale = scale / static_cast<float>(factor);
+    animation.anchorX = static_cast<float>(anchorX);
+    animation.anchorY = static_cast<float>(anchorY);
+    animation.worldX = worldX;
+    animation.worldY = worldY;
+    animation.frames = 0;
+    animation.composeMs = 0;
+    animation.slowestFrameMs = 0;
+    animation.slowestLockMs = 0;
+    animation.slowestComposeMs = 0;
+    zoom = target;
+    dirty = true;
+    // The tiles of the new level are asked for when the animation ends: their reads from the card hold the SPI bus
+    // the T-Deck's display shares, which stalled animation frames by up to 240 ms
+}
+
+void MapView::screenToWorldOffset(double sx, double sy, double& wx, double& wy) const {
+    wx = bearingCos * sx - bearingSin * sy;
+    wy = bearingSin * sx + bearingCos * sy;
+}
+
+void MapView::worldToScreenOffset(double wx, double wy, double& sx, double& sy) const {
+    sx = bearingCos * wx + bearingSin * wy;
+    sy = -bearingSin * wx + bearingCos * wy;
+}
+
+void MapView::viewBounds(double& left, double& top, double& right, double& bottom) const {
+    // The world box around the four turned screen corners
+    const double halfWidth = width / 2.0;
+    const double halfHeight = height / 2.0;
+    const double spanX = std::fabs(bearingCos) * halfWidth + std::fabs(bearingSin) * halfHeight;
+    const double spanY = std::fabs(bearingSin) * halfWidth + std::fabs(bearingCos) * halfHeight;
+    left = centerX - spanX;
+    right = centerX + spanX;
+    top = centerY - spanY;
+    bottom = centerY + spanY;
+}
+
+void MapView::applyBearing(float degrees, bool want) {
+    degrees -= 360.0f * std::floor(degrees / 360.0f);
+    // Within a tenth of a degree of north is north, so the fast unturned drawing comes back
+    if (degrees < 0.1f || degrees > 359.9f) {
+        degrees = 0.0f;
+    }
+    if (degrees == bearing) {
+        return;
+    }
+    bearing = degrees;
+    const float radians = degrees * 0.017453292f;
+    bearingCos = degrees == 0.0f ? 1.0f : std::cos(radians);
+    bearingSin = degrees == 0.0f ? 0.0f : std::sin(radians);
+    dirty = true;
+    if (want) {
+        updateWanted();
+    }
+}
+
+Rect MapView::compassRect() const {
+    return { width - 6 - 30, 6, 30, 30 };
+}
+
+void MapView::drawCompass() {
+    // A needle to north, red half towards it, in a round panel; only on a turned map
+    const Rect r = compassRect();
+    const float cx = r.x + r.width / 2.0f;
+    const float cy = r.y + r.height / 2.0f;
+    float shown = bearing;
+    if (turn.active) {
+        const float t = std::min(1.0f, static_cast<float>(nowMs() - turn.startMs) / TURN_ANIMATION_MS);
+        shown = turn.from + (turn.to - turn.from) * (1.0f - (1.0f - t) * (1.0f - t));
+    }
+    const float radians = shown * 0.017453292f;
+    // North on screen is the world's up turned back by the bearing
+    const float northX = -std::sin(radians);
+    const float northY = -std::cos(radians);
+    canvas.fillCircle(cx, cy, 14.0f, theme.panel);
+    canvas.ring(cx, cy, 14.0f, 1.5f, theme.text);
+    canvas.line(cx, cy, cx + northX * 10.0f, cy + northY * 10.0f, 3.0f, monochrome ? theme.text : static_cast<uint16_t>(0xD8A3));
+    canvas.line(cx, cy, cx - northX * 10.0f, cy - northY * 10.0f, 3.0f, monochrome ? theme.panel : theme.text);
+    canvas.fillCircle(cx, cy, 2.0f, theme.text);
+}
+
+void MapView::setBearing(float degrees, bool animate) {
+    // A turn already running continues from where it shows the map now
+    float current = bearing;
+    if (turn.active) {
+        const float t = std::min(1.0f, static_cast<float>(nowMs() - turn.startMs) / TURN_ANIMATION_MS);
+        current = turn.from + (turn.to - turn.from) * (1.0f - (1.0f - t) * (1.0f - t));
+        turn.active = false;
+        io.hold(false);
+    }
+    if (!animate || !smoothZoom()) {
+        applyBearing(degrees);
+        return;
+    }
+    // The shorter way round
+    float target = degrees - 360.0f * std::floor(degrees / 360.0f);
+    float delta = target - current;
+    delta -= 360.0f * std::floor((delta + 180.0f) / 360.0f);
+    if (std::fabs(delta) < 0.1f) {
+        applyBearing(target);
+        return;
+    }
+    turn.active = true;
+    // Card work waits during the turn, its reads would hold the display's shared bus
+    io.hold(true);
+    turn.from = current;
+    turn.to = current + delta;
+    turn.startMs = nowMs();
+    turn.frames = 0;
+    turn.composeMs = 0;
+    dirty = true;
+}
+
 void MapView::pan(double dx, double dy) {
     if (dx == 0.0 && dy == 0.0) {
         return;
     }
     following = false;
+    headingUp = false;
+    double worldDx;
+    double worldDy;
+    screenToWorldOffset(dx, dy, worldDx, worldDy);
     const double worldSize = std::ldexp(static_cast<double>(TILE_SIZE), zoom);
-    centerX = std::fmod(centerX + dx + worldSize, worldSize);
-    centerY = std::fmin(std::fmax(centerY + dy, 0.0), worldSize);
+    centerX = std::fmod(centerX + worldDx + worldSize, worldSize);
+    centerY = std::fmin(std::fmax(centerY + worldDy, 0.0), worldSize);
     dirty = true;
     updateWanted();
 }
 
 void MapView::updateWanted() {
-    // The visible tiles first, nearest to the centre first, then a ring around them
-    const double left = centerX - width / 2.0;
-    const double top = centerY - height / 2.0;
+    // The visible tiles first, nearest to the centre first, then a ring around them; a turned view needs the tiles
+    // of the box around it (up to its 400 px diagonal on the T-Deck)
+    double left;
+    double top;
+    double right;
+    double bottom;
+    viewBounds(left, top, right, bottom);
     const int firstX = static_cast<int>(std::floor(left / TILE_SIZE)) - 1;
     const int firstY = static_cast<int>(std::floor(top / TILE_SIZE)) - 1;
-    const int lastX = static_cast<int>(std::floor((left + width - 1) / TILE_SIZE)) + 1;
-    const int lastY = static_cast<int>(std::floor((top + height - 1) / TILE_SIZE)) + 1;
+    const int lastX = static_cast<int>(std::floor((right - 1) / TILE_SIZE)) + 1;
+    const int lastY = static_cast<int>(std::floor((bottom - 1) / TILE_SIZE)) + 1;
     TileKey tiles[TileWorker::MAX_WANTED];
     double distances[TileWorker::MAX_WANTED];
     int count = 0;
@@ -255,12 +489,24 @@ void MapView::updateWanted() {
         visibleCount++;
     }
     worker.want(tiles, count, visibleCount);
+    // Detail asked for an earlier view is not fetched any more once the view has moved on from it
+    const int sourceZoom = std::min(zoom, MAX_SOURCE_ZOOM);
+    const int shift = zoom - sourceZoom;
+    // A view as wide as the world keeps every column
+    const bool allColumns = lastX - firstX + 1 >= tileCount;
+    downloader.keepBrowse(sourceZoom, allColumns ? 0 : wrapTileX(firstX, zoom) >> shift, std::max(firstY, 0) >> shift,
+        allColumns ? (1 << sourceZoom) - 1 : wrapTileX(lastX, zoom) >> shift, std::min(lastY, tileCount - 1) >> shift);
+    downloader.setView({ worldXToLon(left, zoom), worldYToLat(bottom, zoom), worldXToLon(right, zoom), worldYToLat(top, zoom) });
     viewChangedAt = nowMs();
     viewTimed = false;
 }
 
 const uint16_t* MapView::lookupTile(const TileKey& tile, void* context) {
     return static_cast<MapView*>(context)->findTile(tile);
+}
+
+const uint16_t* MapView::lookupCached(const TileKey& tile, void* context) {
+    return static_cast<MapView*>(context)->worker.cache().find(tile);
 }
 
 const uint16_t* MapView::findTile(const TileKey& tile) {
@@ -287,17 +533,52 @@ const uint16_t* MapView::findTile(const TileKey& tile) {
         }
         return preview;
     }
+    // After zooming out, the finer tiles that were just on screen stand in, shrunk, instead of an empty screen
+    for (int level = 1; level <= 2 && tile.z + level <= MAX_VIEW_ZOOM; level++) {
+        const int span = 1 << level;
+        const int size = TILE_SIZE >> level;
+        bool any = false;
+        for (int childY = 0; childY < span; childY++) {
+            for (int childX = 0; childX < span; childX++) {
+                const TileKey child { tile.z + level, (tile.x << level) + childX, (tile.y << level) + childY };
+                const uint16_t* pixels = cache.find(child);
+                for (int y = 0; y < size; y++) {
+                    uint16_t* target = preview + (childY * size + y) * TILE_SIZE + childX * size;
+                    if (pixels == nullptr) {
+                        for (int x = 0; x < size; x++) {
+                            target[x] = palette->placeholder;
+                        }
+                        continue;
+                    }
+                    // Average of two pixels on a row: halves aliasing for little work
+                    const uint16_t* source = pixels + (y << level) * TILE_SIZE;
+                    for (int x = 0; x < size; x++) {
+                        const uint16_t a = source[x << level];
+                        const uint16_t b = source[(x << level) + 1];
+                        target[x] = static_cast<uint16_t>(((a & 0xF7DE) >> 1) + ((b & 0xF7DE) >> 1) + (a & b & 0x0821));
+                    }
+                }
+                any = any || pixels != nullptr;
+            }
+        }
+        if (any) {
+            return preview;
+        }
+    }
     return nullptr;
 }
 
 bool MapView::isViewComplete() {
-    const double left = centerX - width / 2.0;
-    const double top = centerY - height / 2.0;
+    double left;
+    double top;
+    double right;
+    double bottom;
+    viewBounds(left, top, right, bottom);
     const int tileCount = 1 << zoom;
     worker.lock();
     bool complete = true;
-    for (int y = static_cast<int>(std::floor(top / TILE_SIZE)); y <= static_cast<int>(std::floor((top + height - 1) / TILE_SIZE)) && complete; y++) {
-        for (int x = static_cast<int>(std::floor(left / TILE_SIZE)); x <= static_cast<int>(std::floor((left + width - 1) / TILE_SIZE)) && complete; x++) {
+    for (int y = static_cast<int>(std::floor(top / TILE_SIZE)); y <= static_cast<int>(std::floor((bottom - 1) / TILE_SIZE)) && complete; y++) {
+        for (int x = static_cast<int>(std::floor(left / TILE_SIZE)); x <= static_cast<int>(std::floor((right - 1) / TILE_SIZE)) && complete; x++) {
             if (y < 0 || y >= tileCount) {
                 continue;
             }
@@ -320,18 +601,27 @@ bool MapView::markerScreenPosition(int& x, int& y) const {
     } else if (dx < -worldSize / 2) {
         dx += worldSize;
     }
-    x = static_cast<int>(std::floor(width / 2.0 + dx + 0.5));
-    y = static_cast<int>(std::floor(height / 2.0 + latToWorldY(position.fix().latitude, zoom) - centerY + 0.5));
+    double sx;
+    double sy;
+    worldToScreenOffset(dx, latToWorldY(position.fix().latitude, zoom) - centerY, sx, sy);
+    x = static_cast<int>(std::floor(width / 2.0 + sx + 0.5));
+    y = static_cast<int>(std::floor(height / 2.0 + sy + 0.5));
     // Far outside the screen only the accuracy circle can still show
     const int reach = 4 * (width + height);
     return x > -reach && y > -reach && x < width + reach && y < height + reach;
 }
 
 void MapView::drawStatus() {
-    char text[80];
+    char text[96];
     const Downloader::Status& status = lastStatus;
+    pillRect = {};
+    bool progress = true;
     if (status.state == Downloader::State::Downloading && status.total > 0) {
-        snprintf(text, sizeof(text), "Downloading %s %d%%", status.region, static_cast<int>(status.done * 100 / status.total));
+        formatProgressPill(TransferKind::Download, statusTitle, status.done, status.total, text, sizeof(text));
+    } else if (status.state == Downloader::State::Updating && status.total > 0) {
+        formatProgressPill(TransferKind::Update, statusTitle, status.done, status.total, text, sizeof(text));
+    } else if (downloader.isBrowsing() && browseTotal > 0) {
+        formatProgressPill(TransferKind::Browse, "", std::min(browseDone + 1, browseTotal), browseTotal, text, sizeof(text));
     } else if (downloader.isBrowsing()) {
         snprintf(text, sizeof(text), "Downloading map");
     } else if (status.state == Downloader::State::Connecting || status.state == Downloader::State::Deleting) {
@@ -339,11 +629,122 @@ void MapView::drawStatus() {
     } else if (static_cast<int32_t>(nowMs() - messageUntil) < 0) {
         snprintf(text, sizeof(text), "%s", status.message);
     } else if (store.regionCount() == 0) {
-        snprintf(text, sizeof(text), "No maps yet: Menu, Download area");
+        snprintf(text, sizeof(text), "No maps yet: Menu, Download map");
+        progress = false;
     } else {
         return;
     }
-    overlay.drawPill(canvas, text, *palette);
+    const Rect rect = overlay.drawPill(canvas, text, *palette);
+    if (progress) {
+        pillRect = rect;
+    }
+}
+
+void MapView::openDownloadCard() {
+    downloadCard.open();
+    fillDownloadCard();
+    controls.hide();
+    dirty = true;
+}
+
+void MapView::fillDownloadCard() {
+    const Downloader::Status& status = lastStatus;
+    const bool running = status.state == Downloader::State::Downloading || status.state == Downloader::State::Updating ||
+        status.state == Downloader::State::Connecting;
+    char lines[5][64];
+    const char* rows[5];
+    int count = 0;
+    auto add = [&](const char* format, auto... values) {
+        snprintf(lines[count], sizeof(lines[count]), format, values...);
+        rows[count] = lines[count];
+        count++;
+    };
+    if (running && status.total > 0) {
+        add("%s %d%%, %d of %d tiles", status.state == Downloader::State::Updating ? "Updating" : "Downloading",
+            static_cast<int>(status.done * 100 / status.total), static_cast<int>(status.done), static_cast<int>(status.total));
+        // The size so far against an estimate from the tiles done
+        char done[16];
+        char estimate[16];
+        formatBytes(status.bytes, done, sizeof(done));
+        const uint64_t total = status.done > 0 ? status.bytes * static_cast<uint64_t>(status.total) / static_cast<uint64_t>(status.done) : 0;
+        formatBytes(total, estimate, sizeof(estimate));
+        add("%s of about %s", done, status.done > 0 ? estimate : "?");
+        const double rate = transferRate.bytesPerSecond();
+        if (rate > 0.0) {
+            char speed[16];
+            formatBytes(static_cast<uint64_t>(rate), speed, sizeof(speed));
+            const int64_t left = transferRate.secondsLeft(status.bytes, total);
+            char remaining[24] = "";
+            if (left >= 0) {
+                formatDuration(left, remaining, sizeof(remaining));
+            }
+            add("%s/s%s%s", speed, left >= 0 ? ", " : "", left >= 0 ? remaining : "");
+            if (left >= 0) {
+                snprintf(lines[count - 1] + strlen(lines[count - 1]), sizeof(lines[0]) - strlen(lines[count - 1]), " left");
+            }
+        } else {
+            add("Measuring the speed...");
+        }
+    } else if (status.state == Downloader::State::Connecting) {
+        add("%s", status.message);
+    } else if (downloader.isBrowsing() && browseTotal > 0) {
+        add("Fetching detail for the screen:");
+        add("%d of %d tiles", std::min(browseDone + 1, browseTotal), browseTotal);
+        add("They are kept in Downloaded maps,");
+        add("region \"browsed\".");
+    } else if (pausedRegion[0] != '\0') {
+        add("Paused. Resume continues where it stopped.");
+    } else {
+        add("%s", status.message[0] != '\0' ? status.message : "Nothing is downloading.");
+    }
+    downloadCard.set(statusTitle[0] != '\0' ? statusTitle : status.region, rows, count, !running);
+    downloadCard.layout(width, height, overlay.font());
+}
+
+void MapView::handleCardButton(DownloadCard::Button button) {
+    dirty = true;
+    switch (button) {
+        case DownloadCard::Button::PauseResume: {
+            const Downloader::Status status = downloader.status();
+            const bool running = status.state == Downloader::State::Downloading || status.state == Downloader::State::Connecting;
+            if (running) {
+                snprintf(pausedRegion, sizeof(pausedRegion), "%s", status.region);
+                downloader.cancel();
+                showToast("Download paused");
+            } else if (status.state == Downloader::State::Updating) {
+                downloader.cancel();
+                showToast("Update paused, it continues in idle time");
+            } else if (pausedRegion[0] != '\0') {
+                downloader.download(pausedRegion);
+                pausedRegion[0] = '\0';
+                showToast("Download continues");
+            }
+            downloadCard.close();
+            break;
+        }
+        case DownloadCard::Button::Cancel: {
+            // Cancelling a download deletes the part already fetched, after asking
+            const Downloader::Status status = downloader.status();
+            const char* region = status.region[0] != '\0' ? status.region : pausedRegion;
+            downloadCard.close();
+            if (region[0] == '\0' || status.state == Downloader::State::Updating) {
+                downloader.cancel();
+                break;
+            }
+            snprintf(cancelRegion, sizeof(cancelRegion), "%s", region);
+            char message[96];
+            snprintf(message, sizeof(message), "Stop and delete the part of %s downloaded so far?", statusTitle[0] != '\0' ? statusTitle : region);
+            dialogPurpose = DialogPurpose::CancelDownload;
+            dialog.open(message, "Delete", true);
+            dialog.layout(width, height, overlay.font());
+            break;
+        }
+        case DownloadCard::Button::Close:
+            downloadCard.close();
+            break;
+        default:
+            break;
+    }
 }
 
 void MapView::pollDownloader(uint32_t now) {
@@ -360,6 +761,9 @@ void MapView::pollDownloader(uint32_t now) {
         RegionMeta meta {};
         auto find = [&] {
             for (int i = 0; i < store.regionCount() && unfinished < 0; i++) {
+                if (strcmp(store.regionName(i), pausedRegion) == 0) {
+                    continue;
+                }
                 char path[PATH_MAX_LENGTH];
                 snprintf(path, sizeof(path), "%s/maps/%s/meta.json", rootPath, store.regionName(i));
                 if (readRegionMeta(path, meta) && !meta.isComplete()) {
@@ -374,22 +778,78 @@ void MapView::pollDownloader(uint32_t now) {
             downloader.download(store.regionName(unfinished));
         }
     }
+    if (retryAt != 0 && static_cast<int32_t>(now - retryAt) >= 0) {
+        retryAt = 0;
+        resumeChecked = false;
+    }
     if (now - lastStatusPoll < STATUS_POLL_MS) {
         return;
     }
     lastStatusPoll = now;
     const Downloader::Status status = downloader.status();
-    worker.setConversionsPaused(status.state == Downloader::State::Connecting || status.state == Downloader::State::Downloading);
+    // Tile cache slots given to a large download come back once nothing downloads
+    if (status.state != Downloader::State::Connecting && status.state != Downloader::State::Downloading &&
+        status.state != Downloader::State::Updating && !downloader.isBrowsing() && worker.cacheShrunk()) {
+        worker.restoreMemory();
+    }
+    downloader.browseProgress(browseDone, browseTotal);
+    if (status.region[0] != '\0' && strcmp(status.region, statusTitleOf) != 0) {
+        // The title users gave the region, not its short folder name
+        snprintf(statusTitleOf, sizeof(statusTitleOf), "%s", status.region);
+        snprintf(statusTitle, sizeof(statusTitle), "%s", status.region);
+        RegionMeta meta {};
+        char path[PATH_MAX_LENGTH];
+        snprintf(path, sizeof(path), "%s/maps/%s/meta.json", rootPath, status.region);
+        auto read = [&] { return readRegionMeta(path, meta); };
+        if (runOnCard(io, read, IoPriority::Background)) {
+            snprintf(statusTitle, sizeof(statusTitle), "%s", regionTitle(meta));
+        }
+    }
+    if (status.state == Downloader::State::Downloading || status.state == Downloader::State::Updating) {
+        transferRate.add(now, status.bytes);
+    } else {
+        transferRate.reset();
+    }
+    // The pill follows browsing too, and goes when it ends
+    const bool browsingNow = downloader.isBrowsing();
+    if (browsingNow != lastBrowsing || browseDone != lastBrowseDone || browseTotal != lastBrowseTotal) {
+        lastBrowsing = browsingNow;
+        lastBrowseDone = browseDone;
+        lastBrowseTotal = browseTotal;
+        dirty = true;
+    }
+    worker.setConversionsPaused(status.state == Downloader::State::Connecting || status.state == Downloader::State::Downloading ||
+        status.state == Downloader::State::Updating);
     if (status.state != lastStatus.state || status.done != lastStatus.done || strcmp(status.message, lastStatus.message) != 0) {
         if (status.state != lastStatus.state && (status.state == Downloader::State::Done || status.state == Downloader::State::Failed)) {
-            messageUntil = now + MESSAGE_SHOW_MS;
+            messageUntil = now + (status.state == Downloader::State::Failed ? FAILED_MESSAGE_SHOW_MS : MESSAGE_SHOW_MS);
         }
-        lastStatus = status;
+        // A download that stopped on an error (the network, or memory) continues by itself a little later
+        if (status.state == Downloader::State::Failed && (lastStatus.state == Downloader::State::Downloading ||
+            lastStatus.state == Downloader::State::Connecting) && strstr(status.message, "limit") == nullptr) {
+            if (retries < MAX_RETRIES) {
+                retries++;
+                retryAt = now + RETRY_AFTER_MS;
+                logInfo("Download of %s failed, trying again in %u s (%d of %d)", status.region, RETRY_AFTER_MS / 1000, retries, MAX_RETRIES);
+            }
+        } else if (status.state == Downloader::State::Done && lastStatus.state == Downloader::State::Downloading) {
+            retries = 0;
+        }
+        // After a finished download the next unfinished region continues, but not one paused on purpose
+        if (status.state == Downloader::State::Done && lastStatus.state == Downloader::State::Downloading) {
+            resumeChecked = false;
+        }
         dirty = true;
         // The Regions screen shows progress as it happens
         if (screen == Screen::Regions && status.state == Downloader::State::Done) {
+            lastStatus = status;
             openRegions();
         }
+    }
+    lastStatus = status;
+    if (downloadCard.isOpen()) {
+        fillDownloadCard();
+        dirty = true;
     }
     if (static_cast<int32_t>(now - messageUntil) >= 0 && messageUntil != 0) {
         messageUntil = 0;
@@ -434,36 +894,255 @@ PositionButton MapView::positionButton() const {
     if (!position.hasFix()) {
         return PositionButton::Unavailable;
     }
-    return following ? PositionButton::Following : PositionButton::Free;
+    if (!following) {
+        return PositionButton::Free;
+    }
+    return headingUp ? PositionButton::FollowingHeading : PositionButton::Following;
 }
 
 void MapView::drawMap() {
     const uint32_t start = nowMs();
+    probe.phase("map lock");
     worker.lock();
     const uint32_t locked = nowMs();
-    composeView(frame, width, height, centerX, centerY, zoom, lookupTile, this, palette->placeholder);
+    probe.phase("compose");
+    if (isRotated()) {
+        // Turned: every pixel through the transform, tiles not ready stood in for by cached ancestors or children
+        composeAffine(frame, width, height, scaledView(centerX, centerY, zoom, 1.0f, width / 2.0f, height / 2.0f, width, height, bearingCos, bearingSin),
+            lookupCached, this, palette->placeholder, *scratch);
+    } else {
+        composeView(frame, width, height, centerX, centerY, zoom, lookupTile, this, palette->placeholder);
+    }
     worker.unlock();
     frameLockMs = locked - start;
     frameComposeMs = nowMs() - locked;
+    // Labels placed for this zoom and bearing move with the pixels while panning, until they are placed again
+    if (labelsReady && labelZoom == zoom && labelBearing == bearing && labels.count() > 0) {
+        double moveX;
+        double moveY;
+        worldToScreenOffset(labelCenterX - centerX, labelCenterY - centerY, moveX, moveY);
+        const auto offsetX = static_cast<int>(std::floor(moveX + 0.5));
+        const auto offsetY = static_cast<int>(std::floor(moveY + 0.5));
+        probe.phase("label draw");
+        labels.draw(canvas, offsetX, offsetY, true);
+        probe.phase("overlays");
+    }
     int markerX;
     int markerY;
+    drawPlaces();
     if (markerScreenPosition(markerX, markerY)) {
         if (position.state() == PositionState::Approximate) {
             overlay.drawApproximateMarker(canvas, markerX, markerY, position.fix().accuracy, *palette);
         } else {
             const float radius = position.accuracyRadius(metresPerPixel(position.fix().latitude, zoom));
             overlay.drawAccuracyCircle(canvas, markerX, markerY, radius, *palette);
-            overlay.drawMarker(canvas, markerX, markerY, position.showsArrow(), position.fix().course, *palette);
+            overlay.drawMarker(canvas, markerX, markerY, position.showsArrow(), position.fix().course - bearing, *palette);
         }
+    }
+}
+
+void MapView::applyLabelFonts() {
+    LabelFont* small = labelFonts[0].isOpen() ? &labelFonts[0] : (smallFont.isOpen() ? &smallFont : &normalFont);
+    LabelFont* normal = labelFonts[1].isOpen() ? &labelFonts[1] : static_cast<LabelFont*>(&normalFont);
+    LabelFont* large = labelFonts[2].isOpen() ? &labelFonts[2] : (largeFont.isOpen() ? &largeFont : normal);
+    labels.setFonts(small, normal, large);
+}
+
+void MapView::pollLabelFonts() {
+    // Only the map loop touches the label layout: the maker's task just reports, and the files are opened here
+    if (labelFontsApplied || !fontMaker.isFinished()) {
+        return;
+    }
+    labelFontsApplied = true;
+    fontMaker.stop();
+    const unsigned written = fontMaker.writtenMask();
+    auto openWritten = [&] {
+        for (int i = 0; i < LabelFontMaker::COUNT; i++) {
+            char fontPath[200];
+            LabelFontMaker::cachePath(rootPath, i, fontPath, sizeof(fontPath));
+            if ((written & (1u << i)) != 0 && !labelFonts[i].openFile(fontPath)) {
+                logError("Label font %s does not open, the map keeps the system font", fontPath);
+            }
+        }
+        return true;
+    };
+    runOnCard(io, openWritten);
+    applyLabelFonts();
+    labelZoom = -1;
+}
+
+void MapView::applyLabelSettings() {
+    labels.setDensity(static_cast<LabelDensity>(std::clamp(settings.labels, 0, 2)));
+    labels.setPreferLatin(settings.latinNames);
+    const bool binary = palette->binary;
+    // Dark names with a light halo, water in blue, peaks in brown; black on white on monochrome displays
+    labels.setStyle({ monochrome ? palette->text : static_cast<uint16_t>(0x2124), monochrome ? palette->text : static_cast<uint16_t>(0x4208),
+        monochrome ? palette->text : static_cast<uint16_t>(0x2A35), monochrome ? palette->text : static_cast<uint16_t>(0x6A04),
+        monochrome ? palette->halo : static_cast<uint16_t>(0xFFFF), binary });
+    labelZoom = -1;
+}
+
+void MapView::placeLabels() {
+    const uint32_t start = nowMs();
+    labels.beginView(width, height, zoom);
+    double left;
+    double top;
+    double right;
+    double bottom;
+    viewBounds(left, top, right, bottom);
+    const int tileCount = 1 << zoom;
+    TileKey sources[32];
+    int sourceCount = 0;
+    for (int y = static_cast<int>(std::floor(top / TILE_SIZE)); y <= static_cast<int>(std::floor((bottom - 1) / TILE_SIZE)); y++) {
+        if (y < 0 || y >= tileCount) {
+            continue;
+        }
+        for (int x = static_cast<int>(std::floor(left / TILE_SIZE)); x <= static_cast<int>(std::floor((right - 1) / TILE_SIZE)); x++) {
+            const TileKey tile { zoom, wrapTileX(x, zoom), y };
+            // The label section of the tile it was drawn from: its own up to z14, its z14 ancestor above, or a coarser
+            // one where the card has no detail
+            for (int sourceZoom = std::min(zoom, MAX_SOURCE_ZOOM); sourceZoom >= std::max(0, std::min(zoom, MAX_SOURCE_ZOOM) - 2); sourceZoom--) {
+                const TileKey source = ancestorOf(tile, sourceZoom);
+                bool known = false;
+                for (int i = 0; i < sourceCount && !known; i++) {
+                    known = sources[i] == source;
+                }
+                if (known) {
+                    break;
+                }
+                const double size = std::ldexp(static_cast<double>(TILE_SIZE), zoom - sourceZoom);
+                // The source's corner from the screen centre, from the visible tile's own column so the antimeridian
+                // does not matter, then turned onto the screen
+                const double cornerX = x * TILE_SIZE - (tile.x - (source.x << (zoom - sourceZoom))) * TILE_SIZE - centerX;
+                const double cornerY = source.y * size - centerY;
+                double screenX;
+                double screenY;
+                worldToScreenOffset(cornerX, cornerY, screenX, screenY);
+                const auto scale = static_cast<float>(size / PREPARED_EXTENT);
+                const LabelTransform transform { scale * bearingCos, scale * bearingSin, -scale * bearingSin, scale * bearingCos,
+                    static_cast<float>(width / 2.0 + screenX), static_cast<float>(height / 2.0 + screenY) };
+                const bool found = labelStore.with(source, [&](const uint8_t* bytes, size_t size, int count) {
+                    labels.addSection(bytes, size, count, transform);
+                });
+                if (found) {
+                    if (sourceCount < 32) {
+                        sources[sourceCount++] = source;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    const uint32_t added = nowMs();
+    const int placedCount = labels.place();
+    labelCenterX = centerX;
+    labelCenterY = centerY;
+    labelZoom = zoom;
+    labelBearing = bearing;
+    lastLabelPlace = nowMs();
+    logInfo("Labels: %d placed of %d candidates from %d tiles in %u ms (reading %u, placing %u, of that drawing %u)", placedCount,
+        labels.candidateTotal(), sourceCount, static_cast<unsigned>(nowMs() - start), static_cast<unsigned>(added - start),
+        static_cast<unsigned>(nowMs() - added), static_cast<unsigned>(labels.spriteMicros() / 1000));
+}
+
+void MapView::updateLabels(uint32_t now) {
+    if (!labelsReady || settings.labels == 0 || animation.active || turn.active || pinching || isFullScreen()) {
+        return;
+    }
+    // Placed again once the view settled after a change, or when tiles brought new label data; upright again after a turn
+    const bool moved = labelZoom != zoom || labelBearing != bearing || std::fabs(labelCenterX - centerX) > 0.5 ||
+        std::fabs(labelCenterY - centerY) > 0.5;
+    const bool newData = labelStore.generation() != labelGeneration;
+    // New data alone (often tiles drawn for the ring around the screen) places them again at most every 1.5 s
+    if ((!moved && !newData) || now - lastInputAt < 200 || now - lastLabelPlace < (moved ? 300u : 1500u)) {
+        return;
+    }
+    labelGeneration = labelStore.generation();
+    placeLabels();
+    dirty = true;
+}
+
+void MapView::drawScaledMap() {
+    const uint32_t start = nowMs();
+    AffineView view {};
+    float scale = 1.0f;
+    double worldX = 0.0;
+    double worldY = 0.0;
+    float anchorX = 0.0f;
+    float anchorY = 0.0f;
+    if (pinching) {
+        // Drawn from the nearest whole zoom level, so the cached tiles are never scaled by more than 1.4 either way
+        const int base = snapZoom(zoom, pinchScale, MAX_VIEW_ZOOM);
+        const auto factor = static_cast<float>(std::ldexp(1.0, base - zoom));
+        scale = pinchScale / factor;
+        worldX = pinchWorldX * factor;
+        worldY = pinchWorldY * factor;
+        anchorX = static_cast<float>(pinchX);
+        anchorY = static_cast<float>(pinchY);
+        view = scaledView(worldX, worldY, base, scale, anchorX, anchorY, width, height, bearingCos, bearingSin);
+    } else if (turn.active) {
+        // Turning around the screen centre at the current zoom
+        const float t = std::min(1.0f, static_cast<float>(start - turn.startMs) / TURN_ANIMATION_MS);
+        const float eased = 1.0f - (1.0f - t) * (1.0f - t);
+        const float radians = (turn.from + (turn.to - turn.from) * eased) * 0.017453292f;
+        view = scaledView(centerX, centerY, zoom, 1.0f, width / 2.0f, height / 2.0f, width, height, std::cos(radians), std::sin(radians));
+    } else {
+        const float t = std::min(1.0f, static_cast<float>(start - animation.startMs) / ZOOM_ANIMATION_MS);
+        const float eased = 1.0f - (1.0f - t) * (1.0f - t);
+        scale = powf(animation.fromScale, 1.0f - eased);
+        worldX = animation.worldX;
+        worldY = animation.worldY;
+        anchorX = animation.anchorX;
+        anchorY = animation.anchorY;
+        view = scaledView(worldX, worldY, zoom, scale, anchorX, anchorY, width, height, bearingCos, bearingSin);
+    }
+    worker.lock();
+    const uint32_t locked = nowMs();
+    composeAffine(frame, width, height, view, lookupCached, this, palette->placeholder, *scratch);
+    worker.unlock();
+    const uint32_t composed = nowMs();
+    animation.frameLockMs = locked - start;
+    animation.frameComposeMs = composed - locked;
+    if (turn.active) {
+        turn.frames++;
+        turn.composeMs += composed - start;
+    } else if (!pinching) {
+        animation.frames++;
+        animation.composeMs += composed - start;
+    }
+    int markerX;
+    int markerY;
+    if (!pinching && !turn.active && markerScreenPosition(markerX, markerY)) {
+        // The marker moves with the map: its offset from the anchor scales like the map does; turned offsets need no
+        // change, the zoom animation keeps the bearing
+        const float x = anchorX + (static_cast<float>(markerX) - anchorX) * scale;
+        const float y = anchorY + (static_cast<float>(markerY) - anchorY) * scale;
+        overlay.drawMarker(canvas, static_cast<int>(x), static_cast<int>(y), position.showsArrow(), position.fix().course - bearing, *palette);
     }
 }
 
 void MapView::render() {
     const uint32_t start = nowMs();
-    if (pinching) {
-        // The picture under the fingers scaled live, sharp tiles follow when the fingers lift
-        scaleView(pinchBase, frame, width, height, pinchScale, static_cast<float>(pinchStartX), static_cast<float>(pinchStartY),
-            static_cast<float>(pinchX), static_cast<float>(pinchY), palette->placeholder);
+    probe.phase("render");
+    if (animation.active && (pinching || isFullScreen() || start - animation.startMs >= ZOOM_ANIMATION_MS)) {
+        animation.active = false;
+        io.hold(false);
+        updateWanted();
+        logInfo("Zoom animation: %d frames in %u ms, compose %u ms per frame, slowest frame %u ms (lock %u, compose %u, rest display)",
+            animation.frames, static_cast<unsigned>(start - animation.startMs),
+            animation.frames > 0 ? static_cast<unsigned>(animation.composeMs / animation.frames) : 0, static_cast<unsigned>(animation.slowestFrameMs),
+            static_cast<unsigned>(animation.slowestLockMs), static_cast<unsigned>(animation.slowestComposeMs));
+    }
+    if (turn.active && (pinching || isFullScreen() || start - turn.startMs >= TURN_ANIMATION_MS)) {
+        turn.active = false;
+        io.hold(false);
+        logInfo("Turn to %d degrees: %d frames in %u ms, compose %u ms per frame", static_cast<int>(turn.to), turn.frames,
+            static_cast<unsigned>(start - turn.startMs), turn.frames > 0 ? static_cast<unsigned>(turn.composeMs / turn.frames) : 0);
+        applyBearing(turn.to);
+    }
+    if (pinching || animation.active || turn.active) {
+        // The cached tiles scaled live, sharp tiles follow when the animation ends or the fingers lift
+        drawScaledMap();
         if (screen == Screen::Download) {
             // The frame and its bar stay put while the map scales under them
             overlay.setBottomInset(downloadView.bar.height);
@@ -473,7 +1152,17 @@ void MapView::render() {
         }
         overlay.drawAttributionMark(canvas, *palette);
         output.present(frame, 0, height);
-        dirty = false;
+        if (animation.active || turn.active) {
+            if (animation.active && nowMs() - start > animation.slowestFrameMs) {
+                animation.slowestFrameMs = nowMs() - start;
+                animation.slowestLockMs = animation.frameLockMs;
+                animation.slowestComposeMs = animation.frameComposeMs;
+            }
+            // The next frame comes with the next loop pass
+            dirty = true;
+        } else {
+            dirty = false;
+        }
         return;
     }
     if (isFullScreen()) {
@@ -499,10 +1188,17 @@ void MapView::render() {
             overlay.drawAttributionMark(canvas, *palette);
         }
         if (screen == Screen::Map) {
+            if (isRotated() || turn.active) {
+                drawCompass();
+            }
             controls.draw(canvas, overlay.font(), theme, positionButton());
+            if (sheet.isOpen()) {
+                sheet.draw(canvas, overlay.font(), theme);
+            }
         }
         if (screen == Screen::Map) {
             drawStatus();
+            drawRecording();
         }
     }
     if (menuOpen) {
@@ -511,11 +1207,17 @@ void MapView::render() {
     if (dialog.isOpen()) {
         dialog.draw(canvas, overlay.font(), theme);
     }
+    if (prompt.isOpen()) {
+        prompt.draw(canvas, overlay.font(), theme);
+    }
+    if (downloadCard.isOpen() && !dialog.isOpen()) {
+        downloadCard.draw(canvas, overlay.font(), theme);
+    }
     if (static_cast<int32_t>(nowMs() - toastUntil) < 0) {
         overlay.drawToast(canvas, toastText, theme);
     }
-    if (cursorShown && screen == Screen::Map && !menuOpen) {
-        // An arrow pointer, dark with a light rim so it shows on any map
+    if (cursorShown && input.hasPointer()) {
+        // An arrow pointer, dark with a light rim so it shows on any map and screen
         const auto x = static_cast<float>(cursorX);
         const auto y = static_cast<float>(cursorY);
         canvas.line(x, y, x, y + 13.0f, 4.0f, theme.panel);
@@ -524,7 +1226,9 @@ void MapView::render() {
         canvas.line(x, y, x + 9.0f, y + 9.0f, 2.0f, theme.text);
     }
     const uint32_t presentStart = nowMs();
+    probe.phase("display");
     output.present(frame, 0, height);
+    probe.phase("after display");
     dirty = false;
     const uint32_t frameEnd = nowMs();
     if (frameEnd - start > SLOW_LOOP_MS) {
@@ -548,6 +1252,25 @@ void MapView::render() {
     }
 }
 
+bool MapView::powerAllowsUpdates() {
+    Device* supply = nullptr;
+    if (device_get_first_active_by_type(&POWER_SUPPLY_TYPE, &supply) != ERROR_NONE) {
+        // No battery to look at (powered by USB, or the board reports nothing): Wi-Fi alone decides
+        return true;
+    }
+    bool allowed = true;
+    PowerSupplyPropertyValue value {};
+    if (power_supply_supports_property(supply, POWER_SUPPLY_PROP_IS_CHARGING) &&
+        power_supply_get_property(supply, POWER_SUPPLY_PROP_IS_CHARGING, &value) == ERROR_NONE && value.int_value != 0) {
+        allowed = true;
+    } else if (power_supply_supports_property(supply, POWER_SUPPLY_PROP_CAPACITY) &&
+        power_supply_get_property(supply, POWER_SUPPLY_PROP_CAPACITY, &value) == ERROR_NONE) {
+        allowed = value.int_value >= UPDATE_MIN_BATTERY;
+    }
+    device_put(supply);
+    return allowed;
+}
+
 void MapView::showToast(const char* text) {
     snprintf(toastText, sizeof(toastText), "%s", text);
     toastUntil = nowMs() + TOAST_SHOW_MS;
@@ -556,26 +1279,59 @@ void MapView::showToast(const char* text) {
 
 void MapView::startFollowing() {
     if (!position.hasFix()) {
-        // Location settings are the user's, the app only says where to find them
+        // Location is the user's to switch on, in the menu or in Tactility's settings
         following = false;
         showToast(position.unavailableMessage());
         return;
     }
-    following = true;
+    if (following && !headingUp) {
+        // Second press: the direction of travel up, from the GPS course while moving
+        headingUp = true;
+        headingFilter.reset();
+        showToast("Heading up");
+    } else if (following) {
+        // Third press: free again, the map keeps its turn until N or the compass
+        following = false;
+        headingUp = false;
+        dirty = true;
+        return;
+    } else {
+        following = true;
+        headingUp = false;
+        setBearing(0.0f, true);
+    }
     centerOn(position.fix().latitude, position.fix().longitude, zoom);
     dirty = true;
 }
 
+void MapView::toggleLocation() {
+    const bool enable = !LocationSource::isEnabled();
+    if (!LocationSource::setEnabled(enable)) {
+        showToast("Could not change the location setting");
+        return;
+    }
+    showToast(enable ? "Location on" : "Location off");
+    readLocation();
+}
+
 void MapView::endPinch(float scale, int fromX, int fromY, int toX, int toY) {
     pinching = false;
+    io.hold(false);
     // Snaps to the nearest whole zoom level, the point under the fingers at the start stays under them
     const int newZoom = snapZoom(zoom, scale, MAX_VIEW_ZOOM);
     const double factor = std::ldexp(1.0, newZoom - zoom);
-    const double worldX = centerX + (fromX - width / 2.0);
-    const double worldY = centerY + (fromY - height / 2.0);
+    // pinchWorldX, pinchWorldY is the world point under (fromX, fromY) at the start; the bearing may have changed since
+    const double worldX = pinchWorldX;
+    const double worldY = pinchWorldY;
+    (void)fromX;
+    (void)fromY;
+    double toWorldX;
+    double toWorldY;
+    screenToWorldOffset(toX - width / 2.0, toY - height / 2.0, toWorldX, toWorldY);
     const double worldSize = std::ldexp(static_cast<double>(TILE_SIZE), newZoom);
-    centerX = std::fmod(worldX * factor - (toX - width / 2.0) + worldSize, worldSize);
-    centerY = std::fmin(std::fmax(worldY * factor - (toY - height / 2.0), 0.0), worldSize);
+    centerX = std::fmod(worldX * factor - toWorldX + worldSize, worldSize);
+    centerY = std::fmin(std::fmax(worldY * factor - toWorldY, 0.0), worldSize);
+    pinchTurning = false;
     zoom = newZoom;
     dirty = true;
     updateWanted();
@@ -591,11 +1347,18 @@ void MapView::readLocation() {
     if (!hadFix && position.hasFix()) {
         logInfo("First position, accuracy %d m", static_cast<int>(position.fix().accuracy));
     }
+    if (recorder.isActive() && position.hasFix()) {
+        recorder.addFix(position.fix());
+    }
     if (following && position.hasFix()) {
         centerOn(position.fix().latitude, position.fix().longitude, zoom);
+        if (headingUp && headingFilter.update(position.fix().course, position.fix().speed, nowMs())) {
+            setBearing(headingFilter.heading(), false);
+        }
     }
     if (before != position.state() && !position.hasFix()) {
         following = false;
+        headingUp = false;
     }
     dirty = true;
 }
@@ -624,6 +1387,7 @@ void MapView::run() {
     while (!exitRequested) {
         const uint32_t now = nowMs();
         probe.heartbeat(now);
+        probe.phase("keys");
         KeyEvent events[8];
         const int count = input.readKeys(events, 8);
         bool enterThisPoll = false;
@@ -645,7 +1409,15 @@ void MapView::run() {
             enterLong = true;
             longClick();
         }
+        if (input.takeDevicesChanged()) {
+            // The trackball was switched between keyboard and mouse mode
+            controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
+            cursorShown = false;
+            pointerAcceleration.reset();
+            dirty = true;
+        }
         const uint32_t afterKeys = nowMs();
+        probe.phase("pointer");
         handleMouse(now);
         handleTouch(now);
         const uint32_t afterInput = nowMs();
@@ -654,13 +1426,34 @@ void MapView::run() {
             worker.setIdle(true);
             downloader.setIdle(true);
         }
+        if (!updatesAllowed && now - lastInputAt >= UPDATE_IDLE_MS && now - lastPowerCheck >= POWER_CHECK_MS) {
+            // Outdated regions update quietly once the map has been left alone, on Wi-Fi and with enough power
+            lastPowerCheck = now;
+            if (Downloader::isOnline() && powerAllowsUpdates()) {
+                updatesAllowed = true;
+                downloader.setUpdatesAllowed(true);
+            }
+        }
         if (now - lastLocationCheck >= LOCATION_CHECK_MS) {
             readLocation();
         }
         const uint32_t afterLocation = nowMs();
+        probe.phase("downloader");
         pollDownloader(now);
+        pollGpxImport();
+        recorder.flushIfDue(io, now);
+        if (recorder.state() == TrackRecorder::State::Recording && now - lastRecordingDraw >= 1000 && screen == Screen::Map) {
+            // The elapsed time on the indicator
+            lastRecordingDraw = now;
+            dirty = true;
+        }
         const uint32_t afterDownloader = nowMs();
+        probe.phase("gaps");
         pollGaps(now);
+        probe.phase("labels");
+        pollLabelFonts();
+        updateLabels(now);
+        probe.phase("loop");
         const uint32_t afterGaps = nowMs();
 
         if (!waitingIdle) {
@@ -706,6 +1499,12 @@ void MapView::run() {
                 }
             }
         }
+        if (cursorShown && now - cursorMovedAt >= POINTER_HIDE_MS) {
+            // A pointer that is not used does not cover the map
+            cursorShown = false;
+            controls.setHover(Control::None);
+            dirty = true;
+        }
         if (worker.takeChanged() && !isFullScreen()) {
             dirty = true;
         }
@@ -729,7 +1528,10 @@ void MapView::run() {
         }
         // Sleeps until the next input poll, waking early for app events and new positions
         uint32_t flags = 0;
-        if (!subscribed && location.bit() == 0) {
+        if (animation.active || turn.active) {
+            // Animation frames come as fast as they can be drawn, one tick lets the render lanes on this core go on
+            vTaskDelay(1);
+        } else if (!subscribed && location.bit() == 0) {
             // Without a claimed bit the wait would return at once
             vTaskDelay(pdMS_TO_TICKS(LOOP_INTERVAL_MS));
         } else if (task_event_group_wait_any(&eventGroup, &flags, pdMS_TO_TICKS(LOOP_INTERVAL_MS)) == ERROR_NONE &&
