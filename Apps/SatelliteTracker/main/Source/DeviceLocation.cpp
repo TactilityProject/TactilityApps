@@ -4,7 +4,7 @@ void DeviceLocation::update(TaskEventGroup* eventGroup, bool wanted) {
     bool shouldRun = wanted && location_is_enabled();
     if (shouldRun && !subscribed) {
         subscription = LocationSubscription {};
-        subscribed = location_subscribe(&subscription, eventGroup) == ERROR_NONE;
+        subscribed = location_subscribe(&subscription, eventGroup, "Satellite Tracker") == ERROR_NONE;
     } else if (!shouldRun && subscribed) {
         stop();
     }

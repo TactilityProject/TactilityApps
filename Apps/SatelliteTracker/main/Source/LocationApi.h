@@ -36,10 +36,13 @@ struct Location {
     char provider[LOCATION_PROVIDER_ID_MAX_LENGTH + 1];
 };
 
+#define LOCATION_SUBSCRIBER_DESCRIPTION_MAX_LENGTH 24
+
 struct LocationSubscription {
     uint32_t bit;
 
     struct {
+        char description[LOCATION_SUBSCRIBER_DESCRIPTION_MAX_LENGTH + 1];
         struct TaskEventGroup* event_group;
         struct LocationSubscription* next;
     } internal;
@@ -47,7 +50,7 @@ struct LocationSubscription {
 
 bool location_is_enabled(void);
 error_t location_get(struct Location* location);
-error_t location_subscribe(struct LocationSubscription* sub, struct TaskEventGroup* event_group);
+error_t location_subscribe(struct LocationSubscription* sub, struct TaskEventGroup* event_group, const char* description);
 error_t location_unsubscribe(struct LocationSubscription* sub);
 
 #ifdef __cplusplus
