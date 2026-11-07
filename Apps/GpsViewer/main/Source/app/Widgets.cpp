@@ -103,6 +103,10 @@ void drawIcon(lv_event_t* event) {
 
 } // namespace
 
+int measureTextWidth(const char* text, const lv_font_t* font) {
+    return textWidth(text, font);
+}
+
 lv_obj_t* createBox(lv_obj_t* parent) {
     lv_obj_t* box = lv_obj_create(parent);
     lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, LV_PART_MAIN);

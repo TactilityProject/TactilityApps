@@ -5,6 +5,7 @@
 
 #include <app/event.h>
 #include <lvgl/fonts.h>
+#include <lvgl/devices/keyboard.h>
 #include <lvgl/grid_navigation.h>
 #include <lvgl/icons/shared.h>
 #include <lvgl/widgets/toolbar.h>
@@ -26,6 +27,8 @@ uint32_t colorKey(lv_color_t color) {
 
 constexpr int TAB_COUNT = 4;
 constexpr uint32_t REFRESH_MS = 333;
+constexpr lv_state_t NIGHT_STATE = LV_STATE_USER_4;
+constexpr lv_style_selector_t NIGHT_SELECTOR = static_cast<lv_style_selector_t>(LV_PART_MAIN) | static_cast<lv_style_selector_t>(NIGHT_STATE);
 
 // Tab order. The indices are also the keys 1 to 4.
 enum TabIndex : int {
@@ -75,6 +78,8 @@ struct UiState {
     lv_obj_t* panels[TAB_COUNT] {};
     MessageCard messageCard;
     lv_obj_t* overlay = nullptr;
+    // The keys go to this group while an overlay is open, so the focus can't leave it
+    lv_group_t* overlayGroup = nullptr;
     lv_timer_t* timer = nullptr;
     Overlay overlayType = Overlay::None;
     int activeTab = 0;
@@ -179,6 +184,10 @@ void requestBits(UiState& ui, uint32_t bits) {
     ui.context->requests.fetch_or(bits);
 }
 
+void toggleRecording(UiState& ui) {
+    ui.context->recordingToggles.fetch_add(1);
+}
+
 void applySettings(UiState& ui, const Settings& settings) {
     {
         ContextLock lock(*ui.context);
@@ -220,7 +229,17 @@ void focusMain(UiState& ui) {
     }
 }
 
+// Hands the keys back to the app's group and drops the overlay's
+void releaseOverlayGroup(UiState& ui) {
+    if (ui.overlayGroup != nullptr) {
+        lvgl_keyboard_set_active_group(nullptr);
+        lv_group_delete(ui.overlayGroup);
+        ui.overlayGroup = nullptr;
+    }
+}
+
 void closeOverlay(UiState& ui) {
+    releaseOverlayGroup(ui);
     if (ui.overlay != nullptr) {
         lv_obj_delete_async(ui.overlay);
         ui.overlay = nullptr;
@@ -229,18 +248,32 @@ void closeOverlay(UiState& ui) {
     focusMain(ui);
 }
 
+// The next button in the list from index, wrapping around, past the title
+lv_obj_t* nextOverlayButton(lv_obj_t* list, int index, int step) {
+    const int count = static_cast<int>(lv_obj_get_child_count(list));
+    for (int i = 1; i < count; i++) {
+        lv_obj_t* child = lv_obj_get_child(list, ((index + step * i) % count + count) % count);
+        // The buttons are clickable, the title is not
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
+            return child;
+        }
+    }
+    return nullptr;
+}
+
 // Overlay lists get Left/Up and Right/Down as focus moves, and Esc/Backspace to close
 void onOverlayItemKey(lv_event_t* event) {
     auto* ui = static_cast<UiState*>(lv_event_get_user_data(event));
     lv_obj_t* item = lv_event_get_current_target_obj(event);
     const uint32_t key = lv_event_get_key(event);
     lv_obj_t* list = lv_obj_get_parent(item);
-    const int count = static_cast<int>(lv_obj_get_child_count(list));
     const int index = static_cast<int>(lv_obj_get_index(item));
-    if (key == LV_KEY_LEFT || key == LV_KEY_UP) {
-        lv_group_focus_obj(lv_obj_get_child(list, (index + count - 1) % count));
-    } else if (key == LV_KEY_RIGHT || key == LV_KEY_DOWN) {
-        lv_group_focus_obj(lv_obj_get_child(list, (index + 1) % count));
+    if (key == LV_KEY_LEFT || key == LV_KEY_UP || key == LV_KEY_RIGHT || key == LV_KEY_DOWN) {
+        const int step = (key == LV_KEY_LEFT || key == LV_KEY_UP) ? -1 : 1;
+        lv_obj_t* next = nextOverlayButton(list, index, step);
+        if (next != nullptr) {
+            lv_group_focus_obj(next);
+        }
     } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
         closeOverlay(*ui);
     }
@@ -265,11 +298,35 @@ lv_obj_t* createOverlay(UiState& ui, Overlay type, const char* title) {
     lv_obj_set_style_radius(ui.overlay, 0, LV_PART_MAIN);
     lv_obj_add_event_cb(ui.overlay, onOverlayBackdrop, LV_EVENT_CLICKED, &ui);
 
+    ui.overlayGroup = lv_group_create();
+    if (ui.overlayGroup != nullptr) {
+        lvgl_keyboard_set_active_group(ui.overlayGroup);
+    }
+
     lv_obj_t* list = lv_list_create(ui.overlay);
     lv_obj_set_size(list, LV_PCT(80), LV_PCT(95));
     lv_obj_center(list);
-    lv_list_add_text(list, title);
+    lv_obj_t* titleLabel = lv_list_add_text(list, title);
+    if (ui.theme.night) {
+        const Theme& theme = ui.theme;
+        lv_obj_set_style_bg_color(list, theme.background, LV_PART_MAIN);
+        lv_obj_set_style_border_color(list, theme.border, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(titleLabel, theme.background, LV_PART_MAIN);
+        lv_obj_set_style_text_color(titleLabel, theme.dim, LV_PART_MAIN);
+    }
     return list;
+}
+
+// Night mode: dark buttons with red text, and a dark red fill on the focused one
+void paintOverlayButton(lv_obj_t* button, const Theme& theme) {
+    lv_obj_set_style_bg_color(button, theme.background, LV_PART_MAIN);
+    lv_obj_set_style_text_color(button, theme.text, LV_PART_MAIN);
+    lv_obj_set_style_border_color(button, theme.border, LV_PART_MAIN);
+    for (const lv_style_selector_t state : { LV_STATE_FOCUSED, LV_STATE_FOCUS_KEY, LV_STATE_PRESSED }) {
+        lv_obj_set_style_bg_color(button, theme.mono ? theme.text : theme.border, state);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, state);
+        lv_obj_set_style_text_color(button, theme.mono ? theme.background : theme.accent, state);
+    }
 }
 
 lv_obj_t* addOverlayItem(UiState& ui, lv_obj_t* list, const char* text, lv_event_cb_t onClick, uint32_t id) {
@@ -277,8 +334,11 @@ lv_obj_t* addOverlayItem(UiState& ui, lv_obj_t* list, const char* text, lv_event
     lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<uintptr_t>(id)));
     lv_obj_add_event_cb(button, onClick, LV_EVENT_CLICKED, &ui);
     lv_obj_add_event_cb(button, onOverlayItemKey, LV_EVENT_KEY, &ui);
-    if (lv_group_get_default() != nullptr) {
-        lv_group_add_obj(lv_group_get_default(), button);
+    if (ui.theme.night) {
+        paintOverlayButton(button, ui.theme);
+    }
+    if (ui.overlayGroup != nullptr) {
+        lv_group_add_obj(ui.overlayGroup, button);
     }
     return button;
 }
@@ -298,7 +358,7 @@ void onMenuItem(lv_event_t* event) {
             closeOverlay(*ui);
             break;
         case MenuItem::Recording:
-            requestBits(*ui, REQUEST_TOGGLE_RECORDING);
+            toggleRecording(*ui);
             closeOverlay(*ui);
             break;
         case MenuItem::NightMode:
@@ -322,12 +382,18 @@ void openMenu(UiState& ui) {
     lv_obj_t* list = createOverlay(ui, Overlay::Menu, "GPS Viewer");
     lv_obj_t* first = addOverlayItem(ui, list, "Reset max/average speed", onMenuItem, static_cast<uint32_t>(MenuItem::ResetSpeed));
     char recordText[48];
+    const bool canRecord = ui.context->dataDirectory[0] != '\0';
     if (ui.recording) {
         snprintf(recordText, sizeof(recordText), "Stop recording (%lu lines)", static_cast<unsigned long>(ui.recordedLines));
-    } else {
+    } else if (canRecord) {
         snprintf(recordText, sizeof(recordText), "Start recording");
+    } else {
+        snprintf(recordText, sizeof(recordText), "No storage: can't record or save settings");
     }
-    addOverlayItem(ui, list, recordText, onMenuItem, static_cast<uint32_t>(MenuItem::Recording));
+    lv_obj_t* recordItem = addOverlayItem(ui, list, recordText, onMenuItem, static_cast<uint32_t>(MenuItem::Recording));
+    if (!ui.recording && !canRecord) {
+        lv_obj_add_state(recordItem, LV_STATE_DISABLED);
+    }
     addOverlayItem(ui, list, ui.settings.nightMode ? "Night mode: off" : "Night mode: on", onMenuItem, static_cast<uint32_t>(MenuItem::NightMode));
     addOverlayItem(ui, list, "Settings", onMenuItem, static_cast<uint32_t>(MenuItem::OpenSettings));
     addOverlayItem(ui, list, "Exit", onMenuItem, static_cast<uint32_t>(MenuItem::Exit));
@@ -477,7 +543,7 @@ void onContentKey(lv_event_t* event) {
             break;
         case 'l':
         case 'L':
-            requestBits(*ui, REQUEST_TOGGLE_RECORDING);
+            toggleRecording(*ui);
             break;
         default:
             break;
@@ -557,6 +623,7 @@ void clearTabs(UiState& ui) {
 }
 
 void forgetWidgets(UiState& ui) {
+    releaseOverlayGroup(ui);
     if (ui.timer != nullptr) {
         lv_timer_delete(ui.timer);
         ui.timer = nullptr;
@@ -666,9 +733,14 @@ void build(UiState& ui) {
     ui.theme = makeTheme(ui.settings.nightMode);
     lv_obj_t* root = ui.root;
 
+    // The night background is a style of a user state of the window's widget. Leaving night mode clears
+    // the state, and the window's own background is back (lv_obj_remove_local_style_prop() is not exported).
     if (ui.theme.paintBackground) {
-        lv_obj_set_style_bg_color(root, ui.theme.background, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(root, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(root, ui.theme.background, NIGHT_SELECTOR);
+        lv_obj_set_style_bg_opa(root, LV_OPA_COVER, NIGHT_SELECTOR);
+        lv_obj_add_state(root, NIGHT_STATE);
+    } else {
+        lv_obj_remove_state(root, NIGHT_STATE);
     }
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(root, 0, LV_PART_MAIN);

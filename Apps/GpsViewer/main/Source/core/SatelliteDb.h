@@ -18,6 +18,8 @@ struct Satellite {
     // dB-Hz, 0 when not tracked
     int16_t snr;
     bool used;
+    // The GSA sentence that marked it used: its talker's system, or the system picked for a combined talker
+    GnssSystem usedBy;
     uint32_t lastSeenMs;
     uint32_t usedAtMs;
 };
@@ -47,7 +49,8 @@ private:
         int nextMessage;
         int count;
         Satellite satellites[MAX_SATELLITES];
-        uint32_t committedAtMs;
+        // First commit of the current epoch. Later sets within SAME_EPOCH_MS of it are merged into it.
+        uint32_t epochStartMs;
         bool committed;
     };
 
@@ -55,6 +58,7 @@ private:
     void commit(int group, uint32_t nowMs);
     int find(GnssSystem system, int id) const;
     void markUsed(GnssSystem system, const int* ids, int idCount, uint32_t nowMs);
+    void clearUsed();
     GnssSystem guessGsaSystem(const int* ids, int idCount) const;
 
     Satellite satellites[MAX_SATELLITES] {};

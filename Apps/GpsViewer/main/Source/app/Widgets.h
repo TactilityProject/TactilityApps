@@ -25,6 +25,8 @@ void setHidden(lv_obj_t* object, bool hidden);
 // Sets the text in the largest of the LARGE, DEFAULT and SMALL fonts that fits maxWidth, only
 // when the text differs
 void setFittedText(lv_obj_t* label, const char* text, int maxWidth);
+// Width of one line of text in the font
+int measureTextWidth(const char* text, const lv_font_t* font);
 
 enum class IconKind : uint8_t {
     Sun,

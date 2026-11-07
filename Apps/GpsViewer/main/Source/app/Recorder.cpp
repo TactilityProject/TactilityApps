@@ -28,6 +28,9 @@ bool endsWith(const char* text, const char* suffix) {
 
 bool Recorder::start(const char* dataDirectory, const UtcDateTime& utc, uint32_t nowMs) {
     stop();
+    if (dataDirectory[0] == '\0') {
+        return false;
+    }
     char folder[PATH_LENGTH + 8];
     snprintf(folder, sizeof(folder), "%s/logs", dataDirectory);
     mkdir(folder, 0777);

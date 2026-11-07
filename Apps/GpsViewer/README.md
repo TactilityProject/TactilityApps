@@ -89,14 +89,15 @@ per line.
 
 ## Recording
 
-"Start recording" in the menu (or the `l` key) saves every NMEA sentence from the receiver to a file in
+"Start recording" in the menu (or the `l` key) saves the RMC, GGA, GSA and GSV sentences from the receiver to a file in
 `logs/` in the app's user data folder. The file is named after the GPS date and time, `gps-YYYYMMDD-HHMMSS.nmea`,
 or after the uptime, `gps-up<seconds>.nmea`, when the receiver has no time yet. The toolbar and the Position tab show
-REC while recording. The file is written every 2 seconds, so a crash or power loss loses at most the last 2
-seconds. Recording stops with "Stop recording" and when the app closes.
+REC while recording. The app writes the file to storage every 2 seconds, so a crash or power loss usually loses
+only the last seconds. Recording stops with "Stop recording" and when the app closes. Without a user data folder
+the app can't record or keep its settings, and the menu says so.
 
-Sentences are written back from the parsed values: RMC, GGA, GSA and GSV with their checksums. Other
-sentences and fields the app does not use are not saved. The logs are plain NMEA 0183, for use in other tools.
+Sentences are written back from the parsed values, with their checksums. Other sentences (VTG, GLL, ...) and
+fields the app does not use are not saved, so a log is not a full capture of the receiver output. The logs are plain NMEA 0183, for use in other tools.
 
 ## Testing
 

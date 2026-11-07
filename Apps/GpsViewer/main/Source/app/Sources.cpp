@@ -55,6 +55,13 @@ bool toGnssEvent(const GpsEvent& in, GnssEvent& out) {
     }
 }
 
+// What the reader queues: the event, when it arrived and from which connection
+struct QueuedEvent {
+    GnssEvent event;
+    uint32_t atMs;
+    uint32_t session;
+};
+
 void setStatus(AppContext& context, SourceStatus status) {
     ContextLock lock(context);
     context.status = status;
@@ -117,7 +124,6 @@ void GpsSource::disconnect() {
         device = nullptr;
     }
     lost = false;
-    nextAttemptMs = 0;
 }
 
 void GpsSource::readerLoop() {
@@ -141,10 +147,12 @@ void GpsSource::readerLoop() {
             setStatus(*context, SourceStatus::ReceiverLost);
             continue;
         }
-        GnssEvent gnss;
-        if (toGnssEvent(event, gnss)) {
+        QueuedEvent queued;
+        if (toGnssEvent(event, queued.event)) {
+            queued.atMs = get_millis();
+            queued.session = session;
             // A full queue drops the event, the next epoch repeats the data
-            xQueueSend(queue, &gnss, 0);
+            xQueueSend(queue, &queued, 0);
         }
     }
     disconnect();
@@ -166,14 +174,15 @@ void GpsSource::start(AppContext& appContext, TaskEventGroup* eventGroup) {
         locationSubscribed = location_subscribe(&location, eventGroup, "GPS Viewer") == ERROR_NONE;
     }
     if (queue == nullptr) {
-        queue = xQueueCreate(QUEUE_LENGTH, sizeof(GnssEvent));
+        queue = xQueueCreate(QUEUE_LENGTH, sizeof(QueuedEvent));
     }
     if (queue == nullptr || !readerDone.load()) {
         return;
     }
     stopRequested.store(false);
     readerDone.store(false);
-    nextAttemptMs = 0;
+    // The first attempt is due now. A deadline of 0 would wait for the clock to wrap after 24.9 days of uptime.
+    nextAttemptMs = get_millis();
     if (xTaskCreatePinnedToCore(readerMain, "gpsviewer_rx", READER_STACK_SIZE, this, READER_PRIORITY, &reader, tskNO_AFFINITY) != pdPASS) {
         readerDone.store(true);
         reader = nullptr;
@@ -185,20 +194,25 @@ void GpsSource::poll(AppContext& appContext, uint32_t timeoutMs, Recorder& recor
         vTaskDelay(pdMS_TO_TICKS(timeoutMs));
         return;
     }
-    GnssEvent event;
-    if (xQueueReceive(queue, &event, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+    QueuedEvent queued;
+    if (xQueueReceive(queue, &queued, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
         return;
     }
-    const uint32_t now = get_millis();
     int handled = 0;
     do {
+        bool current;
         {
             ContextLock lock(appContext);
-            appContext.model.onEvent(event, now);
+            current = queued.session == appContext.session;
+            if (current) {
+                appContext.model.onEvent(queued.event, queued.atMs);
+            }
         }
-        recorder.write(event, now);
+        if (current) {
+            recorder.write(queued.event, queued.atMs);
+        }
         handled++;
-    } while (handled < QUEUE_LENGTH && xQueueReceive(queue, &event, 0) == pdTRUE);
+    } while (handled < QUEUE_LENGTH && xQueueReceive(queue, &queued, 0) == pdTRUE);
 }
 
 

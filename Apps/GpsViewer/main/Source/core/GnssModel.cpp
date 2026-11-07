@@ -14,6 +14,16 @@ bool olderThan(uint32_t nowMs, uint32_t thenMs, uint32_t ageMs) {
     return static_cast<uint32_t>(nowMs - thenMs) > ageMs;
 }
 
+// A time of 0 means the sentence never came
+bool fresh(uint32_t nowMs, uint32_t atMs) {
+    return atMs != 0 && !olderThan(nowMs, atMs, FIX_TIMEOUT_MS);
+}
+
+// Event times are 0 only in the first millisecond of uptime, which then counts as never
+uint32_t stamp(uint32_t nowMs) {
+    return nowMs == 0 ? 1 : nowMs;
+}
+
 float toFloatOrNan(const minmea_float& value) {
     return value.scale == 0 ? NAN : minmea_tofloat(&value);
 }
@@ -39,8 +49,10 @@ void GnssModel::reset(uint32_t nowMs) {
     ggaSatellites = 0;
     ggaAtMs = 0;
     rmcValid = false;
+    rmcAtMs = 0;
     pdop = NAN;
-    hdop = NAN;
+    gsaHdop = NAN;
+    ggaHdop = NAN;
     vdop = NAN;
     hasTtff = false;
     ttffMs = 0;
@@ -73,8 +85,8 @@ void GnssModel::onEvent(const GnssEvent& event, uint32_t nowMs) {
 }
 
 void GnssModel::onRmc(const minmea_sentence_rmc& rmc, uint32_t nowMs) {
-    (void)nowMs;
     rmcValid = rmc.valid;
+    rmcAtMs = stamp(nowMs);
     if (rmc.date.year > 0 && rmc.time.hours >= 0) {
         utcTime.valid = true;
         utcTime.year = rmc.date.year < 100 ? 2000 + rmc.date.year : rmc.date.year;
@@ -113,13 +125,11 @@ void GnssModel::onRmc(const minmea_sentence_rmc& rmc, uint32_t nowMs) {
 void GnssModel::onGga(const minmea_sentence_gga& gga, uint32_t nowMs) {
     ggaFix = gga.fix_quality > 0;
     ggaSatellites = gga.satellites_tracked;
-    ggaAtMs = nowMs;
+    ggaAtMs = stamp(nowMs);
+    ggaHdop = ggaFix ? toFloatOrNan(gga.hdop) : NAN;
     if (!ggaFix) {
+        hasAltitude = false;
         return;
-    }
-    const float ggaHdop = toFloatOrNan(gga.hdop);
-    if (!std::isnan(ggaHdop) && olderThan(nowMs, gsaAtMs, FIX_TIMEOUT_MS)) {
-        hdop = ggaHdop;
     }
     const double lat = toCoordinate(gga.latitude);
     const double lon = toCoordinate(gga.longitude);
@@ -136,22 +146,33 @@ void GnssModel::onGga(const minmea_sentence_gga& gga, uint32_t nowMs) {
 }
 
 void GnssModel::onGsa(const minmea_sentence_gsa& gsa, uint32_t nowMs) {
-    gsaAtMs = nowMs;
+    gsaAtMs = stamp(nowMs);
     gsaFix = gsa.fix_type == MINMEA_GPGSA_FIX_3D ? FixType::Fix3d
         : gsa.fix_type == MINMEA_GPGSA_FIX_2D ? FixType::Fix2d
         : FixType::None;
     pdop = toFloatOrNan(gsa.pdop);
-    hdop = toFloatOrNan(gsa.hdop);
+    gsaHdop = toFloatOrNan(gsa.hdop);
     vdop = toFloatOrNan(gsa.vdop);
 }
 
+FixType GnssModel::currentFix(uint32_t nowMs) const {
+    const bool gsaFresh = fresh(nowMs, gsaAtMs);
+    const bool ggaFresh = fresh(nowMs, ggaAtMs);
+    if (ggaFresh && !ggaFix) {
+        return FixType::None;
+    }
+    if (gsaFresh) {
+        return gsaFix;
+    }
+    return ggaFresh ? FixType::Fix3d : FixType::None;
+}
+
+// TTFF uses the same fix as the screens, plus a valid RMC for the position
 void GnssModel::updateFixState(uint32_t nowMs) {
     if (hasTtff) {
         return;
     }
-    const bool gsaSaysFix = gsaFix != FixType::None && !olderThan(nowMs, gsaAtMs, FIX_TIMEOUT_MS);
-    const bool ggaSaysFix = ggaFix && !olderThan(nowMs, ggaAtMs, FIX_TIMEOUT_MS);
-    if ((gsaSaysFix || ggaSaysFix) && rmcValid) {
+    if (currentFix(nowMs) != FixType::None && rmcValid && fresh(nowMs, rmcAtMs)) {
         hasTtff = true;
         ttffMs = nowMs - startMs;
     }
@@ -166,17 +187,10 @@ void GnssModel::resetSpeedStats() {
 void GnssModel::snapshot(GnssSnapshot& out, uint32_t nowMs) {
     satellites.expire(nowMs);
 
-    const bool gsaFresh = !olderThan(nowMs, gsaAtMs, FIX_TIMEOUT_MS) && gsaAtMs != 0;
-    const bool ggaFresh = !olderThan(nowMs, ggaAtMs, FIX_TIMEOUT_MS) && ggaAtMs != 0;
-    FixType fix = FixType::None;
-    if (gsaFresh) {
-        fix = gsaFix;
-    } else if (ggaFresh && ggaFix) {
-        fix = FixType::Fix3d;
-    }
-    if (ggaFresh && !ggaFix) {
-        fix = FixType::None;
-    }
+    const bool gsaFresh = fresh(nowMs, gsaAtMs);
+    const bool ggaFresh = fresh(nowMs, ggaAtMs);
+    const bool rmcFresh = fresh(nowMs, rmcAtMs);
+    const FixType fix = currentFix(nowMs);
 
     out.fix = fix;
     out.satellitesInView = satellites.count();
@@ -185,7 +199,8 @@ void GnssModel::snapshot(GnssSnapshot& out, uint32_t nowMs) {
         out.satellitesUsed = ggaSatellites;
     }
     out.pdop = gsaFresh ? pdop : NAN;
-    out.hdop = (gsaFresh || ggaFresh) ? hdop : NAN;
+    // GSA gives all three DOP values of one solution, GGA's HDOP stands in without GSA
+    out.hdop = gsaFresh ? gsaHdop : ggaFresh ? ggaHdop : NAN;
     out.vdop = gsaFresh ? vdop : NAN;
     out.hasTtff = hasTtff;
     out.ttffMs = ttffMs;
@@ -193,9 +208,9 @@ void GnssModel::snapshot(GnssSnapshot& out, uint32_t nowMs) {
     out.hasPosition = hasPosition;
     out.latitude = latitude;
     out.longitude = longitude;
-    out.hasAltitude = hasAltitude && fix == FixType::Fix3d;
+    out.hasAltitude = hasAltitude && ggaFresh && fix == FixType::Fix3d;
     out.altitudeMeters = altitudeMeters;
-    out.hasSpeed = hasSpeed && fix != FixType::None;
+    out.hasSpeed = hasSpeed && rmcFresh && fix != FixType::None;
     out.speedMps = speedMps;
     out.maxSpeedMps = maxSpeedMps;
     out.averageSpeedMps = speedSamples == 0 ? 0.0f : static_cast<float>(speedSum / speedSamples);

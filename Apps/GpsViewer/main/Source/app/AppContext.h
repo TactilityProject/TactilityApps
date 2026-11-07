@@ -28,7 +28,6 @@ enum class SourceStatus : uint8_t {
 enum Request : uint32_t {
     REQUEST_SAVE_SETTINGS = 1U << 0,
     REQUEST_RESET_SPEED = 1U << 1,
-    REQUEST_TOGGLE_RECORDING = 1U << 3,
     // Opens Tactility's location settings, where GPS receivers are set up and location is turned on
     REQUEST_OPEN_LOCATION_SETTINGS = 1U << 4,
 };
@@ -47,12 +46,16 @@ struct AppContext {
     GnssModel model;
     Settings settings;
     SourceStatus status = SourceStatus::NoReceiver;
+    // Counts receiver connections. Events from an earlier connection are dropped.
+    uint32_t session = 0;
     char receiverName[32] = "";
     bool recording = false;
     char recordingName[40] = "";
     uint32_t recordedLines = 0;
 
     std::atomic<uint32_t> requests {0};
+    // Start/stop presses not handled yet. Each one toggles recording, so two quick presses cancel out.
+    std::atomic<uint32_t> recordingToggles {0};
 
     // LVGL thread only
     UiState* ui = nullptr;

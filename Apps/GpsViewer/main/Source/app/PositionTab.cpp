@@ -170,7 +170,12 @@ void PositionTab::update(const TabView& view) {
     char avgText[16];
     formatSpeed(s.maxSpeedMps, units, maxText, sizeof(maxText));
     formatSpeed(s.averageSpeedMps, units, avgText, sizeof(avgText));
+    // On one line when it fits the column, otherwise on two, so large fonts keep both values
     snprintf(text, sizeof(text), "Max %s | Avg %s", maxText, avgText);
+    const int statsWidth = lv_obj_get_content_width(lv_obj_get_parent(speedStatsLabel));
+    if (measureTextWidth(text, lvgl_get_text_font(FONT_SIZE_SMALL)) > statsWidth) {
+        snprintf(text, sizeof(text), "Max %s\nAvg %s", maxText, avgText);
+    }
     setLabelText(speedStatsLabel, text);
 
     setHidden(recPill, !view.recording);

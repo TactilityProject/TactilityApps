@@ -2,6 +2,8 @@
 #include "Tabs.h"
 #include "Widgets.h"
 
+#include <lvgl/devices/keyboard.h>
+
 #include <cstdio>
 
 namespace gpsviewer {
@@ -118,9 +120,11 @@ bool MessageCard::update(SourceStatus status, const char* dataDirectory) {
 
     const bool withButton = hasSettingsButton(status);
     setHidden(button, !withButton);
-    if (button != nullptr && lv_group_get_default() != nullptr) {
+    // The app's group, also while a menu overlay has its own group
+    lv_group_t* group = lvgl_keyboard_get_app_group();
+    if (button != nullptr && group != nullptr) {
         if (withButton && !buttonInGroup) {
-            lv_group_add_obj(lv_group_get_default(), button);
+            lv_group_add_obj(group, button);
             buttonInGroup = true;
         } else if (!withButton && buttonInGroup) {
             lv_group_remove_obj(button);

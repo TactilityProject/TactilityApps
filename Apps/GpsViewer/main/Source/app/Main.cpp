@@ -28,7 +28,11 @@ void settingsPath(const AppContext& context, char* out, size_t outSize) {
     snprintf(out, outSize, "%s/settings.txt", context.dataDirectory);
 }
 
+// Without a data folder the settings stay at their defaults and aren't saved
 Settings loadSettings(const AppContext& context) {
+    if (context.dataDirectory[0] == '\0') {
+        return parseSettings("");
+    }
     char path[PATH_LENGTH + 16];
     settingsPath(context, path, sizeof(path));
     char text[256] = "";
@@ -42,6 +46,9 @@ Settings loadSettings(const AppContext& context) {
 }
 
 void saveSettings(const AppContext& context, const Settings& settings) {
+    if (context.dataDirectory[0] == '\0') {
+        return;
+    }
     char text[256];
     const size_t length = serializeSettings(settings, text, sizeof(text));
     char path[PATH_LENGTH + 16];
@@ -97,7 +104,7 @@ void run(AppContext& context, Sources& sources) {
             }
             saveSettings(context, settings);
         }
-        if ((requests & REQUEST_TOGGLE_RECORDING) != 0) {
+        if ((context.recordingToggles.exchange(0) % 2) != 0) {
             if (recorder.isRecording()) {
                 recorder.stop();
             } else {
@@ -144,8 +151,12 @@ extern "C" int main(int argc, char* argv[]) {
         return 0;
     }
     context->appInstanceId = app_scheduler_current_app_id();
+    // Without a data folder the app still shows the receiver, but keeps no settings and can't record.
+    // The menu says so in place of "Start recording".
     if (app_paths_get_user_data_directory(APP_ID, context->dataDirectory, sizeof(context->dataDirectory)) == ERROR_NONE) {
         mkdir(context->dataDirectory, 0777);
+    } else {
+        context->dataDirectory[0] = '\0';
     }
     context->mutex = xSemaphoreCreateMutex();
     context->ui = uiAllocate(*context);

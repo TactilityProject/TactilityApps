@@ -68,6 +68,8 @@ private:
     void onRmc(const minmea_sentence_rmc& rmc, uint32_t nowMs);
     void onGga(const minmea_sentence_gga& gga, uint32_t nowMs);
     void onGsa(const minmea_sentence_gsa& gsa, uint32_t nowMs);
+    // The fix shown at nowMs: a fresh GSA decides, a fresh GGA without a fix overrides it
+    FixType currentFix(uint32_t nowMs) const;
     void updateFixState(uint32_t nowMs);
 
     SatelliteDb satellites;
@@ -78,14 +80,17 @@ private:
     int ggaSatellites = 0;
     uint32_t ggaAtMs = 0;
     bool rmcValid = false;
+    uint32_t rmcAtMs = 0;
     float pdop = 0;
-    float hdop = 0;
+    float gsaHdop = 0;
+    float ggaHdop = 0;
     float vdop = 0;
     bool hasTtff = false;
     uint32_t ttffMs = 0;
     bool hasPosition = false;
     double latitude = 0;
     double longitude = 0;
+    // Altitude comes from GGA, speed and course from RMC. Each expires with its sentence.
     bool hasAltitude = false;
     float altitudeMeters = 0;
     bool hasSpeed = false;

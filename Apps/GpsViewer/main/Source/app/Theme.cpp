@@ -10,6 +10,21 @@ namespace gpsviewer {
 Theme makeTheme(bool night) {
     Theme theme {};
     theme.night = night;
+    const bool mono = lvgl_theme_is_mono();
+    if (night && mono) {
+        // A 1-bit display has no dark reds: white on black, shapes carry the hierarchy
+        theme.background = lv_color_black();
+        theme.paintBackground = true;
+        theme.border = lv_color_white();
+        theme.accent = lv_color_white();
+        theme.success = lv_color_white();
+        theme.warning = lv_color_white();
+        theme.text = lv_color_white();
+        theme.dim = lv_color_white();
+        theme.grid = lv_color_white();
+        theme.mono = true;
+        return theme;
+    }
     if (night) {
         // Tactical red: one hue only, brightness carries the hierarchy
         theme.background = lv_color_hex(0x000000);
@@ -27,7 +42,6 @@ Theme makeTheme(bool night) {
     LvglThemeSettings settings;
     lvgl_theme_get_settings(&settings);
     const bool dark = settings.is_dark;
-    const bool mono = lvgl_theme_is_mono();
     theme.background = dark ? lv_color_hex(0x21222B) : lv_color_hex(0xF3F3F3);
     if (settings.surface_override) {
         theme.background = settings.color_surface;

@@ -7,8 +7,9 @@ namespace gpsviewer {
 
 namespace {
 
-// A second GSV set of the same talker within this time belongs to the same epoch.
-// Receivers send one set per signal band (L1, L5), so the sets are merged.
+// GSV sets of the same talker within this time of the epoch's first set belong to that epoch.
+// Receivers send one set per signal band (L1, L5) right after each other, so the sets are merged.
+// The window is counted from the first set, so a receiver sending faster than this still starts new epochs.
 constexpr uint32_t SAME_EPOCH_MS = 500;
 // Combined (GN) GSA sentences closer together than this belong to one epoch
 constexpr uint32_t GSA_EPOCH_MS = 300;
@@ -111,7 +112,7 @@ void SatelliteDb::onGsv(const char* talker, const minmea_sentence_gsv& gsv, uint
 
 void SatelliteDb::commit(int group, uint32_t nowMs) {
     PendingSet& set = groups[group];
-    const bool merge = set.committed && !olderThan(nowMs, set.committedAtMs, SAME_EPOCH_MS);
+    const bool merge = set.committed && !olderThan(nowMs, set.epochStartMs, SAME_EPOCH_MS);
 
     if (!merge) {
         int kept = 0;
@@ -125,6 +126,7 @@ void SatelliteDb::commit(int group, uint32_t nowMs) {
                 Satellite& fresh = set.satellites[j];
                 if (fresh.system == satellites[i].system && fresh.id == satellites[i].id) {
                     fresh.used = satellites[i].used;
+                    fresh.usedBy = satellites[i].usedBy;
                     fresh.usedAtMs = satellites[i].usedAtMs;
                 }
             }
@@ -152,8 +154,10 @@ void SatelliteDb::commit(int group, uint32_t nowMs) {
         existing.lastSeenMs = nowMs;
     }
 
+    if (!merge) {
+        set.epochStartMs = nowMs;
+    }
     set.committed = true;
-    set.committedAtMs = nowMs;
 }
 
 // Combined GSA sentences don't say their system in minmea's fields. Receivers send one per system
@@ -181,10 +185,12 @@ GnssSystem SatelliteDb::guessGsaSystem(const int* ids, int idCount) const {
     return best;
 }
 
+// A GSA sentence replaces the used flags it set last time, so a GP sentence also clears the
+// SBAS and QZSS satellites it listed before, and leaves those of a QZ or GN sentence alone
 void SatelliteDb::markUsed(GnssSystem gsaSystem, const int* ids, int idCount, uint32_t nowMs) {
     if (gsaSystem != GnssSystem::Unknown) {
         for (int i = 0; i < satelliteCount; i++) {
-            if (satellites[i].system == gsaSystem) {
+            if (satellites[i].used && satellites[i].usedBy == gsaSystem) {
                 satellites[i].used = false;
             }
         }
@@ -193,8 +199,15 @@ void SatelliteDb::markUsed(GnssSystem gsaSystem, const int* ids, int idCount, ui
         const int index = find(usedIdSystem(gsaSystem, ids[i]), ids[i]);
         if (index >= 0) {
             satellites[index].used = true;
+            satellites[index].usedBy = gsaSystem;
             satellites[index].usedAtMs = nowMs;
         }
+    }
+}
+
+void SatelliteDb::clearUsed() {
+    for (int i = 0; i < satelliteCount; i++) {
+        satellites[i].used = false;
     }
 }
 
@@ -212,6 +225,11 @@ void SatelliteDb::onGsa(const char* talker, const minmea_sentence_gsa& gsa, uint
     GnssSystem system = systemFromTalker(talker);
     if (system == GnssSystem::Unknown) {
         if (idCount == 0) {
+            // An empty combined sentence without a fix: no satellite is used. With a fix it's
+            // only a system without used satellites, and its system can't be told.
+            if (gsa.fix_type != MINMEA_GPGSA_FIX_2D && gsa.fix_type != MINMEA_GPGSA_FIX_3D) {
+                clearUsed();
+            }
             return;
         }
         if (combinedGsaAtMs == 0 || olderThan(nowMs, combinedGsaAtMs, GSA_EPOCH_MS)) {

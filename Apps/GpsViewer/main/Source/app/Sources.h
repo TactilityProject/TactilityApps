@@ -47,6 +47,7 @@ private:
     Device* device = nullptr;
     GpsSubscription subscription {};
     bool subscribed = false;
+    uint32_t session = 0;
     uint32_t nextAttemptMs = 0;
     bool lost = false;
 };
