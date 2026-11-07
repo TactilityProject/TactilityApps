@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Sources.h"
 
+#include <tactility/time.h>
+
 #include <cstring>
 
 namespace gpsviewer {
@@ -121,7 +123,7 @@ void GpsSource::disconnect() {
 void GpsSource::readerLoop() {
     while (!stopRequested.load()) {
         if (!subscribed) {
-            tryConnect(nowMs());
+            tryConnect(get_millis());
             if (!subscribed) {
                 vTaskDelay(pdMS_TO_TICKS(READER_IDLE_MS));
                 continue;
@@ -187,7 +189,7 @@ void GpsSource::poll(AppContext& appContext, uint32_t timeoutMs, Recorder& recor
     if (xQueueReceive(queue, &event, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
         return;
     }
-    const uint32_t now = nowMs();
+    const uint32_t now = get_millis();
     int handled = 0;
     do {
         {

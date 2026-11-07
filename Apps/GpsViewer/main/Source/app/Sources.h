@@ -16,9 +16,7 @@
 namespace gpsviewer {
 
 // Live data from the first started GPS_TYPE device.
-// A GPS subscription holds only the latest event, and the driver's thread runs at a high priority.
-// So a reader task with a higher priority copies every event into a queue right away, otherwise
-// the parts of a GSV set get overwritten before they are read. The app task drains the queue.
+// A reader task waits for the GPS events and copies them into a queue, which the app task drains.
 class GpsSource {
 public:
     // Subscribes to the location service, which starts the receiver and shows the location icon,

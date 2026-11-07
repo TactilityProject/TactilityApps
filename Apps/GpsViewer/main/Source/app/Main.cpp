@@ -8,13 +8,14 @@
 #include <app/scheduler.h>
 #include <app/start.h>
 #include <lvgl_window_manager/window_manager.h>
+#include <tactility/Memory.hpp>
 #include <tactility/check.h>
+#include <tactility/time.h>
 
 #include <freertos/task.h>
 #include <sys/stat.h>
 
 #include <cstdio>
-#include <new>
 
 namespace gpsviewer {
 
@@ -105,13 +106,14 @@ void run(AppContext& context, Sources& sources) {
                     ContextLock lock(context);
                     utc = context.model.utc();
                 }
-                recorder.start(context.dataDirectory, utc, nowMs());
+                recorder.start(context.dataDirectory, utc, get_millis());
             }
         }
         if ((requests & REQUEST_OPEN_LOCATION_SETTINGS) != 0) {
             struct AppStartContext start {};
             if (app_start_context_from_id("tactility.locationsettings", &start) == ERROR_NONE) {
-                app_start_with_context(&start, nullptr);
+                AppInstanceId instanceId;
+                app_start_with_context(&start, &instanceId);
             }
         }
         if ((requests & REQUEST_RESET_SPEED) != 0) {
@@ -129,10 +131,6 @@ void run(AppContext& context, Sources& sources) {
 
 } // namespace
 
-uint32_t nowMs() {
-    return static_cast<uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
-}
-
 } // namespace gpsviewer
 
 extern "C" int main(int argc, char* argv[]) {
@@ -140,7 +138,8 @@ extern "C" int main(int argc, char* argv[]) {
     (void)argv;
     using namespace gpsviewer;
 
-    auto* context = new (std::nothrow) AppContext();
+    // The app state is large, so it goes to external memory when there is some
+    auto* context = tt::newObject<AppContext>();
     if (context == nullptr) {
         return 0;
     }
@@ -152,17 +151,17 @@ extern "C" int main(int argc, char* argv[]) {
     context->ui = uiAllocate(*context);
     if (context->mutex != nullptr && context->ui != nullptr) {
         context->settings = loadSettings(*context);
-        context->model.reset(nowMs());
-        auto* sources = new (std::nothrow) Sources();
+        context->model.reset(get_millis());
+        auto* sources = tt::newObject<Sources>();
         if (sources != nullptr) {
             run(*context, *sources);
-            delete sources;
+            tt::deleteObject(sources);
         }
     }
     uiFree(context->ui);
     if (context->mutex != nullptr) {
         vSemaphoreDelete(context->mutex);
     }
-    delete context;
+    tt::deleteObject(context);
     return 0;
 }

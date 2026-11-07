@@ -60,13 +60,16 @@ Tactility's location settings.
 | To… | Keyboard | Trackball (keypad mode) | Trackball (pointer mode) | Touch |
 | --- | --- | --- | --- | --- |
 | Next / previous tab | Left / Right arrows, `.` / `,` or Space | Roll left / right | Click the tab name | Swipe left / right, or tap the tab name |
-| Scroll the Signal bars | Left / Right (at the ends, Left / Right change the tab) | Roll left / right | Click and drag the bars | Drag the bars |
+| Scroll the Signal bars | Enter on the Signal tab, then Left / Right. Enter or Esc to switch tabs again | Click on the Signal tab, then roll left / right. Click to switch tabs again | Click and drag the bars | Drag the bars |
 | Jump to a tab | `1`-`4` | — | Click the tab name | Tap the tab name |
-| Open the action menu | Enter | Click | Click the ⋮ button | Tap the ⋮ button in the toolbar |
+| Select a tab from the tab row | Move the focus to the tab row, Left / Right, Enter. The Signal tab then scrolls its bars | Roll up to the tab row, roll left / right, click. The Signal tab then scrolls its bars | Click the tab name | Tap the tab name |
+| Open the action menu | Enter (`m` on the Signal tab) | Click (the ⋮ button on the Signal tab) | Click the ⋮ button | Tap the ⋮ button in the toolbar |
 | Move in menus and settings | Up / Down or Left / Right | Roll | Click the row | Tap the row |
 | Select in menus and settings | Enter | Click | Click the row | Tap the row |
 | Close a menu or settings | Esc or Backspace | Select "< Back" | Click "< Back" | Tap "< Back" |
 | Close the app | — | Select the X button | Click the X button | Tap the X button in the toolbar |
+
+An encoder steps through the toolbar buttons, the tabs and the content, and its button selects.
 
 The keys `n` (night mode), `r` (reset max/average speed), `s` (settings) and `l` (start or stop recording)
 work from the keyboard. `m` opens the menu. These actions are also in the menu.
@@ -95,18 +98,6 @@ seconds. Recording stops with "Stop recording" and when the app closes.
 Sentences are written back from the parsed values: RMC, GGA, GSA and GSV with their checksums. Other
 sentences and fields the app does not use are not saved. The logs are plain NMEA 0183, for use in other tools.
 
-## Screenshots
-
-![Status tab](docs/status.png)
-
-![Signal tab](docs/signal.png)
-
-![Sky tab](docs/sky.png)
-
-![Position tab](docs/position.png)
-
-![Night mode](docs/night.png)
-
 ## Testing
 
 Tested on a LilyGO T-Deck with a Quectel L76K on the Grove port (GPS, GLONASS and BeiDou), outdoors and by a
@@ -122,7 +113,6 @@ parsed again. The satellite database, NMEA writer, settings and formatting have 
   GPS settings, the driver first tries other receiver types, which took about 4.4 s for the L76K. Choosing the
   model in the GPS settings skips that.
 - Fonts are Tactility's three text sizes: there is no bold font.
-- The "Open settings" message was not tested on the device: it needs a missing receiver or location turned off.
 
 ## Building
 

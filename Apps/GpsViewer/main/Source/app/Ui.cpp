@@ -5,13 +5,15 @@
 
 #include <app/event.h>
 #include <lvgl/fonts.h>
+#include <lvgl/grid_navigation.h>
 #include <lvgl/icons/shared.h>
 #include <lvgl/widgets/toolbar.h>
+#include <tactility/Memory.hpp>
+#include <tactility/time.h>
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <new>
 
 namespace gpsviewer {
 
@@ -76,6 +78,8 @@ struct UiState {
     lv_timer_t* timer = nullptr;
     Overlay overlayType = Overlay::None;
     int activeTab = 0;
+    // Left and Right scroll the Signal bars instead of switching tabs
+    bool signalScrolling = false;
     bool rebuildPending = false;
     SourceStatus status = SourceStatus::NoReceiver;
     char receiverName[32] = "";
@@ -148,8 +152,25 @@ void styleTabButtons(UiState& ui) {
     }
 }
 
+// The content area gets an outline while the keys scroll the Signal bars
+void setSignalScrolling(UiState& ui, bool scrolling) {
+    ui.signalScrolling = scrolling;
+    if (ui.content == nullptr) {
+        return;
+    }
+    const int32_t width = scrolling ? 2 : 0;
+    for (const lv_style_selector_t state : { LV_STATE_DEFAULT, LV_STATE_FOCUSED, LV_STATE_FOCUS_KEY }) {
+        lv_obj_set_style_outline_color(ui.content, ui.theme.accent, state);
+        lv_obj_set_style_outline_width(ui.content, width, state);
+        lv_obj_set_style_outline_pad(ui.content, -2, state);
+    }
+}
+
 void setTab(UiState& ui, int tab) {
     ui.activeTab = (tab + TAB_COUNT) % TAB_COUNT;
+    if (ui.activeTab != TAB_SIGNAL && ui.signalScrolling) {
+        setSignalScrolling(ui, false);
+    }
     styleTabButtons(ui);
     refresh(ui);
 }
@@ -383,18 +404,29 @@ void onMenuButton(lv_event_t* event) {
     openMenu(*static_cast<UiState*>(lv_event_get_user_data(event)));
 }
 
+bool isKeyInput() {
+    lv_indev_t* indev = lv_indev_active();
+    return indev != nullptr && lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER;
+}
+
+// Selecting the Signal tab with keys moves the keys to its bars, as Left and Right on the tab row only move the focus
 void onTabButton(lv_event_t* event) {
     auto* ui = static_cast<UiState*>(lv_event_get_user_data(event));
     lv_obj_t* button = lv_event_get_current_target_obj(event);
     for (int i = 0; i < TAB_COUNT; i++) {
         if (ui->tabButtons[i] == button) {
             setTab(*ui, i);
+            if (i == TAB_SIGNAL && isKeyInput() && !ui->messageCard.shown()) {
+                lv_group_focus_obj(ui->content);
+                setSignalScrolling(*ui, true);
+            }
         }
     }
 }
 
 void moveTab(UiState& ui, int direction) {
-    if (ui.activeTab == TAB_SIGNAL && ui.signalTab.scroll(direction)) {
+    if (ui.signalScrolling) {
+        ui.signalTab.scroll(direction);
         return;
     }
     setTab(ui, ui.activeTab + direction);
@@ -406,6 +438,12 @@ void onContentKey(lv_event_t* event) {
     auto* ui = static_cast<UiState*>(lv_event_get_user_data(event));
     const uint32_t key = lv_event_get_key(event);
     switch (key) {
+        case LV_KEY_ESC:
+        case LV_KEY_BACKSPACE:
+            if (ui->signalScrolling) {
+                setSignalScrolling(*ui, false);
+            }
+            break;
         case LV_KEY_LEFT:
         case ',':
             moveTab(*ui, -1);
@@ -447,13 +485,24 @@ void onContentKey(lv_event_t* event) {
 }
 
 // Enter from a keyboard, trackball or encoder opens the menu. Taps on the content don't.
+// Enter opens the action menu, and on the Signal tab it switches between scrolling the bars and switching tabs
 void onContentClicked(lv_event_t* event) {
     auto* ui = static_cast<UiState*>(lv_event_get_user_data(event));
-    lv_indev_t* indev = lv_indev_active();
-    if (indev == nullptr || lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+    if (!isKeyInput()) {
+        return;
+    }
+    if (ui->activeTab == TAB_SIGNAL && !ui->messageCard.shown()) {
+        setSignalScrolling(*ui, !ui->signalScrolling);
         return;
     }
     openMenu(*ui);
+}
+
+void onContentDefocused(lv_event_t* event) {
+    auto* ui = static_cast<UiState*>(lv_event_get_user_data(event));
+    if (ui->signalScrolling) {
+        setSignalScrolling(*ui, false);
+    }
 }
 
 void onContentGesture(lv_event_t* event) {
@@ -518,6 +567,7 @@ void forgetWidgets(UiState& ui) {
     ui.headerBadge = nullptr;
     ui.badgeColor = 0;
     ui.content = nullptr;
+    ui.signalScrolling = false;
     ui.overlay = nullptr;
     ui.overlayType = Overlay::None;
     for (int i = 0; i < TAB_COUNT; i++) {
@@ -570,7 +620,8 @@ void createHeader(UiState& ui) {
     ui.badgeColor = 0;
 }
 
-// Text tabs with a 2 px line under the active one
+// Text tabs with a 2 px line under the active one. The strip is a grid navigation row, so the arrow keys and
+// encoders reach the tabs, and Enter selects the focused one.
 void createTabStrip(UiState& ui) {
     const Theme& theme = ui.theme;
     lv_obj_t* strip = createBox(ui.root);
@@ -583,6 +634,10 @@ void createTabStrip(UiState& ui) {
         lv_obj_t* button = createBox(strip);
         lv_obj_set_size(button, LV_PCT(25), LV_DPX(24));
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+        lv_obj_set_style_outline_color(button, theme.accent, LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_outline_width(button, 2, LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_outline_pad(button, -2, LV_STATE_FOCUS_KEY);
         lv_obj_remove_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_remove_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
         lv_obj_t* label = createLabel(button, FONT_SIZE_SMALL, theme.dim);
@@ -598,6 +653,7 @@ void createTabStrip(UiState& ui) {
         ui.tabButtons[i] = button;
         ui.tabIndicators[i] = indicator;
     }
+    lvgl_grid_navigation_add(strip);
 }
 
 void build(UiState& ui) {
@@ -633,6 +689,7 @@ void build(UiState& ui) {
     lv_obj_remove_flag(ui.content, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(ui.content, onContentKey, LV_EVENT_KEY, &ui);
     lv_obj_add_event_cb(ui.content, onContentClicked, LV_EVENT_CLICKED, &ui);
+    lv_obj_add_event_cb(ui.content, onContentDefocused, LV_EVENT_DEFOCUSED, &ui);
     lv_obj_add_event_cb(ui.content, onContentGesture, LV_EVENT_GESTURE, &ui);
     lv_obj_update_layout(root);
 
@@ -666,7 +723,7 @@ void refresh(UiState& ui) {
     bool recording;
     {
         ContextLock lock(*ui.context);
-        ui.context->model.snapshot(ui.snapshot, nowMs());
+        ui.context->model.snapshot(ui.snapshot, get_millis());
         status = ui.context->status;
         memcpy(ui.receiverName, ui.context->receiverName, sizeof(ui.receiverName));
         ui.settings = ui.context->settings;
@@ -704,7 +761,7 @@ void refresh(UiState& ui) {
 } // namespace
 
 UiState* uiAllocate(AppContext& context) {
-    auto* ui = new (std::nothrow) UiState();
+    auto* ui = tt::newObject<UiState>();
     if (ui != nullptr) {
         ui->context = &context;
     }
@@ -712,7 +769,9 @@ UiState* uiAllocate(AppContext& context) {
 }
 
 void uiFree(UiState* ui) {
-    delete ui;
+    if (ui != nullptr) {
+        tt::deleteObject(ui);
+    }
 }
 
 void uiCreateWidgets(lv_obj_t* root, void* userData) {

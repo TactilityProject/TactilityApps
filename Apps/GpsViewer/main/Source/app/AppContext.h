@@ -58,8 +58,6 @@ struct AppContext {
     UiState* ui = nullptr;
 };
 
-uint32_t nowMs();
-
 class ContextLock {
 public:
     explicit ContextLock(AppContext& context) : context(context) { xSemaphoreTake(context.mutex, portMAX_DELAY); }
