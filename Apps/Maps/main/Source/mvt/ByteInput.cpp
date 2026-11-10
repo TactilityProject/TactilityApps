@@ -18,9 +18,11 @@ bool FileBuffer::reserve(size_t size) {
     capacity = (size + 0xFFFF) & ~static_cast<size_t>(0xFFFF);
     data = static_cast<uint8_t*>(largeAlloc(capacity));
     if (data == nullptr) {
+        shortfall = size;
         capacity = 0;
         return false;
     }
+    shortfall = 0;
     return true;
 }
 

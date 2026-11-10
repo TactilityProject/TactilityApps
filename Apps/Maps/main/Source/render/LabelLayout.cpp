@@ -17,8 +17,19 @@ bool labelFontCovers(uint32_t codepoint) {
         codepoint == 0x2116;
 }
 
-/** Whether every character of a UTF-8 name can be drawn with the label font. */
-bool labelFontCoversText(const char* text, uint16_t length) {
+/**
+ * Whether every character of a UTF-8 name can be drawn with the label font: asked of the font itself, since the app's
+ * font has only the characters that map names use (tools/label_codepoints.txt); without a font, by script.
+ */
+bool labelFontCoversText(LabelFont* font, const char* text, uint16_t length) {
+    // Plain ASCII (every house number, most names) is always in the font: no glyph lookups
+    bool ascii = true;
+    for (uint16_t i = 0; i < length && ascii; i++) {
+        ascii = static_cast<uint8_t>(text[i]) < 0x80;
+    }
+    if (ascii) {
+        return true;
+    }
     for (uint16_t i = 0; i < length;) {
         const auto first = static_cast<uint8_t>(text[i]);
         uint32_t codepoint;
@@ -42,7 +53,8 @@ bool labelFontCoversText(const char* text, uint16_t length) {
         for (int k = 1; k < bytes; k++) {
             codepoint = (codepoint << 6) | (static_cast<uint8_t>(text[i + k]) & 0x3F);
         }
-        if (!labelFontCovers(codepoint)) {
+        LabelGlyph glyph {};
+        if (font != nullptr ? !font->glyph(codepoint, glyph, false) : !labelFontCovers(codepoint)) {
             return false;
         }
         i = static_cast<uint16_t>(i + bytes);
@@ -72,7 +84,9 @@ enum Priority : uint8_t {
     PRIORITY_MINOR_ROAD,
     PRIORITY_HAMLET,
     PRIORITY_WATER,
-    PRIORITY_PEAK
+    PRIORITY_PEAK,
+    PRIORITY_POI,
+    PRIORITY_HOUSE_NUMBER
 };
 
 uint32_t nextCodepoint(const char*& text, const char* end) {
@@ -249,6 +263,24 @@ bool LabelLayout::wants(const LabelRecord& record, uint8_t& priority, uint8_t& f
             color = style.peak;
             priority = PRIORITY_PEAK;
             return zoom >= 12 + later;
+        case LabelKind::Poi: {
+            PoiAppearance look {};
+            if (poiLookup == nullptr || !poiLookup(static_cast<uint8_t>(record.labelClass), look) || look.icon == nullptr) {
+                return false;
+            }
+            color = style.binary ? style.place : look.color;
+            priority = PRIORITY_POI;
+            // From the type's zoom (15 for most); the most important ones (rank 1-2) one level earlier, at least z14
+            int first = look.minZoom;
+            if (record.rank >= 0 && record.rank <= 2) {
+                first = std::min(first, 14);
+            }
+            return zoom >= std::max(14, first) + later;
+        }
+        case LabelKind::HouseNumber:
+            color = style.houseNumber;
+            priority = PRIORITY_HOUSE_NUMBER;
+            return zoom >= 17 + later;
     }
     return false;
 }
@@ -262,16 +294,30 @@ void LabelLayout::addSection(const uint8_t* section, size_t size, int count, con
     LabelRecord record {};
     while (candidateCount < MAX_CANDIDATES && reader.next(record)) {
         Candidate candidate {};
+        // POIs and house numbers never crowd out place and street names: they stop before the candidates are full
+        if ((record.kind == LabelKind::Poi && candidateCount >= POI_CANDIDATE_LIMIT) ||
+            (record.kind == LabelKind::HouseNumber && candidateCount >= NUMBER_CANDIDATE_LIMIT)) {
+            continue;
+        }
         if (!wants(record, candidate.priority, candidate.fontSize, candidate.color)) {
             continue;
+        }
+        candidate.kind = record.kind;
+        if (record.kind == LabelKind::Poi) {
+            PoiAppearance look {};
+            poiLookup(static_cast<uint8_t>(record.labelClass), look);
+            candidate.poiType = static_cast<uint8_t>(record.labelClass);
+            candidate.icon = look.icon;
+            candidate.iconSize = static_cast<uint8_t>(look.iconSize);
         }
         // The Latin-script name when asked for, and for names in scripts the label font has no letters for (Japanese,
         // Chinese, Arabic and others)
         const bool hasLatin = record.nameLatin != nullptr && record.nameLatinLength > 0;
-        const bool latin = hasLatin && (preferLatin || !labelFontCoversText(record.name, record.nameLength));
+        const bool latin = hasLatin && (preferLatin || !labelFontCoversText(fonts[SIZE_NORMAL], record.name, record.nameLength));
         const char* name = latin ? record.nameLatin : record.name;
         const uint16_t length = latin ? record.nameLatinLength : record.nameLength;
-        if (length == 0 || textsUsed + length + 1 > TEXT_BYTES) {
+        // A POI may have no name: its icon is the label, the sheet names its type
+        if ((length == 0 && record.kind != LabelKind::Poi) || textsUsed + length + 1 > TEXT_BYTES) {
             continue;
         }
         candidate.line = record.pointCount >= 2;
@@ -393,10 +439,11 @@ void LabelLayout::gridMark(float cx, float cy, float halfWidth, float halfHeight
 bool LabelLayout::alreadyPlaced(const Candidate& candidate, float x, float y) const {
     // The same name from a neighbouring tile, or the same street again too soon
     const char* name = texts + candidate.textOffset;
-    const float reach = candidate.line ? static_cast<float>(LINE_REPEAT_PIXELS) : 120.0f;
+    // House numbers repeat in every street: only the same number at the same spot (two tiles' copies) is one
+    const float reach = candidate.line ? static_cast<float>(LINE_REPEAT_PIXELS) : (candidate.kind == LabelKind::HouseNumber ? 6.0f : 120.0f);
     for (int i = 0; i < placedCount; i++) {
         const Placed& other = placed[i];
-        if (other.line != candidate.line || strcmp(texts + other.textOffset, name) != 0) {
+        if (other.line != candidate.line || other.kind != candidate.kind || strcmp(texts + other.textOffset, name) != 0) {
             continue;
         }
         const float dx = other.x + other.width / 2.0f - x;
@@ -425,6 +472,44 @@ bool LabelLayout::placePoint(const Candidate& candidate) {
         return false;
     }
     gridMark(candidate.x, centerY, halfWidth, halfHeight, 0.0f);
+    return true;
+}
+
+bool LabelLayout::placePoi(const Candidate& candidate) {
+    LabelFont* font = fontFor(candidate.fontSize);
+    if (font == nullptr || candidate.icon == nullptr) {
+        return false;
+    }
+    // Chains repeat names (two shops of the same name a street apart): only a copy right next to it is the same POI
+    const char* name = texts + candidate.textOffset;
+    for (int i = 0; i < placedCount; i++) {
+        const Placed& other = placed[i];
+        if (other.kind == LabelKind::Poi && other.poiType == candidate.poiType && strcmp(texts + other.textOffset, name) == 0 &&
+            std::fabs(other.anchorX - candidate.x) < 6.0f && std::fabs(other.anchorY - candidate.y) < 6.0f) {
+            return false;
+        }
+    }
+    const float iconHalf = candidate.iconSize / 2.0f + GAP;
+    // Where even the icon has no room, nothing is measured or drawn
+    if (!gridFree(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f)) {
+        return false;
+    }
+    // The name to the right of the icon when zoomed in and there is room, else the icon alone
+    if (zoom >= POI_NAME_ZOOM && candidate.textLength > 0) {
+        const int textPixels = textWidth(*font, name, candidate.textLength);
+        const float contentWidth = candidate.iconSize + 3.0f + textPixels;
+        const float centerX = candidate.x - candidate.iconSize / 2.0f + contentWidth / 2.0f;
+        const float halfHeight = std::max(iconHalf, font->lineHeight() / 2.0f + GAP);
+        if (gridFree(centerX, candidate.y, contentWidth / 2.0f + GAP, halfHeight, 0.0f) &&
+            drawSprite(candidate, centerX, candidate.y, 0.0f, textPixels, true)) {
+            gridMark(centerX, candidate.y, contentWidth / 2.0f + GAP, halfHeight, 0.0f);
+            return true;
+        }
+    }
+    if (!drawSprite(candidate, candidate.x, candidate.y, 0.0f, 0, false)) {
+        return false;
+    }
+    gridMark(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f);
     return true;
 }
 
@@ -514,7 +599,7 @@ int LabelLayout::placeLine(const Candidate& candidate) {
     return placedHere;
 }
 
-bool LabelLayout::drawSprite(const Candidate& candidate, float centerX, float centerY, float angle, int textPixels) {
+bool LabelLayout::drawSprite(const Candidate& candidate, float centerX, float centerY, float angle, int textPixels, bool withText) {
     LabelFont* font = fontFor(candidate.fontSize);
     if (placedCount >= MAX_LABELS || font == nullptr) {
         return false;
@@ -522,8 +607,11 @@ bool LabelLayout::drawSprite(const Candidate& candidate, float centerX, float ce
     const float cosine = std::cos(angle);
     const float sine = std::sin(angle);
     // The text box, with room for the halo, turned
-    const float boxWidth = static_cast<float>(textPixels) + 6.0f;
-    const float boxHeight = static_cast<float>(font->lineHeight()) + 4.0f;
+    // A POI's icon comes first, its name (if drawn) after a small gap
+    const int iconSize = candidate.icon != nullptr ? candidate.iconSize : 0;
+    const int iconWidth = iconSize > 0 ? iconSize + (withText ? 3 : 0) : 0;
+    const float boxWidth = static_cast<float>(iconWidth + (withText ? textPixels : 0)) + 6.0f;
+    const float boxHeight = static_cast<float>(std::max(withText ? font->lineHeight() : 0, iconSize)) + 4.0f;
     const int width = static_cast<int>(std::ceil(std::fabs(boxWidth * cosine) + std::fabs(boxHeight * sine))) + 2;
     const int height = static_cast<int>(std::ceil(std::fabs(boxWidth * sine) + std::fabs(boxHeight * cosine))) + 2;
     if (candidate.line && (centerX - width / 2.0f < -0.5f || centerY - height / 2.0f < -0.5f || centerX + width / 2.0f > screenWidth + 0.5f ||
@@ -543,8 +631,25 @@ bool LabelLayout::drawSprite(const Candidate& candidate, float centerX, float ce
     const float spriteCenterY = height / 2.0f;
     const float baseline = font->ascent() - font->lineHeight() / 2.0f;
     const char* text = texts + candidate.textOffset;
-    const char* end = text + candidate.textLength;
-    int penX16 = -textPixels * 8;
+    const char* end = withText ? text + candidate.textLength : text;
+    const int contentWidth = iconWidth + (withText ? textPixels : 0);
+    // The text starts after the icon; without one this is -textPixels * 8, the text centred
+    int penX16 = static_cast<int>((static_cast<float>(iconWidth) - contentWidth / 2.0f) * 16.0f);
+    if (iconSize > 0) {
+        // The icon's mask at the left end, centred on the line; icons are only drawn level
+        const int iconX = static_cast<int>(std::floor(spriteCenterX - contentWidth / 2.0f + 0.5f));
+        const int iconY = static_cast<int>(std::floor(spriteCenterY - iconSize / 2.0f + 0.5f));
+        for (int gy = 0; gy < iconSize; gy++) {
+            const int y = iconY + gy;
+            for (int gx = 0; gx < iconSize && y >= 0 && y < height; gx++) {
+                const int x = iconX + gx;
+                if (x >= 0 && x < width) {
+                    uint8_t& target = textPlane[y * width + x];
+                    target = std::max(target, candidate.icon[gy * iconSize + gx]);
+                }
+            }
+        }
+    }
     uint32_t previous = 0;
     bool hasPrevious = false;
     while (text < end) {
@@ -664,6 +769,10 @@ bool LabelLayout::drawSprite(const Candidate& candidate, float centerX, float ce
     label.color = candidate.color;
     label.line = candidate.line;
     label.spriteOffset = static_cast<uint32_t>(arenaUsed);
+    label.kind = candidate.kind;
+    label.poiType = candidate.poiType;
+    label.anchorX = static_cast<int16_t>(std::clamp(candidate.x, -30000.0f, 30000.0f));
+    label.anchorY = static_cast<int16_t>(std::clamp(candidate.y, -30000.0f, 30000.0f));
     arenaUsed += bytes;
     if (clock != nullptr) {
         spriteTime += clock() - started;
@@ -689,6 +798,8 @@ int LabelLayout::place() {
     for (int i = 0; i < candidateCount && placedCount < MAX_LABELS; i++) {
         if (candidates[i].line) {
             placeLine(candidates[i]);
+        } else if (candidates[i].kind == LabelKind::Poi) {
+            placePoi(candidates[i]);
         } else {
             placePoint(candidates[i]);
         }
@@ -735,6 +846,65 @@ void LabelLayout::draw(Canvas& canvas, int offsetX, int offsetY, bool lineLabels
             }
         }
     }
+}
+
+bool LabelLayout::item(int index, PlacedItem& out) const {
+    if (index < 0 || index >= placedCount) {
+        return false;
+    }
+    const Placed& label = placed[index];
+    if (label.kind != LabelKind::Poi && label.kind != LabelKind::HouseNumber) {
+        return false;
+    }
+    out = { label.kind, label.poiType, texts + label.textOffset, label.anchorX, label.anchorY };
+    return true;
+}
+
+int LabelLayout::pick(int x, int y, int radius, int offsetX, int offsetY) const {
+    int best = -1;
+    int bestDistance = radius * radius + 1;
+    for (int i = 0; i < placedCount; i++) {
+        const Placed& label = placed[i];
+        if (label.kind != LabelKind::Poi && label.kind != LabelKind::HouseNumber) {
+            continue;
+        }
+        // Inside the label's box counts as on it; otherwise the distance to its point
+        const int left = label.x + offsetX;
+        const int top = label.y + offsetY;
+        const bool inside = x >= left && y >= top && x < left + label.width && y < top + label.height;
+        const int dx = label.anchorX + offsetX - x;
+        const int dy = label.anchorY + offsetY - y;
+        const int distance = inside ? 0 : dx * dx + dy * dy;
+        if (distance < bestDistance) {
+            best = i;
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
+int LabelLayout::byDistance(int x, int y, int* out, int max, int offsetX, int offsetY) const {
+    int count = 0;
+    int distances[MAX_LABELS];
+    for (int i = 0; i < placedCount && count < max && count < MAX_LABELS; i++) {
+        const Placed& label = placed[i];
+        if (label.kind != LabelKind::Poi && label.kind != LabelKind::HouseNumber) {
+            continue;
+        }
+        const int dx = label.anchorX + offsetX - x;
+        const int dy = label.anchorY + offsetY - y;
+        // Insertion into the sorted list, nearest first
+        const int distance = dx * dx + dy * dy;
+        int at = count++;
+        while (at > 0 && distances[at - 1] > distance) {
+            distances[at] = distances[at - 1];
+            out[at] = out[at - 1];
+            at--;
+        }
+        distances[at] = distance;
+        out[at] = i;
+    }
+    return count;
 }
 
 void LabelLayout::bounds(int index, int& x, int& y, int& w, int& h) const {

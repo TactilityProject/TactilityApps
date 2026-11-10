@@ -3,6 +3,7 @@
 #include "MapView.h"
 
 #include "../gpx/Track.h"
+#include "../render/PoiTypes.h"
 #include "../ui/Pins.h"
 #include "../platform/Platform.h"
 
@@ -20,6 +21,9 @@ namespace maps {
 namespace {
 
 constexpr int PIN_HIT = 14;
+/** A tap this close to a POI or house number picks it; Enter reaches places this far from the crosshair. */
+constexpr int PLACE_HIT = 14;
+constexpr int PLACE_REACH = 70;
 constexpr uint16_t TRACK_COLOR = 0xD8A4;
 constexpr uint16_t GPX_TRACK_COLOR = 0x3A7F;
 constexpr uint16_t GPX_ROUTE_COLOR = 0xA81F;
@@ -104,7 +108,7 @@ void MapView::saveWaypoints() {
     }
 }
 
-void MapView::openNewWaypoint(double lat, double lon) {
+void MapView::openNewWaypoint(double lat, double lon, const char* givenName) {
     if (waypoints.count() >= Waypoints::MAX_WAYPOINTS) {
         showToast("200 waypoints is the most, delete some first");
         return;
@@ -113,13 +117,17 @@ void MapView::openNewWaypoint(double lat, double lon) {
     sheetLon = lon;
     selectedWaypoint = -1;
     char name[WaypointSheet::NAME_LENGTH];
-    waypoints.nextName(name, sizeof(name));
+    if (givenName != nullptr && givenName[0] != '\0') {
+        snprintf(name, sizeof(name), "%s", givenName);
+    } else {
+        waypoints.nextName(name, sizeof(name));
+    }
     char coordinates[48];
     formatCoordinates(lat, lon, coordinates, sizeof(coordinates));
     char distance[64];
     describeDistance(lat, lon, distance, sizeof(distance));
-    sheet.openNew(name, coordinates, distance, input.hasKeyboard());
-    sheet.layout(width, height, overlay.font());
+    sheet.openNew(name, coordinates, distance, canType());
+    sheet.layout(width, height, sheetFont());
     controls.hide();
     dirty = true;
 }
@@ -145,7 +153,7 @@ void MapView::openWaypointSheet(int index) {
     char distance[64];
     describeDistance(waypoint.lat, waypoint.lon, distance, sizeof(distance));
     sheet.openExisting(waypoint.name, coordinates, distance);
-    sheet.layout(width, height, overlay.font());
+    sheet.layout(width, height, sheetFont());
     dirty = true;
 }
 
@@ -172,9 +180,18 @@ void MapView::handleSheetButton(WaypointSheet::Button button) {
         case WaypointSheet::Button::Close:
             sheet.close();
             selectedWaypoint = -1;
+            placeOrderCount = 0;
             break;
+        case WaypointSheet::Button::SaveAsWaypoint: {
+            // A new waypoint at the place, its name filled in (editable on boards with a keyboard)
+            char name[WaypointSheet::NAME_LENGTH];
+            snprintf(name, sizeof(name), "%s", sheet.name());
+            placeOrderCount = 0;
+            openNewWaypoint(sheetLat, sheetLon, name);
+            break;
+        }
         case WaypointSheet::Button::Rename:
-            if (!input.hasKeyboard()) {
+            if (!canType()) {
                 showToast("Renaming needs a keyboard");
                 break;
             }
@@ -186,6 +203,95 @@ void MapView::handleSheetButton(WaypointSheet::Button button) {
         default:
             break;
     }
+}
+
+bool MapView::labelOffset(int& x, int& y) const {
+    if (!labelsReady || labelZoom != zoom || labelBearing != bearing || labels.count() == 0) {
+        return false;
+    }
+    double moveX;
+    double moveY;
+    worldToScreenOffset(labelCenterX - centerX, labelCenterY - centerY, moveX, moveY);
+    x = static_cast<int>(std::floor(moveX + 0.5));
+    y = static_cast<int>(std::floor(moveY + 0.5));
+    return true;
+}
+
+int MapView::placeAt(int x, int y) const {
+    int offsetX;
+    int offsetY;
+    if (!labelOffset(offsetX, offsetY)) {
+        return -1;
+    }
+    return labels.pick(x, y, PLACE_HIT, offsetX, offsetY);
+}
+
+void MapView::openPlaceSheet(int index) {
+    PlacedItem item {};
+    int offsetX;
+    int offsetY;
+    if (!labelOffset(offsetX, offsetY) || !labels.item(index, item)) {
+        return;
+    }
+    // The labelled point back into the world
+    double worldX;
+    double worldY;
+    screenToWorldOffset(item.x + offsetX - width / 2.0, item.y + offsetY - height / 2.0, worldX, worldY);
+    sheetLon = worldXToLon(centerX + worldX, zoom);
+    sheetLat = worldYToLat(centerY + worldY, zoom);
+    selectedWaypoint = -1;
+    const char* type = item.kind == LabelKind::HouseNumber ? "House number" : poiType(item.poiType).label;
+    char name[WaypointSheet::NAME_LENGTH];
+    if (item.kind == LabelKind::HouseNumber) {
+        snprintf(name, sizeof(name), "No. %s", item.name);
+    } else {
+        // A POI without a name is called by its type
+        snprintf(name, sizeof(name), "%s", item.name[0] != '\0' ? item.name : type);
+    }
+    char coordinates[48];
+    formatCoordinates(sheetLat, sheetLon, coordinates, sizeof(coordinates));
+    char distance[64];
+    describeDistance(sheetLat, sheetLon, distance, sizeof(distance));
+    sheet.openPlace(name, type, coordinates, distance);
+    sheet.layout(width, height, sheetFont());
+    dirty = true;
+}
+
+bool MapView::selectNearestPlace() {
+    int offsetX;
+    int offsetY;
+    placeOrderCount = 0;
+    if (!labelOffset(offsetX, offsetY)) {
+        return false;
+    }
+    int order[MAX_PLACE_ORDER];
+    const int count = labels.byDistance(width / 2, height / 2, order, MAX_PLACE_ORDER, offsetX, offsetY);
+    // Only places near the crosshair: farther ones are better reached by panning
+    for (int i = 0; i < count; i++) {
+        PlacedItem item {};
+        labels.item(order[i], item);
+        const int dx = item.x + offsetX - width / 2;
+        const int dy = item.y + offsetY - height / 2;
+        if (dx * dx + dy * dy <= PLACE_REACH * PLACE_REACH) {
+            placeOrder[placeOrderCount++] = order[i];
+        }
+    }
+    if (placeOrderCount == 0) {
+        return false;
+    }
+    placeOrderIndex = 0;
+    openPlaceSheet(placeOrder[0]);
+    return true;
+}
+
+void MapView::selectNextPlace() {
+    if (placeOrderCount == 0) {
+        sheet.close();
+        dirty = true;
+        return;
+    }
+    placeOrderIndex = (placeOrderIndex + 1) % placeOrderCount;
+    openPlaceSheet(placeOrder[placeOrderIndex]);
 }
 
 int MapView::waypointAt(int x, int y) const {
@@ -261,10 +367,10 @@ void MapView::openWaypointActions() {
         return;
     }
     beginPopup(Popup::WaypointActions, waypoints.at(waypointRows[row]).name);
-    // 0 go to, 1 rename, 2 delete; renaming needs a keyboard
+    // 0 go to, 1 rename, 2 delete; renaming needs a keyboard or a touch screen (its on-screen keyboard)
     menu.add("Go to");
     popupActions[popupActionCount++] = 0;
-    if (input.hasKeyboard()) {
+    if (canType()) {
         menu.add("Rename");
         popupActions[popupActionCount++] = 1;
     }
@@ -323,7 +429,7 @@ void MapView::deleteWaypoint() {
 }
 
 void MapView::askRenameWaypoint(int index) {
-    if (!input.hasKeyboard() || index < 0 || index >= waypoints.count()) {
+    if (!canType() || index < 0 || index >= waypoints.count()) {
         return;
     }
     editingWaypoint = index;

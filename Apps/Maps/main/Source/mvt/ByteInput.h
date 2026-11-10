@@ -84,6 +84,7 @@ class FileBuffer {
     uint8_t* data = nullptr;
     size_t capacity = 0;
     size_t length = 0;
+    size_t shortfall = 0;
 
 public:
     FileBuffer() = default;
@@ -99,7 +100,12 @@ public:
     bool reserve(size_t size);
     uint8_t* writable() { return data; }
     void setSize(size_t size) { length = size <= capacity ? size : 0; }
-    void clear() { length = 0; }
+    void clear() {
+        length = 0;
+        shortfall = 0;
+    }
+    /** The size reserve() could not get a block for since the last clear(), or 0: the file was there, memory was not. */
+    size_t lastShortfall() const { return shortfall; }
     /** Frees the buffer when it grew beyond keepBytes, so one big low-zoom tile does not hold PSRAM for good. */
     void trim(size_t keepBytes);
 };

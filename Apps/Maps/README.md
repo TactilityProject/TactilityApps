@@ -49,10 +49,19 @@ circle), the scale bar, and the © mark.
 | Back to north | N | — | Compass button |
 | Open a row's actions | Enter | Click | Tap the row |
 | Add a waypoint | P | — | Hold ⌖ (your position) or hold the map (that point) |
+| A place or house number | Show the controls, then Enter (nearest the crosshair; Enter again: next) | Click it | Tap it |
 | Menu | M | Long click | ☰ button |
 | Download an area | Shift + D | — | Menu → Download map |
+| Leave the download frame | Esc | — | The round < in its top left corner |
+| Type a name (waypoint, rename) | Keyboard | — | On-screen keyboard |
 | Credits | — | Click © | Tap ©, tap again for About and licences |
 | Leave the app | Esc or Backspace | Menu → Exit | Menu → Exit |
+
+**Touch only.** Every function works with only a touch screen. On boards without a keyboard an
+on-screen keyboard opens with every text field (new waypoint names, Rename): letters with Shift (twice
+for caps lock), a 123 page with digits and signs, an ÁÉ page with the accented letters common in names,
+Del, Space and OK; the field moves up above it. Lists and menus scroll by dragging and go back with a
+swipe to the right or their <; the download frame has its own < to leave without downloading.
 
 **Controls.** Hidden by default. When shown: ☰ menu top left, + and − in the middle of the right edge, ⌖
 position bottom right above the scale bar. With a keyboard each button shows its key. ⌖ is filled while
@@ -81,8 +90,26 @@ street names follow the street and stay upright, with a light halo. Settings →
 and Settings → Latin names (the Latin-script name where the map data has one). The app ships a subset of
 Adwaita Sans with Latin, Greek, Cyrillic and Vietnamese letters, so names like Štefánikova, Łódź,
 İstanbul, Москва or Hà Nội show fully; the device makes the fonts from it once (about 7 s in the
-background on first start) and keeps them on the card. Map data downloaded with 0.1.0 is upgraded in
+background on first start) and keeps them on the card, made again once when a new app version brings a
+new font. The font holds the characters map names use (scanned from real map data of many countries) plus
+whole Latin, Greek and Cyrillic alphabets, 39 KB. Map data downloaded with an older version is upgraded in
 place in idle time, the tiles on screen first; no download is needed.
+
+**Places and house numbers.** Icons for cafés, shops, stops, stations, pharmacies, hotels, museums and
+about 120 other kinds of places, coloured by kind (food orange, shops purple, transport blue, health red,
+…), from z15 (stations, museums and the most important places from z14, benches and bins from z16), with
+their names next to them from z17 when there is room. House numbers in small grey text from z17. Both
+follow Settings → Labels (one zoom level later with Few) and never cover place or street names. Tap or
+click one for a sheet with its name, kind, coordinates, distance and direction, "Save as waypoint" (the
+name filled in) and Close. With keys: show the controls (a small crosshair marks the middle), then Enter
+opens the place nearest the crosshair and each next Enter the next nearest; Esc closes the sheet. Enter
+on the map without the controls still shows them. Icons: Maki by Mapbox (CC0).
+
+**Background work.** A small amber dot in the top-left corner shows while the app works in the
+background: preparing or upgrading tiles, making label fonts, updating maps, importing GPX files, moving
+browsed tiles into a download. It pulses on colour screens and is solid on monochrome and e-paper ones.
+It hides while the progress label or the controls show. Tap or click it for a card listing what runs.
+Not to be confused with the red ● of track recording.
 
 **Menu:** Download map, Downloaded maps, Waypoints, Add waypoint, Record track, GPX files, Location, Settings, About and
 licences, Exit. W/S, trackball or finger to move; Enter, click or tap to choose; Esc, Backspace or tap
@@ -95,7 +122,9 @@ without a highlight until a key, the trackball or the encoder moves.
 **Downloading:** open Download map. It asks "Choose area" or "Choose region". "Choose area" keeps the frame
 in the middle; move and zoom the map under it. The bar shows tiles, size and max zoom, and updates live.
 Enter, click or Download starts it; Esc cancels. It downloads in the background and resumes after a
-restart; areas share tiles.
+restart; areas share tiles. Tiles you already looked at while browsing are not fetched again: they move
+from "browsed" into the new region (the bar says e.g. "1240 tiles, 310 already on the card"); a browsed
+tile from an older map build is downloaded fresh.
 
 **Choose region** lists continents, countries and regions, from Geofabrik's region list shipped with the
 app. Enter or tap opens a region's parts; the first row "All of …" downloads the whole of it. The app
@@ -189,6 +218,7 @@ app. The tile URL is read from OpenFreeMap's TileJSON. openstreetmap.org tile se
 - Region outlines © OpenStreetMap contributors, from Geofabrik GmbH (download.geofabrik.de), ODbL 1.0.
 - Built for [Tactility](https://github.com/TactilityProject/Tactility).
 - Label font: Adwaita Sans, under the SIL Open Font License 1.1; see [THIRD_PARTY.md](THIRD_PARTY.md).
+- Place icons: [Maki](https://github.com/mapbox/maki) by Mapbox, CC0 1.0.
 
 ## Attribution
 
@@ -207,8 +237,23 @@ python <Tactility>/tt.py app install --host <device ip>
 python <Tactility>/tt.py app run --host <device ip>
 ```
 
-The files in `assets/` are made by the scripts in `tools/`: `make_label_font.py` makes the label font subset
-`assets/fonts/LabelSans.ttf` (needs fontTools), `build_catalog.py` makes the region catalog `assets/regions.bin`.
+The PC build (`host/`, CMake) renders tiles to PNG and runs the unit tests:
+
+```
+cmake -S host -B host/build
+cmake --build host/build --config Release
+host/build/Release/render_tile <folder with maps/> 47.4979 19.0402 14 640 480 out.png
+host/build/Release/tests
+host/build/Release/prepare_tiles <folder with maps/> [--write] [--deflate] [--zoom 16]
+host/build/Release/ui_preview <output folder> [--mono]
+```
+
+`prepare_tiles` converts the tiles of a folder into prepared tiles and compares size, render time and pixels
+with the originals (`--write` stores the `.prt` files, which `render_tile --prepared` then draws from).
+`ui_preview` draws the app's screens over a fixture tile to PNG, with blocks in place of text.
+
+`host/fetch_tiles.py` downloads a test area on the PC (same OpenFreeMap rules), `host/push_region.py`
+copies it to a device through the development server.
 
 ## Licence
 

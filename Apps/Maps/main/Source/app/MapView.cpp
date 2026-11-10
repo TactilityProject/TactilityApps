@@ -5,14 +5,18 @@
 
 #include "../platform/Platform.h"
 #include "../render/Compose.h"
+#include "../render/PoiIconData.h"
+#include "../render/PoiTypes.h"
 
 #include <lvgl.h>
 #include <lvgl/fonts.h>
 #include <tactility/drivers/display.h>
 #include <tactility/drivers/power_supply.h>
+#include <tactility/paths.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_heap_caps.h>
 #include <esp_timer.h>
 
 #include <algorithm>
@@ -65,6 +69,69 @@ constexpr int MIN_LINE_HEIGHT = 15;
 
 } // namespace
 
+namespace {
+
+/** The icon mask of each POI type, found once by name in the generated Maki masks. */
+const uint8_t* poiIcons[256] {};
+bool poiMonochrome = false;
+uint16_t poiMonochromeColor = 0;
+
+const uint8_t* iconMask(const char* name) {
+    int low = 0;
+    int high = POI_ICON_COUNT - 1;
+    while (low <= high) {
+        const int middle = (low + high) / 2;
+        const int order = strcmp(POI_ICON_MASKS[middle].name, name);
+        if (order == 0) {
+            return POI_ICON_MASKS[middle].alpha;
+        }
+        if (order < 0) {
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    return nullptr;
+}
+
+/** Icon colours by group, dark enough to read on the light map with a white halo. */
+uint16_t groupColor(PoiGroup group) {
+    switch (group) {
+        case PoiGroup::Food: return 0xC300;      // orange
+        case PoiGroup::Shop: return 0x9113;      // purple
+        case PoiGroup::Transport: return 0x2A5A; // blue
+        case PoiGroup::Health: return 0xC104;    // red
+        case PoiGroup::Money: return 0x3A8A;     // slate
+        case PoiGroup::Lodging: return 0x0451;   // teal
+        case PoiGroup::Culture: return 0x8209;   // plum brown
+        case PoiGroup::Leisure: return 0x3445;   // green
+        case PoiGroup::Education: return 0x8A42; // brown
+        case PoiGroup::Worship: return 0x4208;   // dark grey
+        default: return 0x52AA;                  // grey
+    }
+}
+
+void preparePoiIcons(bool monochrome, uint16_t monochromeColor) {
+    poiMonochrome = monochrome;
+    poiMonochromeColor = monochromeColor;
+    const uint8_t* fallback = iconMask("marker");
+    for (int id = 1; id <= poiTypeCount() && id < 256; id++) {
+        const uint8_t* mask = iconMask(poiIconName(poiType(static_cast<uint8_t>(id)).icon));
+        poiIcons[id] = mask != nullptr ? mask : fallback;
+    }
+}
+
+bool lookupPoi(uint8_t id, PoiAppearance& out) {
+    if (id == 0 || id > poiTypeCount() || poiIcons[id] == nullptr) {
+        return false;
+    }
+    const PoiType& type = poiType(id);
+    out = { poiIcons[id], POI_ICON_SIZE, poiMonochrome ? poiMonochromeColor : groupColor(type.group), type.minZoom };
+    return true;
+}
+
+} // namespace
+
 bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     // Idle time is counted from the start, not from boot
     lastInputAt = nowMs();
@@ -91,6 +158,7 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         logError("I/O task not started");
         return false;
     }
+    browsedCounter.configure(io, root);
     int regionsFound = 0;
     auto loadState = [&] {
         char settingsPath[PATH_MAX_LENGTH];
@@ -133,9 +201,15 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     app_paths_get_assets_path(APP_ID, "regions.bin", catalogPath, sizeof(catalogPath));
     downloader.setCatalogPath(catalogPath);
     TrackRecorder::closeUnfinished(io, rootPath);
-    // GPX files are dropped into gpx/ at the top of the card, where users find it
-    const char* second = strchr(rootPath + 1, '/');
-    snprintf(gpxFolder, sizeof(gpxFolder), "%.*s/gpx", second != nullptr ? static_cast<int>(second - rootPath) : 0, rootPath);
+    // GPX files are dropped into gpx/ at the top of the data volume (the SD card), where users find it
+    char volume[PATH_MAX_LENGTH] = "";
+    if (paths_get_data_root_path(volume, sizeof(volume)) == ERROR_NONE) {
+        snprintf(gpxFolder, sizeof(gpxFolder), "%s/gpx", volume);
+    } else {
+        const char* second = strchr(rootPath + 1, '/');
+        snprintf(gpxFolder, sizeof(gpxFolder), "%.*s/gpx", second != nullptr ? static_cast<int>(second - rootPath) : 0, rootPath);
+    }
+    logInfo("GPX folder %s", gpxFolder);
     loadShownGpx();
     overlay.setFonts(&normalFont, smallFont.isOpen() && smallFont.lineHeight() >= MIN_LINE_HEIGHT ? &smallFont : &normalFont);
     worker.setDeflatePrepared(settings.deflatePrepared);
@@ -218,6 +292,7 @@ void MapView::end() {
         }
     }
     fontMaker.stop();
+    browsedCounter.stop();
     downloader.stop();
     worker.stop();
     io.stop();
@@ -249,6 +324,35 @@ void MapView::end() {
     scratch = nullptr;
     largeFree(aboutBuffer);
     aboutBuffer = nullptr;
+    for (int i = 0; i < squeezedCount; i++) {
+        largeFree(squeezed[i]);
+    }
+    squeezedCount = 0;
+}
+
+void MapView::squeezeMemory(size_t largest) {
+    // Blocks of 64 KB are taken until no free block is as large as asked, then every other one is given back: much
+    // PSRAM stays free, but only in small pieces, like after a long session
+    constexpr size_t BLOCK = 64 * 1024;
+    int taken = 0;
+    void* blocks[MAX_SQUEEZED * 2];
+    while (taken < MAX_SQUEEZED * 2 && heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= largest) {
+        void* block = largeAlloc(BLOCK);
+        if (block == nullptr) {
+            break;
+        }
+        blocks[taken++] = block;
+    }
+    for (int i = 0; i < taken; i++) {
+        if (i % 2 == 0 || squeezedCount >= MAX_SQUEEZED) {
+            largeFree(blocks[i]);
+        } else {
+            squeezed[squeezedCount++] = blocks[i];
+        }
+    }
+    logInfo("debug: squeeze: %d blocks of 64 KB held, PSRAM %u KB free, largest block %u KB", squeezedCount,
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
 }
 
 void MapView::centerOn(double lat, double lon, int newZoom) {
@@ -615,6 +719,7 @@ void MapView::drawStatus() {
     char text[96];
     const Downloader::Status& status = lastStatus;
     pillRect = {};
+    statusShown = false;
     bool progress = true;
     if (status.state == Downloader::State::Downloading && status.total > 0) {
         formatProgressPill(TransferKind::Download, statusTitle, status.done, status.total, text, sizeof(text));
@@ -635,6 +740,7 @@ void MapView::drawStatus() {
         return;
     }
     const Rect rect = overlay.drawPill(canvas, text, *palette);
+    statusShown = true;
     if (progress) {
         pillRect = rect;
     }
@@ -697,7 +803,10 @@ void MapView::fillDownloadCard() {
     } else {
         add("%s", status.message[0] != '\0' ? status.message : "Nothing is downloading.");
     }
-    downloadCard.set(statusTitle[0] != '\0' ? statusTitle : status.region, rows, count, !running);
+    // Tiles fetched while browsing can't be paused or cancelled from the card, only the card closed
+    const bool browsing = !running && status.state != Downloader::State::Connecting && downloader.isBrowsing() && browseTotal > 0;
+    const char* title = browsing ? "Map detail" : statusTitle[0] != '\0' ? statusTitle : status.region;
+    downloadCard.set(title, rows, count, !running, browsing);
     downloadCard.layout(width, height, overlay.font());
 }
 
@@ -789,7 +898,7 @@ void MapView::pollDownloader(uint32_t now) {
     const Downloader::Status status = downloader.status();
     // Tile cache slots given to a large download come back once nothing downloads
     if (status.state != Downloader::State::Connecting && status.state != Downloader::State::Downloading &&
-        status.state != Downloader::State::Updating && !downloader.isBrowsing() && worker.cacheShrunk()) {
+        status.state != Downloader::State::Updating && !downloader.isBrowsing() && worker.cacheShrunk() && !worker.isPreparing()) {
         worker.restoreMemory();
     }
     downloader.browseProgress(browseDone, browseTotal);
@@ -907,9 +1016,15 @@ void MapView::drawMap() {
     const uint32_t locked = nowMs();
     probe.phase("compose");
     if (isRotated()) {
-        // Turned: every pixel through the transform, tiles not ready stood in for by cached ancestors or children
+        // Turned: every pixel through the transform, tiles not ready stood in for by cached ancestors or children;
+        // nearest pixel while it moves, bilinear once it settled
+        const bool bilinear = isSmoothView();
         composeAffine(frame, width, height, scaledView(centerX, centerY, zoom, 1.0f, width / 2.0f, height / 2.0f, width, height, bearingCos, bearingSin),
-            lookupCached, this, palette->placeholder, *scratch);
+            lookupCached, this, palette->placeholder, *scratch, bilinear);
+        if (bilinear && !smooth.logged) {
+            smooth.logged = true;
+            logInfo("Bilinear frame %u ms (z%d, %d degrees)", static_cast<unsigned>(nowMs() - locked), zoom, static_cast<int>(bearing));
+        }
     } else {
         composeView(frame, width, height, centerX, centerY, zoom, lookupTile, this, palette->placeholder);
     }
@@ -973,12 +1088,14 @@ void MapView::pollLabelFonts() {
 
 void MapView::applyLabelSettings() {
     labels.setDensity(static_cast<LabelDensity>(std::clamp(settings.labels, 0, 2)));
+    preparePoiIcons(monochrome, palette->text);
+    labels.setPoiLookup(lookupPoi);
     labels.setPreferLatin(settings.latinNames);
     const bool binary = palette->binary;
     // Dark names with a light halo, water in blue, peaks in brown; black on white on monochrome displays
     labels.setStyle({ monochrome ? palette->text : static_cast<uint16_t>(0x2124), monochrome ? palette->text : static_cast<uint16_t>(0x4208),
         monochrome ? palette->text : static_cast<uint16_t>(0x2A35), monochrome ? palette->text : static_cast<uint16_t>(0x6A04),
-        monochrome ? palette->halo : static_cast<uint16_t>(0xFFFF), binary });
+        monochrome ? palette->halo : static_cast<uint16_t>(0xFFFF), binary, monochrome ? palette->text : static_cast<uint16_t>(0x7BEF) });
     labelZoom = -1;
 }
 
@@ -1062,6 +1179,85 @@ void MapView::updateLabels(uint32_t now) {
     dirty = true;
 }
 
+void MapView::updateWork(uint32_t now) {
+    const uint32_t before = work.generation();
+    auto set = [&](WorkKind kind, bool running, int32_t done, int32_t total) {
+        if (running && !work.isRunning(kind)) {
+            work.start(kind, total);
+        }
+        if (running) {
+            work.progress(kind, done, total);
+        } else if (work.isRunning(kind)) {
+            work.finish(kind);
+        }
+    };
+    int prepared = 0;
+    int waiting = 0;
+    worker.preparation(prepared, waiting);
+    set(WorkKind::PrepareTiles, waiting > 0, prepared, prepared + waiting);
+    set(WorkKind::Fonts, labelsReady && missingLabelFonts != 0 && !labelFontsApplied, 0, 0);
+    set(WorkKind::IdleUpdate, lastStatus.state == Downloader::State::Updating, static_cast<int32_t>(lastStatus.done),
+        static_cast<int32_t>(lastStatus.total));
+    set(WorkKind::GpxImport, gpxImport.state() == GpxImport::State::Busy, 0, 0);
+    const int moved = downloader.movedTiles();
+    set(WorkKind::MoveBrowsed, lastStatus.state == Downloader::State::Downloading && moved > 0, moved, 0);
+    if (work.generation() != before) {
+        dirty = true;
+    }
+    // The open card follows the counts
+    if (workCard.isOpen() && now - lastWorkPulse >= 500) {
+        lastWorkPulse = now;
+        dirty = true;
+    }
+}
+
+void MapView::drawWorkDot() {
+    // Amber, not red: red is track recording. Drawn only with full frames, so menus and their dimming cover it
+    ::maps::drawWorkDot(canvas, WORK_DOT_X, WORK_DOT_Y, monochrome ? palette->text : static_cast<uint16_t>(0xFD20));
+}
+
+bool MapView::wantsTouchKeyboard() const {
+    if (input.hasKeyboard() || !input.hasTouch()) {
+        return false;
+    }
+    return prompt.isOpen() || (sheet.isOpen() && sheet.mode() == WaypointSheet::Mode::New && sheet.isEditable());
+}
+
+void MapView::syncTouchKeyboard() {
+    const bool wanted = wantsTouchKeyboard();
+    if (wanted && !touchKeyboard.isOpen()) {
+        touchKeyboard.open();
+    } else if (!wanted && touchKeyboard.isOpen()) {
+        touchKeyboard.close();
+    }
+    if (!touchKeyboard.isOpen()) {
+        return;
+    }
+    // The text field moves up above the keyboard
+    const int above = height - TouchKeyboard::heightFor(width);
+    touchKeyboard.layout(width, height, sheetFont());
+    if (prompt.isOpen()) {
+        prompt.layout(width, above, overlay.font());
+    }
+    if (sheet.isOpen()) {
+        sheet.layout(width, above, sheetFont(), true);
+    }
+}
+
+bool MapView::isSmoothView() const {
+    return smooth.valid && smooth.zoom == zoom && smooth.bearing == bearing && std::fabs(smooth.centerX - centerX) < 0.01 &&
+        std::fabs(smooth.centerY - centerY) < 0.01;
+}
+
+void MapView::updateSmooth(uint32_t now) {
+    if (!isRotated() || isSmoothView() || animation.active || turn.active || pinching || isFullScreen() || now - lastInputAt < 250 ||
+        !isViewComplete()) {
+        return;
+    }
+    smooth = { true, centerX, centerY, zoom, bearing, false };
+    dirty = true;
+}
+
 void MapView::drawScaledMap() {
     const uint32_t start = nowMs();
     AffineView view {};
@@ -1123,6 +1319,7 @@ void MapView::drawScaledMap() {
 
 void MapView::render() {
     const uint32_t start = nowMs();
+    syncTouchKeyboard();
     probe.phase("render");
     if (animation.active && (pinching || isFullScreen() || start - animation.startMs >= ZOOM_ANIMATION_MS)) {
         animation.active = false;
@@ -1192,13 +1389,26 @@ void MapView::render() {
                 drawCompass();
             }
             controls.draw(canvas, overlay.font(), theme, positionButton());
+            if (controls.isVisible() && !sheet.isOpen() && !cursorShown) {
+                // The crosshair Enter picks places from: dark with a light rim, like the pointer
+                const auto x = static_cast<float>(width / 2);
+                const auto y = static_cast<float>(height / 2);
+                canvas.line(x - 7.0f, y, x + 7.0f, y, 3.0f, theme.panel);
+                canvas.line(x, y - 7.0f, x, y + 7.0f, 3.0f, theme.panel);
+                canvas.line(x - 6.0f, y, x + 6.0f, y, 1.5f, theme.text);
+                canvas.line(x, y - 6.0f, x, y + 6.0f, 1.5f, theme.text);
+            }
             if (sheet.isOpen()) {
-                sheet.draw(canvas, overlay.font(), theme);
+                sheet.draw(canvas, sheetFont(), theme);
             }
         }
         if (screen == Screen::Map) {
             drawStatus();
             drawRecording();
+        }
+        workDotShown = screen == Screen::Map && work.any() && !statusShown && !controls.isVisible() && !sheet.isOpen();
+        if (workDotShown) {
+            drawWorkDot();
         }
     }
     if (menuOpen) {
@@ -1207,11 +1417,20 @@ void MapView::render() {
     if (dialog.isOpen()) {
         dialog.draw(canvas, overlay.font(), theme);
     }
+    syncTouchKeyboard();
     if (prompt.isOpen()) {
         prompt.draw(canvas, overlay.font(), theme);
     }
+    if (touchKeyboard.isOpen()) {
+        touchKeyboard.draw(canvas, sheetFont(), theme);
+    }
     if (downloadCard.isOpen() && !dialog.isOpen()) {
         downloadCard.draw(canvas, overlay.font(), theme);
+    }
+    if (workCard.isOpen() && !dialog.isOpen()) {
+        workCard.set(work);
+        workCard.layout(width, height, overlay.font());
+        workCard.draw(canvas, overlay.font(), theme);
     }
     if (static_cast<int32_t>(nowMs() - toastUntil) < 0) {
         overlay.drawToast(canvas, toastText, theme);
@@ -1453,6 +1672,11 @@ void MapView::run() {
         probe.phase("labels");
         pollLabelFonts();
         updateLabels(now);
+        updateSmooth(now);
+        if (browsedCounter.poll(now) && screen == Screen::Download) {
+            dirty = true;
+        }
+        updateWork(now);
         probe.phase("loop");
         const uint32_t afterGaps = nowMs();
 
@@ -1483,6 +1707,21 @@ void MapView::run() {
                     break;
                 case DebugScript::Action::Exit:
                     exitRequested = true;
+                    break;
+                case DebugScript::Action::Touch:
+                    syntheticTouch = step;
+                    syntheticTouchStart = now;
+                    syntheticTouchActive = true;
+                    syntheticTouchEnded = false;
+                    break;
+                case DebugScript::Action::Squeeze:
+                    squeezeMemory(static_cast<size_t>(step.zoom) * 1024);
+                    break;
+                case DebugScript::Action::TouchOnly:
+                    input.setTouchOnly(true);
+                    cursorShown = false;
+                    controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
+                    dirty = true;
                     break;
                 default:
                     break;

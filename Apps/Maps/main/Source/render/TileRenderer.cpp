@@ -210,7 +210,8 @@ bool TileRenderer::renderPrepared(const uint8_t* data, size_t size, const TileKe
         cursor += length;
     }
 
-    if (header.version == PREPARED_FORMAT_VERSION && labelHook != nullptr && labelSection != nullptr) {
+    // Labels have the same format from version 3 on, so a version 3 tile keeps its labels until it is regenerated
+    if (header.version >= 3 && labelHook != nullptr && labelSection != nullptr) {
         labelHook(header.tile, labelSection, labelSize, labelCount, labelContext);
     }
     preparedExtent = header.extent;

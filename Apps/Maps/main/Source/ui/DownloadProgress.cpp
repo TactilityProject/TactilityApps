@@ -168,9 +168,13 @@ DownloadCard::Button DownloadCard::buttonAt(int index) const {
     return BUTTONS[index];
 }
 
-void DownloadCard::set(const char* titleText, const char* const* detailLines, int count, bool isPaused) {
+void DownloadCard::set(const char* titleText, const char* const* detailLines, int count, bool isPaused, bool onlyClose) {
     snprintf(title, sizeof(title), "%s", titleText != nullptr ? titleText : "");
     paused = isPaused;
+    closeOnly = onlyClose;
+    if (closeOnly) {
+        focus = 2;
+    }
     lineCount = std::clamp(count, 0, MAX_LINES);
     for (int i = 0; i < lineCount; i++) {
         snprintf(lines[i], LINE_LENGTH, "%s", detailLines != nullptr && detailLines[i] != nullptr ? detailLines[i] : "");
@@ -202,8 +206,10 @@ void DownloadCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
         drawClippedText(canvas, font, left, y, lines[i], textWidth, theme.muted);
         y += font.lineHeight();
     }
-    drawButton(canvas, font, theme, buttons[0], paused ? "Resume" : "Pause", focus == 0);
-    drawButton(canvas, font, theme, buttons[1], "Cancel", focus == 1, true);
+    if (!closeOnly) {
+        drawButton(canvas, font, theme, buttons[0], paused ? "Resume" : "Pause", focus == 0);
+        drawButton(canvas, font, theme, buttons[1], "Cancel", focus == 1, true);
+    }
     drawButton(canvas, font, theme, buttons[2], "Close", focus == 2);
 }
 
@@ -220,7 +226,9 @@ DownloadCard::Button DownloadCard::handleKey(uint32_t key) {
         case 'D':
         case 's':
         case 'S':
-            focus = (focus + 1) % BUTTON_COUNT;
+            if (!closeOnly) {
+                focus = (focus + 1) % BUTTON_COUNT;
+            }
             return Button::None;
         case keys::LEFT:
         case keys::UP:
@@ -229,7 +237,9 @@ DownloadCard::Button DownloadCard::handleKey(uint32_t key) {
         case 'A':
         case 'w':
         case 'W':
-            focus = (focus + BUTTON_COUNT - 1) % BUTTON_COUNT;
+            if (!closeOnly) {
+                focus = (focus + BUTTON_COUNT - 1) % BUTTON_COUNT;
+            }
             return Button::None;
         case keys::ESCAPE:
         case keys::BACKSPACE:
@@ -241,7 +251,7 @@ DownloadCard::Button DownloadCard::handleKey(uint32_t key) {
 }
 
 DownloadCard::Button DownloadCard::handleTap(int x, int y) {
-    for (int i = 0; i < BUTTON_COUNT; i++) {
+    for (int i = closeOnly ? BUTTON_COUNT - 1 : 0; i < BUTTON_COUNT; i++) {
         if (buttons[i].contains(x, y)) {
             return buttonAt(i);
         }

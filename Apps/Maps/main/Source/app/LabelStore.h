@@ -20,7 +20,10 @@ namespace maps {
 class LabelStore {
 public:
     static constexpr int MAX_ENTRIES = 48;
-    static constexpr size_t MAX_BYTES = 384 * 1024;
+    /** 512 KB: v4 sections of dense city tiles (POIs and house numbers) are over 100 KB each (device test, 10 Nov 2026). */
+    static constexpr size_t MAX_BYTES = 512 * 1024;
+    /** The largest section kept: a third of the store, so a view's tiles fit together. */
+    static constexpr size_t MAX_SECTION_BYTES = MAX_BYTES / 3;
 
     bool begin();
     void end();

@@ -81,11 +81,12 @@ bool formatRegionMeta(const RegionMeta& meta, char* out, size_t size) {
         "  \"total\": %" PRId64 ",\n"
         "  \"done\": %" PRId64 ",\n"
         "  \"bytes\": %" PRIu64 ",\n"
+        "  \"moved\": %" PRIu64 ",\n"
         "  \"outline\": \"%s\",\n"
         "  \"title\": \"%s\"\n"
         "}\n",
         meta.name, meta.box.west, meta.box.south, meta.box.east, meta.box.north, meta.minZoom, meta.maxZoom,
-        meta.source, meta.version, meta.date, meta.total, meta.done, meta.bytes, meta.outline, meta.title);
+        meta.source, meta.version, meta.date, meta.total, meta.done, meta.bytes, meta.moved, meta.outline, meta.title);
     return written > 0 && static_cast<size_t>(written) < size;
 }
 
@@ -113,6 +114,10 @@ bool parseRegionMeta(const char* text, RegionMeta& meta) {
     int64_t bytes = 0;
     readInteger(text, "bytes", bytes);
     meta.bytes = static_cast<uint64_t>(bytes);
+    int64_t moved = 0;
+    if (readInteger(text, "moved", moved) && moved > 0) {
+        meta.moved = static_cast<uint64_t>(moved);
+    }
     if (!readInteger(text, "total", meta.total)) {
         meta.total = tileCount(meta.box, meta.minZoom, meta.maxZoom);
     }

@@ -31,8 +31,12 @@ namespace maps {
  *   label:  u8 kind, u8 class, varint rank + 1 (0 when absent), varint name length, name bytes,
  *           varint latin name length (0 when absent or equal to name), latin name bytes,
  *           varint point count, zigzag varint deltas x, y. Deltas start at 0, 0 for each label.
+ *           Kinds 0-4 are place, road, water, waterway and peak. Version 4 adds kind 5, poi (class = type id from
+ *           PoiTypes.h, rank + 1, name at most 63 bytes, empty for types shown without a name, one point), and
+ *           kind 6, house number (class 0, no rank, the number as the name, no latin name, one point). Both come
+ *           after the other labels. Version 3 tiles have neither and are still readable.
  */
-constexpr uint16_t PREPARED_FORMAT_VERSION = 3;
+constexpr uint16_t PREPARED_FORMAT_VERSION = 4;
 constexpr uint16_t PREPARED_MIN_READABLE_VERSION = 2;
 constexpr uint8_t PREPARED_LABEL_SECTION = 10;
 // 2 px per unit at z18 from z14 data. 1024 looked stepped at z17-z19; 4096 made deflated tiles 35 % larger
@@ -153,6 +157,10 @@ private:
     uint32_t sectionCounts[static_cast<int>(Stage::Count)] {};
     ByteWriter rings;
     ByteWriter labels;
+    /** The poi and house number labels, written apart so that they cannot crowd out the others in labels. */
+    ByteWriter extraLabels;
+    size_t poiBytes = 0;
+    size_t numberBytes = 0;
     uint32_t labelCount = 0;
     int section = 0;
     FeatureInfo feature {};

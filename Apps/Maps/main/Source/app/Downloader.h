@@ -4,6 +4,7 @@
 #include "IoTask.h"
 
 #include "../render/PreparedTile.h"
+#include "../tiles/BrowsedMove.h"
 #include "../tiles/ChunkedBody.h"
 #include "../tiles/RegionMeta.h"
 #include "../tiles/TileStore.h"
@@ -20,8 +21,9 @@ namespace maps {
 
 /**
  * Downloads the tiles of a region from OpenFreeMap in the background, and deletes regions.
- * The tile URL comes from OpenFreeMap's TileJSON. Two connections run at the same time, each kept alive
- * across tiles. A tile is received into PSRAM and written by the I/O task, after the tiles on screen.
+ * A tile the user already browsed is moved from the region "browsed" into the downloading region instead.
+ * The tile URL comes from OpenFreeMap's TileJSON. CONNECTIONS connections (one, see there) run at the same time,
+ * each kept alive across tiles. A tile is received into PSRAM and written by the I/O task, after the tiles on screen.
  * Progress is saved in the region's meta.json, so a download continues after a restart.
  *
  * While browsing, a third connection fetches the tiles on screen that have no detail on the card yet into the
@@ -36,7 +38,12 @@ namespace maps {
  */
 class Downloader {
 public:
-    static constexpr int CONNECTIONS = 2;
+    /**
+     * One download connection. Measured on the T-Deck (10 Nov 2026, the same 38 tiles twice each): two connections took
+     * 31-35 s with 3-4 TLS reads failing for internal RAM (esp-aes) and a 2 s reconnect each, one took 33 s with none,
+     * small tiles 250 ms each instead of 780 ms, and kept 9 KB more internal RAM free.
+     */
+    static constexpr int CONNECTIONS = 1;
     /**
      * Network tasks run on core 1. While a TLS handshake (2-3 s of CPU) ran on core 0, the map loop and the render
      * lane there made no progress for its whole length (docs/upstream/https-stall.md).
@@ -119,6 +126,8 @@ public:
     /** Tiles fetched and asked for since the browse queue was last empty, for "Fetching detail 2/4". */
     void browseProgress(int& done, int& total);
     static bool isOnline();
+    /** Browsed tiles moved into the region the current download fills, so far in this run. */
+    int movedTiles() const;
     /** Idle: no input for a while. Downloaded tiles are only written to the card while idle. */
     void setIdle(bool value) { idle = value; }
     TaskHandle_t browseTaskHandle() const { return browseTask; }
@@ -149,7 +158,21 @@ private:
         bool connected = false;
         /** Whether this connection holds the handshake lock. */
         bool handshaking = false;
+        /** Tiles moved from the browsed region instead of downloaded in this run, and their bytes. */
+        int movedTiles = 0;
+        uint64_t moved = 0;
+        /** Bytes of stale browsed copies removed after a fresh download replaced them. */
+        uint64_t browsedRemoved = 0;
     };
+
+    /** What the card has of a tile a download wants. */
+    enum class OnCard : uint8_t { Missing, InRegion, Shared, InBrowsed };
+    OnCard findTile(const char* region, const TileKey& tile);
+    /** Moves a browsed tile into the region; Stale when the browsed copy is from another source version. */
+    BrowsedMove moveBrowsedTile(Connection& connection, const TileKey& tile, uint64_t& size);
+    void removeBrowsedCopy(Connection& connection, const TileKey& tile);
+    /** Takes the bytes of moved and removed tiles off the browsed region's meta.json. */
+    void settleBrowsed(uint64_t removedBytes);
 
     struct IdleClient {
         void* client;
@@ -191,7 +214,8 @@ private:
     bool findPlaceName(const RegionMeta& region, char* out, size_t size);
     void connectionLoop(Connection& connection);
     bool fetchTileJson(Connection& connection);
-    bool downloadTile(Connection& connection, const char* region, const TileKey& tile, int& status);
+    /** waitForIdle: the tile is written only once the map is idle (downloads); tiles for the screen are written at once. */
+    bool downloadTile(Connection& connection, const char* region, const TileKey& tile, int& status, bool waitForIdle = true);
     bool tileOnCard(const char* region, const TileKey& tile, bool& inThisRegion);
     bool ensureTileJson(Connection& connection);
     static void browseMain(void* context);

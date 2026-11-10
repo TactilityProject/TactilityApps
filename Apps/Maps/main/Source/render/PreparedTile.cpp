@@ -3,6 +3,7 @@
 
 #include "../platform/Platform.h"
 #include "../tiles/TileStore.h"
+#include "PoiTypes.h"
 #include "PreparedLabels.h"
 
 #include <miniz.h>
@@ -20,6 +21,11 @@ constexpr size_t RING_START_CAPACITY = 1024;
 constexpr size_t RING_MAX_POINTS = 65536;
 /** Labels beyond this many bytes are dropped, they are for the screen around the current tile only. */
 constexpr size_t LABEL_MAX_BYTES = 48 * 1024;
+/** The same for the poi labels and for the house number labels, each (a dense city tile has thousands). */
+constexpr size_t POI_LABEL_MAX_BYTES = 80 * 1024;
+constexpr size_t NUMBER_LABEL_MAX_BYTES = 40 * 1024;
+/** Poi and house number texts are cut to this many bytes, at a character boundary. */
+constexpr size_t POI_TEXT_MAX_BYTES = 63;
 constexpr uint8_t FLAG_MARITIME = 1 << 2;
 constexpr uint8_t FLAG_RAMP = 1 << 3;
 constexpr uint8_t FLAG_SUBCLASS = 1 << 4;
@@ -63,9 +69,24 @@ int labelKindOf(Layer layer) {
             return static_cast<int>(LabelKind::Waterway);
         case Layer::MountainPeak:
             return static_cast<int>(LabelKind::Peak);
+        case Layer::Poi:
+            return static_cast<int>(LabelKind::Poi);
+        case Layer::Housenumber:
+            return static_cast<int>(LabelKind::HouseNumber);
         default:
             return -1;
     }
+}
+
+/** The length of text cut to at most maxBytes without splitting a UTF-8 character. */
+uint16_t cutUtf8(const char* text, size_t length, size_t maxBytes) {
+    if (length <= maxBytes) {
+        return static_cast<uint16_t>(length);
+    }
+    while (maxBytes > 0 && (static_cast<uint8_t>(text[maxBytes]) & 0xC0) == 0x80) {
+        maxBytes--;
+    }
+    return static_cast<uint16_t>(maxBytes);
 }
 
 size_t encodeVarint(uint8_t* out, uint64_t value) {
@@ -215,6 +236,9 @@ void TileConverter::trim(size_t keepBytes) {
             writer.release();
         }
     }
+    if (extraLabels.allocated() > keepBytes) {
+        extraLabels.release();
+    }
     if (labels.allocated() > keepBytes) {
         labels.release();
     }
@@ -263,6 +287,11 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
     const char* sourceVersion, bool deflate, ByteWriter& out, ConvertStats* stats) {
     const uint32_t start = nowMs();
     decoder = &tileDecoder;
+    // The decoder belongs to a render lane: its pools go back to their normal size however the conversion ends
+    struct ShrinkPools {
+        MvtDecoder& pools;
+        ~ShrinkPools() { pools.shrinkPools(); }
+    } shrinkPools { tileDecoder };
     tile = sourceTile;
     counters = {};
     // A tile is drawn at its own zoom level and magnified for the levels above it while no closer tile exists
@@ -275,13 +304,16 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         sectionCounts[i] = 0;
     }
     labels.clear();
+    extraLabels.clear();
+    poiBytes = 0;
+    numberBytes = 0;
     labelCount = 0;
     failureText = "";
-    if (!decoder->scan(input)) {
+    if (!decoder->scan(input, true)) {
         failureText = "reading the tile";
         return false;
     }
-    Layer layers[static_cast<int>(Stage::Count) + 5];
+    Layer layers[static_cast<int>(Stage::Count) + 7];
     int layerCount = 0;
     for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
         const auto stage = static_cast<Stage>(i);
@@ -294,6 +326,8 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
     layers[layerCount++] = Layer::WaterName;
     layers[layerCount++] = Layer::Waterway;
     layers[layerCount++] = Layer::MountainPeak;
+    layers[layerCount++] = Layer::Poi;
+    layers[layerCount++] = Layer::Housenumber;
     // The sections are separate buffers, so one pass in file order collects all of them
     if (!decoder->sweep(layers, layerCount, *this)) {
         failureText = "decoding, or no memory for the features";
@@ -305,7 +339,7 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
             return false;
         }
     }
-    if (labels.failed()) {
+    if (labels.failed() || extraLabels.failed()) {
         failureText = "no memory for the labels";
         return false;
     }
@@ -318,8 +352,9 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
             bodySize += encodeVarint(head, sectionCounts[i]) + encodeVarint(head, sections[i].size()) + 1 + sections[i].size();
         }
     }
+    const size_t labelBytes = labels.size() + extraLabels.size();
     if (labelCount != 0) {
-        bodySize += encodeVarint(head, labelCount) + encodeVarint(head, labels.size()) + 1 + labels.size();
+        bodySize += encodeVarint(head, labelCount) + encodeVarint(head, labelBytes) + 1 + labelBytes;
     }
 
     out.clear();
@@ -373,8 +408,11 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         size_t headSize = 0;
         head[headSize++] = PREPARED_LABEL_SECTION;
         headSize += encodeVarint(head + headSize, labelCount);
-        headSize += encodeVarint(head + headSize, labels.size());
+        headSize += encodeVarint(head + headSize, labelBytes);
         ok = emit(head, headSize) && emit(labels.bytes(), labels.size());
+        if (ok && extraLabels.size() != 0) {
+            ok = emit(extraLabels.bytes(), extraLabels.size());
+        }
     }
     const uint8_t endMark = 0xFF;
     ok = ok && emit(&endMark, 1);
@@ -401,7 +439,25 @@ bool TileConverter::beginFeature(const FeatureInfo& info) {
     counters.featuresIn++;
     section = sectionOf(info.layer);
     const int kind = labelKindOf(info.layer);
-    const bool hasLabel = kind >= 0 && info.name != nullptr && info.nameLength > 0;
+    bool hasLabel = kind >= 0 && info.name != nullptr && info.nameLength > 0;
+    uint8_t poiTypeId = 0;
+    if (info.layer == Layer::Poi || info.layer == Layer::Housenumber) {
+        hasLabel = false;
+        if (info.layer == Layer::Poi) {
+            poiTypeId = poiTypeFor(info.classText, info.classTextLength, info.subclassText, info.subclassTextLength);
+            if (poiTypeId != 0) {
+                const PoiType& type = poiType(poiTypeId);
+                // A tile of zoom z serves z up to z + 5, so types that start at 16 are kept from the tiles of 15 on
+                const bool named = info.name != nullptr && info.nameLength > 0;
+                // Tiles of the highest data zoom serve every zoom above it, so they keep the small types too
+                hasLabel = (tile.z >= MAX_SOURCE_ZOOM || tile.z >= static_cast<int>(type.minZoom) - 1) && (named || type.unnamedOk);
+            }
+        } else {
+            // House numbers only come from the highest data zoom, they are meant for the closest views
+            hasLabel = tile.z >= MAX_SOURCE_ZOOM && info.houseNumber != nullptr && info.houseNumberLength > 0 &&
+                info.geometryType == GEOMETRY_POINT;
+        }
+    }
     // Kept when the style draws it in one of the section's stages at one of the zoom levels the tile is used for
     const Palette& palette = colorPalette();
     bool drawn = false;
@@ -418,6 +474,18 @@ bool TileConverter::beginFeature(const FeatureInfo& info) {
         return false;
     }
     feature = info;
+    if (hasLabel && info.layer == Layer::Poi) {
+        feature.featureClass = static_cast<Value>(poiTypeId);
+        feature.nameLength = info.name != nullptr ? cutUtf8(info.name, info.nameLength, POI_TEXT_MAX_BYTES) : 0;
+        feature.nameLatinLength = info.nameLatin != nullptr ? cutUtf8(info.nameLatin, info.nameLatinLength, POI_TEXT_MAX_BYTES) : 0;
+    } else if (hasLabel && info.layer == Layer::Housenumber) {
+        feature.featureClass = Value::None;
+        feature.rank = -1;
+        feature.name = info.houseNumber;
+        feature.nameLength = cutUtf8(info.houseNumber, info.houseNumberLength, POI_TEXT_MAX_BYTES);
+        feature.nameLatin = nullptr;
+        feature.nameLatinLength = 0;
+    }
     drawFeature = drawn;
     labelFeature = hasLabel;
     labelKind = static_cast<uint8_t>(kind);
@@ -549,9 +617,18 @@ void TileConverter::endRing(bool closed) {
         kept--;
     }
     if (labelFeature) {
-        const int minimum = feature.geometryType == GEOMETRY_POINT ? 1 : 2;
+        const bool single = labelKind == static_cast<uint8_t>(LabelKind::Poi) || labelKind == static_cast<uint8_t>(LabelKind::HouseNumber);
+        const int minimum = feature.geometryType == GEOMETRY_POINT || single ? 1 : 2;
         if (kept >= minimum) {
-            writeLabel(quantised, kept);
+            // Poi and house number labels are one point, the first of an outline. These layers have a wide buffer
+            // around the tile: points outside belong to the neighbour, which writes them itself.
+            const bool inside = quantised[0] >= 0 && quantised[0] < PREPARED_EXTENT && quantised[1] >= 0 && quantised[1] < PREPARED_EXTENT;
+            if (!single || inside) {
+                writeLabel(quantised, single ? 1 : kept);
+            }
+            if (single && feature.geometryType != GEOMETRY_POINT) {
+                labelFeature = false;
+            }
         }
     }
     if (!drawFeature) {
@@ -572,30 +649,42 @@ void TileConverter::endRing(bool closed) {
 }
 
 void TileConverter::writeLabel(const int32_t* points, int count) {
-    if (labels.size() >= LABEL_MAX_BYTES) {
+    const bool poi = labelKind == static_cast<uint8_t>(LabelKind::Poi);
+    const bool number = labelKind == static_cast<uint8_t>(LabelKind::HouseNumber);
+    if ((!poi && !number && labels.size() >= LABEL_MAX_BYTES) || (poi && poiBytes >= POI_LABEL_MAX_BYTES) ||
+        (number && numberBytes >= NUMBER_LABEL_MAX_BYTES)) {
         return;
     }
-    labels.put(labelKind);
-    labels.put(static_cast<uint8_t>(feature.featureClass));
-    labels.putVarint(feature.rank >= 0 ? static_cast<uint64_t>(feature.rank) + 1 : 0);
-    labels.putVarint(feature.nameLength);
-    labels.putBytes(feature.name, feature.nameLength);
+    ByteWriter& target = poi || number ? extraLabels : labels;
+    const size_t before = target.size();
+    target.put(labelKind);
+    target.put(static_cast<uint8_t>(feature.featureClass));
+    target.putVarint(feature.rank >= 0 ? static_cast<uint64_t>(feature.rank) + 1 : 0);
+    target.putVarint(feature.nameLength);
+    if (feature.nameLength > 0) {
+        target.putBytes(feature.name, feature.nameLength);
+    }
     const bool sameLatin = feature.nameLatin != nullptr && feature.nameLatinLength > 0 &&
         feature.nameLatinLength == feature.nameLength && memcmp(feature.name, feature.nameLatin, feature.nameLength) == 0;
     if (feature.nameLatin != nullptr && feature.nameLatinLength > 0 && !sameLatin) {
-        labels.putVarint(feature.nameLatinLength);
-        labels.putBytes(feature.nameLatin, feature.nameLatinLength);
+        target.putVarint(feature.nameLatinLength);
+        target.putBytes(feature.nameLatin, feature.nameLatinLength);
     } else {
-        labels.putVarint(0);
+        target.putVarint(0);
     }
-    labels.putVarint(static_cast<uint64_t>(count));
+    target.putVarint(static_cast<uint64_t>(count));
     int32_t x = 0;
     int32_t y = 0;
     for (int i = 0; i < count; i++) {
-        labels.putZigzag(points[i * 2] - x);
-        labels.putZigzag(points[i * 2 + 1] - y);
+        target.putZigzag(points[i * 2] - x);
+        target.putZigzag(points[i * 2 + 1] - y);
         x = points[i * 2];
         y = points[i * 2 + 1];
+    }
+    if (poi) {
+        poiBytes += target.size() - before;
+    } else if (number) {
+        numberBytes += target.size() - before;
     }
     labelCount++;
 }

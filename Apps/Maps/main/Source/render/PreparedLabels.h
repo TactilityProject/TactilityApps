@@ -8,7 +8,11 @@
 
 namespace maps {
 
-enum class LabelKind : uint8_t { Place, Road, Water, Waterway, Peak };
+/**
+ * Poi labels (format 4): labelClass holds the type id of PoiTypes.h, not a Value. HouseNumber labels: the name is the
+ * house number, labelClass is 0 and rank -1.
+ */
+enum class LabelKind : uint8_t { Place, Road, Water, Waterway, Peak, Poi, HouseNumber };
 
 struct LabelRecord {
     LabelKind kind;

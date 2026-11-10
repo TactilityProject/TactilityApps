@@ -135,8 +135,19 @@ inline uint16_t sampleCell(const AffineScratch::Cell& cell, int localX, int loca
 
 } // namespace
 
+uint16_t lerpRgb565(uint16_t from, uint16_t to, uint32_t weight) {
+    if (from == to || weight == 0) {
+        return from;
+    }
+    // Green moved up into the upper half, so all three channels have room for the 5-bit weight
+    const uint32_t a = (from | (static_cast<uint32_t>(from) << 16)) & 0x07E0F81Fu;
+    const uint32_t b = (to | (static_cast<uint32_t>(to) << 16)) & 0x07E0F81Fu;
+    const uint32_t mixed = ((a * (32 - weight) + b * weight) >> 5) & 0x07E0F81Fu;
+    return static_cast<uint16_t>(mixed | (mixed >> 16));
+}
+
 int composeAffine(uint16_t* view, int width, int height, const AffineView& transform, TileLookup lookup, void* context, uint16_t placeholder,
-    AffineScratch& scratch) {
+    AffineScratch& scratch, bool bilinear, int rowBegin, int rowEnd) {
     // The tiles under the four screen corners bound the ones the view needs
     const float halfWidth = width / 2.0f;
     const float halfHeight = height / 2.0f;
@@ -180,7 +191,7 @@ int composeAffine(uint16_t* view, int width, int height, const AffineView& trans
     const auto stepXx = static_cast<int32_t>(std::floor(transform.a * 65536.0 + 0.5));
     const auto stepXy = static_cast<int32_t>(std::floor(transform.c * 65536.0 + 0.5));
 
-    if (transform.b == 0.0f && transform.c == 0.0f && width <= AffineScratch::MAX_WIDTH) {
+    if (!bilinear && rowBegin == 0 && rowEnd < 0 && transform.b == 0.0f && transform.c == 0.0f && width <= AffineScratch::MAX_WIDTH) {
         // Scale only, the zoom animations and pinch: the source column of each screen column is the same on every
         // row, worked out once, and each row is copied in runs that stay in one tile
         int16_t* columns = scratch.columns;
@@ -228,7 +239,40 @@ int composeAffine(uint16_t* view, int width, int height, const AffineView& trans
         return missing;
     }
 
-    for (int y = 0; y < height; y++) {
+    const int lastRow = rowEnd < 0 || rowEnd > height ? height : rowEnd;
+    if (bilinear) {
+        // Each screen pixel blends the four source pixels around its centre; the sample point is shifted by half a
+        // pixel so a pixel centre maps onto a source pixel centre
+        auto sample = [&](int32_t px, int32_t py) -> uint16_t {
+            if (px < 0 || py < 0 || px >= limitX || py >= limitY) {
+                return placeholder;
+            }
+            return sampleCell(grid[(py >> 8) * gridWidth + (px >> 8)], px & (TILE_SIZE - 1), py & (TILE_SIZE - 1), placeholder);
+        };
+        for (int y = rowBegin; y < lastRow; y++) {
+            const float sy = static_cast<float>(y) + 0.5f - halfHeight;
+            const float sx = 0.5f - halfWidth;
+            const double rowX = transform.centerX + transform.a * sx + transform.b * sy - gridLeft - 0.5;
+            const double rowY = transform.centerY + transform.c * sx + transform.d * sy - gridTop - 0.5;
+            auto fx = static_cast<int32_t>(std::floor(rowX * 65536.0));
+            auto fy = static_cast<int32_t>(std::floor(rowY * 65536.0));
+            uint16_t* out = view + y * width;
+            for (int x = 0; x < width; x++, fx += stepXx, fy += stepXy) {
+                const int32_t px = fx >> 16;
+                const int32_t py = fy >> 16;
+                const auto weightX = static_cast<uint32_t>((fx >> 11) & 31);
+                const auto weightY = static_cast<uint32_t>((fy >> 11) & 31);
+                const uint16_t p00 = sample(px, py);
+                const uint16_t p10 = sample(px + 1, py);
+                const uint16_t p01 = sample(px, py + 1);
+                const uint16_t p11 = sample(px + 1, py + 1);
+                out[x] = lerpRgb565(lerpRgb565(p00, p10, weightX), lerpRgb565(p01, p11, weightX), weightY);
+            }
+        }
+        return missing;
+    }
+
+    for (int y = rowBegin; y < lastRow; y++) {
         const float sy = static_cast<float>(y) + 0.5f - halfHeight;
         const float sx = 0.5f - halfWidth;
         const double rowX = transform.centerX + transform.a * sx + transform.b * sy - gridLeft;

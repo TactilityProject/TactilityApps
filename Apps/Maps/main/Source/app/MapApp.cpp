@@ -14,6 +14,8 @@
 #include <freertos/task.h>
 #include <esp_heap_caps.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstring>
@@ -95,6 +97,73 @@ void runFullscreen(Device* display, const char* root, const char* dataPath) {
     }
 }
 
+bool pathExists(const char* path) {
+    struct stat info {};
+    return stat(path, &info) == 0;
+}
+
+/**
+ * Tactility moved app data from <data>/user/app/<id> to <data>/appdata/<id> (Tactility main 2ae9194c). The OS moves the
+ * whole user/app folder once, but only when appdata/ does not exist yet. If the Maps folder was left behind, move its
+ * entries here: same card, so a rename each. An entry whose name already exists at the destination stays where it is
+ * and is reported; nothing is ever deleted except the old folder itself once it is empty.
+ */
+void migrateLegacyData(const char* dataPath, const char* root) {
+    char legacy[PATH_MAX_LENGTH];
+    if (snprintf(legacy, sizeof(legacy), "%s/user/app/%s", dataPath, APP_ID) >= static_cast<int>(sizeof(legacy)) ||
+        !pathExists(legacy) || strcmp(legacy, root) == 0) {
+        return;
+    }
+    if (!pathExists(root)) {
+        if (rename(legacy, root) == 0) {
+            logInfo("Data moved from %s to %s", legacy, root);
+        } else {
+            logError("Data not moved from %s to %s, it stays there", legacy, root);
+        }
+        return;
+    }
+    DIR* folder = opendir(legacy);
+    if (folder == nullptr) {
+        return;
+    }
+    int moved = 0;
+    int kept = 0;
+    char names[16][64];
+    int nameCount = 0;
+    // Names first, then the renames: renaming while reading a FAT folder can skip entries
+    for (dirent* entry = readdir(folder); entry != nullptr; entry = readdir(folder)) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        if (nameCount < 16) {
+            snprintf(names[nameCount++], sizeof(names[0]), "%s", entry->d_name);
+        } else {
+            kept++;
+        }
+    }
+    closedir(folder);
+    for (int i = 0; i < nameCount; i++) {
+        char from[PATH_MAX_LENGTH];
+        char to[PATH_MAX_LENGTH];
+        snprintf(from, sizeof(from), "%s/%s", legacy, names[i]);
+        snprintf(to, sizeof(to), "%s/%s", root, names[i]);
+        if (pathExists(to)) {
+            logError("Not moved, %s exists already: %s", to, from);
+            kept++;
+        } else if (rename(from, to) == 0) {
+            logInfo("Moved %s to %s", from, to);
+            moved++;
+        } else {
+            logError("Could not move %s", from);
+            kept++;
+        }
+    }
+    if (kept == 0 && rmdir(legacy) == 0) {
+        logInfo("Removed the empty old folder %s", legacy);
+    }
+    logInfo("Old data folder: %d entries moved, %d left in %s", moved, kept, legacy);
+}
+
 } // namespace
 
 } // namespace maps
@@ -108,12 +177,13 @@ extern "C" int main(int argc, char* argv[]) {
         maps::logError("No user data directory");
         return 0;
     }
+    char dataPath[maps::PATH_MAX_LENGTH] = "";
+    paths_get_data_path(dataPath, sizeof(dataPath));
+    maps::migrateLegacyData(dataPath, root);
     mkdir(root, 0777);
     char mapsFolder[maps::PATH_MAX_LENGTH];
     snprintf(mapsFolder, sizeof(mapsFolder), "%s/maps", root);
     mkdir(mapsFolder, 0777);
-    char dataPath[maps::PATH_MAX_LENGTH] = "";
-    paths_get_data_path(dataPath, sizeof(dataPath));
 
     Device* display = nullptr;
     if (device_get_first_active_by_type(&DISPLAY_TYPE, &display) != ERROR_NONE) {

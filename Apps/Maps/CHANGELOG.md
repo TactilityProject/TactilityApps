@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.3.0
+
+Points of interest and house numbers, a background work indicator, smoother turned maps, a smaller label font, and
+browsed tiles that move into a download instead of being fetched again. Needs Tactility main from November 2026
+(app data in `appdata/`).
+
+**Points of interest and house numbers**
+- Icons for cafés, shops, stops, stations, pharmacies, hotels, museums and about 120 other kinds of places, from
+  z15 (the most important from z14), with names next to them from z17. House numbers from z17. They follow the
+  Labels setting and never cover place or street names.
+- Tap or click a place or number for a sheet with its name, kind, coordinates, distance and bearing, and
+  "Save as waypoint". With keys: show the controls, then Enter picks the place nearest the crosshair in the
+  middle, and each next Enter the next nearest.
+- Map data from 0.2.0 is upgraded in place in idle time; no download is needed.
+
+**Background work**
+- A small amber dot in the top-left corner while the app prepares tiles, makes fonts, updates maps, imports GPX
+  files or moves browsed tiles. Tap or click it for a list of what runs.
+
+**Map**
+- A turned map is drawn smoothly (bilinear) once it stops moving; while it moves it stays fast.
+- Tiles fetched while browsing move into a region you download over them instead of being downloaded again. The
+  download screen says how many are already on the card.
+
+**Touch only**
+- Every function works with only a touch screen. On boards without a keyboard an on-screen keyboard opens with
+  every text field (new waypoint names, Rename), with Shift, digits and signs, and accented letters.
+- The download frame has a round < to leave it without downloading.
+- The card for tiles fetched while browsing shows only Close: they can't be paused or cancelled.
+
+**Downloads and background work**
+- Tiles of a download are prepared later, once the map was left alone for 10 s, not right after the download. Tiles
+  drawn on screen are still prepared at once.
+- When memory is short, preparing waits and tries again instead of giving up on the tile until the map reopens. The
+  tile cache and the render buffers make room for it, and get it back afterwards.
+- Tiles a download moved out of the browsed tiles are no longer reported as failed preparations.
+- Downloads use one connection instead of two: as fast on the T-Deck, without the TLS errors from running out of
+  internal RAM and the reconnects they caused, and with more internal RAM left for the rest of the app.
+- Tiles fetched for the screen while browsing are written to the card at once, not only once the map is left alone.
+- Tiles on screen no longer stay drawn from a coarser zoom level when PSRAM has no block large enough for their
+  data (low-zoom tiles are 300-450 KB before they are prepared). The tile cache makes room, or the tile is read
+  from the card a piece at a time; if neither works it is tried again a few seconds later.
+- A tile that was drawn around the screen and then came into view with coarser data is fetched in full detail.
+- The background-work dot is a solid dot without animation, and no longer flickers through the dimming of an
+  opened menu.
+
+**Label font**
+- The app's label font holds just the characters map names use, plus whole Latin, Greek and Cyrillic alphabets:
+  39 KB instead of 80 KB. The sizes on the card are made again once after the update.
+
+**Tactility**
+- App data moved to `/sdcard/tactility/appdata/tactility.maps` with the new Tactility; the app moves anything
+  left in the old folder on first start.
+
 ## 0.2.0
 
 Labels, map rotation and heading-up, plus menu, list, trackball and download fixes.

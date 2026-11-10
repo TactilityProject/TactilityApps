@@ -41,6 +41,15 @@ public:
     static constexpr int CHUNK_POINTS = 256;
     static constexpr int VALUE_POOL_SIZE = 8192;
     static constexpr int NAME_POOL_SIZE = 24576;
+    /**
+     * The pools are this big when the poi and housenumber layers are scanned: every tag value of them counts. Those
+     * layers come last in OpenMapTiles tiles, so in the densest tiles only some of their strings miss the pools (those
+     * POIs lose their names), never a place or street name. 96 KB + 160 KB, given back after each conversion: a
+     * 384 KB name pool took the T-Deck's largest free PSRAM block and the label section could not grow (device test,
+     * 10 Nov 2026).
+     */
+    static constexpr int POI_VALUE_POOL_SIZE = 12288;
+    static constexpr int POI_NAME_POOL_SIZE = 163840;
 
     MvtDecoder() = default;
     ~MvtDecoder();
@@ -48,7 +57,13 @@ public:
     MvtDecoder& operator=(const MvtDecoder&) = delete;
 
     bool init();
-    bool scan(ByteInput* input);
+    /**
+     * Reads the tables of the layers. The poi and housenumber layers are skipped, as if the tile had none, unless
+     * withPoiLayers is set: only the prepared tile converter wants them, and their strings fill the pools.
+     */
+    bool scan(ByteInput* input, bool withPoiLayers = false);
+    /** Back to the normal pool sizes after a scan with the POI layers. */
+    void shrinkPools();
     /** Decodes the features of the given layers, in the order they appear in the tile. */
     bool sweep(const Layer* layers, int count, GeometrySink& sink);
 
@@ -82,11 +97,13 @@ private:
         int16_t nameKey = -1;
         int16_t nameLatinKey = -1;
         int16_t rankKey = -1;
+        int16_t houseNumberKey = -1;
         uint32_t valueOffset = 0;
         uint32_t valueCount = 0;
         int32_t extent = 4096;
     };
 
+    bool growPools();
     bool readVarint(uint64_t& value);
     bool readLayerName(size_t layerEnd, Layer& layer);
     bool scanLayer(size_t layerEnd, LayerTable& table, Layer layer);
@@ -102,8 +119,10 @@ private:
     LayerTable tables[static_cast<int>(Layer::Count)] {};
     ValueEntry* valuePool = nullptr;
     uint32_t valuePoolUsed = 0;
+    uint32_t valuePoolCapacity = 0;
     char* namePool = nullptr;
     uint32_t namePoolUsed = 0;
+    uint32_t namePoolCapacity = 0;
     TilePoint* chunk = nullptr;
     size_t totalSize = 0;
 };

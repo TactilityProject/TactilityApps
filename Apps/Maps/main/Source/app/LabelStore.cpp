@@ -40,7 +40,10 @@ void LabelStore::evict(int index) {
 }
 
 void LabelStore::put(const TileKey& source, const uint8_t* section, size_t size, int count) {
-    if (mutex == nullptr || size == 0 || size > MAX_BYTES / 4) {
+    if (mutex == nullptr || size == 0 || size > MAX_SECTION_BYTES) {
+        if (size > MAX_SECTION_BYTES) {
+            logError("Labels of %d/%d/%d not kept: %u bytes", source.z, source.x, source.y, static_cast<unsigned>(size));
+        }
         return;
     }
     xSemaphoreTake(mutex, portMAX_DELAY);

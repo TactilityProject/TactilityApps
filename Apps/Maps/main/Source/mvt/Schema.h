@@ -22,6 +22,9 @@ enum class Layer : uint8_t {
     TransportationName,
     WaterName,
     MountainPeak,
+    /** Not drawn. Read only when a caller asks the decoder to scan them (MvtDecoder::scan), for the label records. */
+    Poi,
+    Housenumber,
     Count
 };
 
@@ -65,6 +68,14 @@ struct FeatureInfo {
     uint16_t nameLatinLength = 0;
     /** "rank" as an integer, -1 when absent (place, mountain_peak and poi layers). */
     int32_t rank = -1;
+    /** The raw "class" and "subclass" strings of any layer, nullptr when absent. Valid during beginFeature(). */
+    const char* classText = nullptr;
+    uint16_t classTextLength = 0;
+    const char* subclassText = nullptr;
+    uint16_t subclassTextLength = 0;
+    /** The "housenumber" tag (housenumber layer), nullptr when absent. */
+    const char* houseNumber = nullptr;
+    uint16_t houseNumberLength = 0;
 };
 
 enum GeometryType : uint8_t {

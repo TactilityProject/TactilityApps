@@ -23,6 +23,8 @@ const char* labelOf(WaypointSheet::Button button) {
             return "Delete";
         case WaypointSheet::Button::Close:
             return "Close";
+        case WaypointSheet::Button::SaveAsWaypoint:
+            return "Save as waypoint";
         default:
             return "";
     }
@@ -53,6 +55,19 @@ void WaypointSheet::openExisting(const char* name, const char* coordinates, cons
     visible = true;
 }
 
+void WaypointSheet::openPlace(const char* name, const char* type, const char* coordinates, const char* distance) {
+    kind = Mode::Place;
+    editable = false;
+    selectedAll = false;
+    snprintf(value, sizeof(value), "%s", name);
+    snprintf(typeText, sizeof(typeText), "%s", type);
+    snprintf(coordinateText, sizeof(coordinateText), "%s", coordinates);
+    snprintf(distanceText, sizeof(distanceText), "%s", distance);
+    // Close first, so pressing Enter again on the map's next item does not save anything by mistake
+    focus = 1;
+    visible = true;
+}
+
 void WaypointSheet::setDistance(const char* distance) {
     snprintf(distanceText, sizeof(distanceText), "%s", distance);
 }
@@ -60,17 +75,22 @@ void WaypointSheet::setDistance(const char* distance) {
 WaypointSheet::Button WaypointSheet::buttonAt(int index) const {
     static constexpr Button NEW_BUTTONS[] = { Button::Save, Button::Cancel };
     static constexpr Button EXISTING_BUTTONS[] = { Button::Rename, Button::Delete, Button::Close };
+    static constexpr Button PLACE_BUTTONS[] = { Button::SaveAsWaypoint, Button::Close };
     if (index < 0 || index >= buttonCount()) {
         return Button::None;
+    }
+    if (kind == Mode::Place) {
+        return PLACE_BUTTONS[index];
     }
     return kind == Mode::New ? NEW_BUTTONS[index] : EXISTING_BUTTONS[index];
 }
 
-void WaypointSheet::layout(int width, int height, Font& font) {
+void WaypointSheet::layout(int width, int height, Font& font, bool compact) {
+    compactLayout = compact;
     const int line = font.lineHeight();
     const int sheetWidth = std::min(width - 8, 300);
     const int buttonHeight = line + 10;
-    const int sheetHeight = PADDING + (line + 8) + 4 + 2 * line + PADDING + buttonHeight + PADDING;
+    const int sheetHeight = PADDING + (line + 8) + 4 + (compact ? 0 : textLines() * line) + (compact ? 0 : PADDING) + buttonHeight + PADDING;
     frame = { (width - sheetWidth) / 2, height - sheetHeight - 4, sheetWidth, sheetHeight };
     // The < at the left of the name goes back, like in the lists
     back = { frame.x, frame.y, line + 16, line + 8 + PADDING };
@@ -112,9 +132,17 @@ void WaypointSheet::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     } else {
         drawClippedText(canvas, font, field.x + 4, field.y + 4, value, field.width - 8, theme.text);
     }
-    const int textY = field.y + field.height + 4;
-    drawClippedText(canvas, font, frame.x + PADDING, textY, coordinateText, frame.width - 2 * PADDING, theme.muted);
-    drawClippedText(canvas, font, frame.x + PADDING, textY + line, distanceText, frame.width - 2 * PADDING, theme.muted);
+    int textY = field.y + field.height + 4;
+    if (compactLayout) {
+        textY = frame.y + frame.height;  // no detail lines: the keyboard needs the room
+    } else if (kind == Mode::Place) {
+        drawClippedText(canvas, font, frame.x + PADDING, textY, typeText, frame.width - 2 * PADDING, theme.text);
+        textY += line;
+    }
+    if (!compactLayout) {
+        drawClippedText(canvas, font, frame.x + PADDING, textY, coordinateText, frame.width - 2 * PADDING, theme.muted);
+        drawClippedText(canvas, font, frame.x + PADDING, textY + line, distanceText, frame.width - 2 * PADDING, theme.muted);
+    }
     for (int i = 0; i < buttonCount(); i++) {
         drawButton(canvas, font, theme, buttons[i], labelOf(buttonAt(i)), i == focus, buttonAt(i) == Button::Delete);
     }
@@ -181,6 +209,12 @@ WaypointSheet::Button WaypointSheet::handleKey(uint32_t key) {
             return Button::None;
         default:
             break;
+    }
+    if (kind == Mode::Place) {
+        if (key == keys::BACKSPACE) {
+            return Button::Close;
+        }
+        return key == 's' || key == 'S' ? Button::SaveAsWaypoint : Button::None;
     }
     if (kind == Mode::Existing) {
         // Without a text field Backspace is back, and letters are shortcuts

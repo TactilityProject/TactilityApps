@@ -33,6 +33,8 @@ constexpr LayerName LAYER_NAMES[] = {
     { "transportation_name", Layer::TransportationName },
     { "water_name", Layer::WaterName },
     { "mountain_peak", Layer::MountainPeak },
+    { "poi", Layer::Poi },
+    { "housenumber", Layer::Housenumber },
 };
 
 bool equals(const char* text, size_t length, const char* name) {

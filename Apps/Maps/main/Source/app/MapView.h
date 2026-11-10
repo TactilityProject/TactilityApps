@@ -8,6 +8,9 @@
 #include "GpxImport.h"
 #include "Input.h"
 #include "IoTask.h"
+#include "BrowsedCounter.h"
+#include "../ui/TouchKeyboard.h"
+#include "../ui/BackgroundWork.h"
 #include "LabelFontMaker.h"
 #include "LabelStore.h"
 #include "LocationSource.h"
@@ -44,7 +47,7 @@ namespace maps {
 
 struct AffineScratch;
 
-#define APP_VERSION "0.2.0"
+#define APP_VERSION "0.3.0"
 constexpr const char* APP_ID = "tactility.maps";
 
 /**
@@ -259,7 +262,19 @@ private:
     void loadWaypoints();
     void saveWaypoints();
     /** Opens the sheet for a new waypoint at a point: name, coordinates, distance, Save and Cancel. */
-    void openNewWaypoint(double lat, double lon);
+    void openNewWaypoint(double lat, double lon, const char* name = nullptr);
+    /** How far the placed labels moved with the map since they were placed; false when they are not for this view. */
+    bool labelOffset(int& x, int& y) const;
+    /** The POI or house number under a screen point, -1 when none. */
+    int placeAt(int x, int y) const;
+    /** Opens the sheet of a placed POI or house number: name, type, coordinates, distance, Save as waypoint, Close. */
+    void openPlaceSheet(int index);
+    /**
+     * Enter on the map while the controls show: the POI or house number nearest the screen centre (the crosshair),
+     * then each next nearest. False when none is near the centre.
+     */
+    bool selectNearestPlace();
+    void selectNextPlace();
     /** The same at my position, P and holding the position button; says why when there is none. */
     void openNewWaypointAtPosition();
     /** Opens the sheet of an existing waypoint: Rename, Delete, Close. */
@@ -308,7 +323,30 @@ private:
     BinFontText largeFont;
     /** Label fonts made from the app's assets, with Latin Extended-A (the system fonts stop at Latin-1). */
     BinFontText labelFonts[3];
+    /** The waypoint and place sheet shows names: in the app's label font once it is made (Tactility's UI font stops at Latin-1). */
+    Font& sheetFont() { return labelFonts[1].isOpen() ? static_cast<Font&>(labelFonts[1]) : overlay.font(); }
     LabelFontMaker fontMaker;
+    /** Browsed tiles inside the download frame, for its estimate. */
+    BrowsedCounter browsedCounter;
+    /**
+     * What the app does in the background, shown as a small amber dot in the top-left corner (pulsing on colour
+     * displays) that opens a card listing it. Hidden while the progress pill or the controls show.
+     */
+    BackgroundWork work;
+    WorkCard workCard;
+    bool workDotShown = false;
+    uint32_t lastWorkPulse = 0;
+    static constexpr int WORK_DOT_X = 8;
+    static constexpr int WORK_DOT_Y = 8;
+    /** Whether drawStatus drew its pill this frame. */
+    bool statusShown = false;
+    void updateWork(uint32_t now);
+    void drawWorkDot();
+    /** Debug scripts: PSRAM held in 64 KB pieces until no free block is largest bytes, given back when the map closes. */
+    void squeezeMemory(size_t largest);
+    static constexpr int MAX_SQUEEZED = 64;
+    void* squeezed[MAX_SQUEEZED] {};
+    int squeezedCount = 0;
     /** Bit i: label font i has no cache file yet, so the maker has to make it. */
     unsigned missingLabelFonts = 0;
     bool labelFontsApplied = false;
@@ -364,6 +402,11 @@ private:
     /** The waypoint a rename or delete is asked for, from the sheet or the list. */
     int editingWaypoint = -1;
     WaypointSheet sheet;
+    /** The places Enter walks through, nearest the centre first, and the one shown. */
+    static constexpr int MAX_PLACE_ORDER = 16;
+    int placeOrder[MAX_PLACE_ORDER] {};
+    int placeOrderCount = 0;
+    int placeOrderIndex = 0;
     double sheetLat = 0.0;
     double sheetLon = 0.0;
     ListView waypointList;
@@ -470,6 +513,33 @@ private:
         uint32_t composeMs;
     };
     TurnAnimation turn {};
+    /**
+     * A turned view is drawn nearest pixel while it moves; once it settles with all tiles ready, it is drawn again with
+     * bilinear sampling, and stays so while this view (centre, zoom, bearing) is unchanged.
+     */
+    struct SmoothView {
+        bool valid;
+        double centerX;
+        double centerY;
+        int zoom;
+        float bearing;
+        bool logged;
+    };
+    SmoothView smooth {};
+    bool isSmoothView() const;
+    /** Text can be typed: on a keyboard, or on the on-screen keyboard of a touch screen. */
+    bool canType() const { return input.hasKeyboard() || input.hasTouch(); }
+    /** The on-screen keyboard shows while a text field is open on a board with a touch screen and no keyboard. */
+    bool wantsTouchKeyboard() const;
+    void syncTouchKeyboard();
+    TouchKeyboard touchKeyboard;
+    /** A touch played by a debug script (tap, hold, drag, pinch, twist), read instead of the touch screen. */
+    DebugScript::Step syntheticTouch {};
+    uint32_t syntheticTouchStart = 0;
+    bool syntheticTouchActive = false;
+    bool syntheticTouchEnded = false;
+    void syntheticTouchState(uint32_t now, TouchState& state);
+    void updateSmooth(uint32_t now);
     /** The bearing the labels were placed for. */
     float labelBearing = 0.0f;
     Attribution attribution;

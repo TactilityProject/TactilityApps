@@ -55,8 +55,29 @@ bool writeJob(IoTask& io, void* context) {
 } // namespace
 
 void LabelFontMaker::cachePath(const char* root, int i, char* out, size_t size) {
-    snprintf(out, size, "%s/fonts/lbl%db.bin", root, EM_SIZES[i]);
+    snprintf(out, size, "%s/fonts/lbl%d%c.bin", root, EM_SIZES[i], FONT_VERSION);
 }
+
+namespace {
+
+struct RemoveOldJob {
+    const char* root;
+    int emSize;
+};
+
+/** Deletes the cached sizes an older font version made: the cache keeps one copy of each glyph. */
+bool removeOldJob(IoTask& io, void* context) {
+    (void)io;
+    auto* job = static_cast<RemoveOldJob*>(context);
+    for (char version = 'a'; version < LabelFontMaker::FONT_VERSION; version++) {
+        char path[200];
+        snprintf(path, sizeof(path), "%s/fonts/lbl%d%c.bin", job->root, job->emSize, version);
+        remove(path);
+    }
+    return true;
+}
+
+} // namespace
 
 void LabelFontMaker::configure(IoTask& ioTask, const char* root, const char* ttf) {
     io = &ioTask;
@@ -134,6 +155,8 @@ void LabelFontMaker::run() {
         memory_free(data);
         if (ok) {
             written = written.load() | (1u << i);
+            RemoveOldJob old { rootPath, EM_SIZES[i] };
+            io->run(IoPriority::Background, removeOldJob, &old);
         }
         logInfo("Label font %d px: %u bytes, generated in %u ms, %s in %u ms", EM_SIZES[i], static_cast<unsigned>(size),
             static_cast<unsigned>(generated - fontStart), ok ? "written" : "NOT written", static_cast<unsigned>(nowMs() - generated));

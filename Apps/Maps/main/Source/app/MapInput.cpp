@@ -43,6 +43,13 @@ void MapView::handleKey(uint32_t key) {
         }
         return;
     }
+    if (workCard.isOpen()) {
+        // Its only button is Close: Enter, Esc or Backspace
+        if (key == keys::ENTER || key == keys::ESCAPE || key == keys::BACKSPACE || key == keys::YES || key == keys::NO) {
+            workCard.close();
+        }
+        return;
+    }
     if (dialog.isOpen()) {
         if (dialog.handleKey(key) == UiAction::Chosen) {
             confirmDialog();
@@ -130,6 +137,13 @@ bool MapView::pressAt(int x, int y) {
     const int pin = waypointAt(x, y);
     if (pin >= 0) {
         openWaypointSheet(pin);
+        return true;
+    }
+    // A POI or house number opens its sheet; a tap on empty map still shows or hides the controls
+    const int place = placeAt(x, y);
+    if (place >= 0) {
+        placeOrderCount = 0;
+        openPlaceSheet(place);
         return true;
     }
     switch (attribution.tap(x, y, attributionBar, attributionMark(), nowMs())) {
@@ -290,10 +304,16 @@ void MapView::click(bool fromPointer) {
         if (dialog.press() == UiAction::Chosen) {
             confirmDialog();
         }
-    } else if (menuOpen || sheet.isOpen() || downloadCard.isOpen() || screen != Screen::Map) {
+    } else if (sheet.isOpen() && sheet.mode() == WaypointSheet::Mode::Place && sheet.focused() == WaypointSheet::Button::Close &&
+               placeOrderCount > 0 && !menuOpen && !downloadCard.isOpen()) {
+        // Enter again: the next nearest place
+        selectNextPlace();
+    } else if (menuOpen || sheet.isOpen() || downloadCard.isOpen() || workCard.isOpen() || screen != Screen::Map) {
         handleKey(keys::ENTER);
     } else if (controls.isVisible() && controls.usesFocus()) {
         pressControl(controls.focused());
+    } else if (controls.isVisible() && selectNearestPlace()) {
+        // With the controls (and the crosshair) shown, Enter picks the place nearest the centre
     } else {
         controls.toggle();
     }
@@ -426,9 +446,61 @@ void MapView::moveCursor(int dx, int dy, uint32_t now, int& overflowX, int& over
     controls.setHover(menuOpen || screen != Screen::Map ? Control::None : controls.hit(cursorX, cursorY));
 }
 
+void MapView::syntheticTouchState(uint32_t now, TouchState& state) {
+    // A debug script's touch: one or two fingers along a path over its duration, then lifted
+    const DebugScript::Step& step = syntheticTouch;
+    const uint32_t elapsed = now - syntheticTouchStart;
+    state = {};
+    // A slow frame must not swallow a short touch: the fingers are always seen down, and at their end position, once
+    if (elapsed >= step.durationMs && syntheticTouchEnded) {
+        syntheticTouchActive = false;
+        return;
+    }
+    if (elapsed >= step.durationMs) {
+        syntheticTouchEnded = true;
+    }
+    const float t = step.durationMs > 0 ? std::min(1.0f, static_cast<float>(elapsed) / static_cast<float>(step.durationMs)) : 1.0f;
+    const float* v = step.values;
+    auto put = [&](int finger, float x, float y) {
+        state.x[finger] = static_cast<uint16_t>(std::clamp(x, 0.0f, static_cast<float>(width - 1)));
+        state.y[finger] = static_cast<uint16_t>(std::clamp(y, 0.0f, static_cast<float>(height - 1)));
+    };
+    switch (step.touch) {
+        case DebugScript::TouchKind::Tap:
+        case DebugScript::TouchKind::Hold:
+            state.count = 1;
+            put(0, v[0], v[1]);
+            break;
+        case DebugScript::TouchKind::Drag:
+            state.count = 1;
+            put(0, v[0] + (v[2] - v[0]) * t, v[1] + (v[3] - v[1]) * t);
+            break;
+        case DebugScript::TouchKind::Pinch: {
+            const float half = (v[2] + (v[3] - v[2]) * t) / 2.0f;
+            state.count = 2;
+            put(0, v[0] - half, v[1]);
+            put(1, v[0] + half, v[1]);
+            break;
+        }
+        case DebugScript::TouchKind::Twist: {
+            const float radians = (v[3] + (v[4] - v[3]) * t) * 0.017453292f;
+            const float dx = v[2] * std::cos(radians);
+            const float dy = v[2] * std::sin(radians);
+            state.count = 2;
+            put(0, v[0] - dx, v[1] - dy);
+            put(1, v[0] + dx, v[1] + dy);
+            break;
+        }
+    }
+}
+
 void MapView::handleTouch(uint32_t now) {
     TouchState state;
-    input.readTouch(state);
+    if (syntheticTouchActive) {
+        syntheticTouchState(now, state);
+    } else {
+        input.readTouch(state);
+    }
     if (state.count > 0) {
         markInput(now);
     }
@@ -443,6 +515,16 @@ void MapView::handleTouch(uint32_t now) {
 void MapView::handleTap(int x, int y) {
     // Taps on something answer at once, taps on the map wait to tell a single from a double tap
     dirty = true;
+    // The on-screen keyboard types into the open text field as a keyboard would
+    syncTouchKeyboard();
+    if (touchKeyboard.isOpen() && touchKeyboard.contains(x, y)) {
+        const uint32_t code = touchKeyboard.tap(x, y);
+        if (code != 0) {
+            handleKey(code);
+        }
+        gestures.consumeTap();
+        return;
+    }
     if (prompt.isOpen()) {
         if (prompt.handleTap(x, y) == UiAction::Chosen) {
             confirmPrompt();
@@ -464,6 +546,17 @@ void MapView::handleTap(int x, int y) {
     }
     if (downloadCard.isOpen()) {
         handleCardButton(downloadCard.handleTap(x, y));
+        gestures.consumeTap();
+        return;
+    }
+    if (workCard.isOpen()) {
+        // Close, or a tap anywhere else: the card only informs
+        workCard.close();
+        gestures.consumeTap();
+        return;
+    }
+    if (screen == Screen::Map && workDotShown && workDotTarget(WORK_DOT_X, WORK_DOT_Y).contains(x, y)) {
+        workCard.open();
         gestures.consumeTap();
         return;
     }
@@ -495,6 +588,9 @@ void MapView::handleTap(int x, int y) {
     if (screen == Screen::Download) {
         if (downloadView.button.contains(x, y)) {
             startDownload();
+            gestures.consumeTap();
+        } else if (downloadView.back.contains(x, y)) {
+            closeScreen();
             gestures.consumeTap();
         } else if (const Attribution::Tap result = attribution.tap(x, y, attributionBar, attributionMark(), nowMs()); result != Attribution::Tap::Missed) {
             if (result == Attribution::Tap::OpenAbout) {

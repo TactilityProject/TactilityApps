@@ -4,6 +4,7 @@
 
 #include "../platform/Platform.h"
 #include "../mvt/PlaceFinder.h"
+#include "../tiles/BrowsedMove.h"
 #include "../tiles/RegionCatalog.h"
 #include "../tiles/TileJson.h"
 
@@ -296,6 +297,7 @@ struct OnCardJob {
     const char* region;
     TileKey tile;
     bool inThisRegion;
+    bool inBrowsed;
 };
 
 bool onCardJob(IoTask& io, void* context) {
@@ -306,14 +308,62 @@ bool onCardJob(IoTask& io, void* context) {
     if (job->inThisRegion) {
         return true;
     }
-    // A tile of an overlapping region is shared instead of downloaded again
+    // A tile of an overlapping region is shared instead of downloaded again. Browsed tiles are not shared with a
+    // download: they move into the region (Downloader::moveBrowsedTile), so the browsed region stays a cache
+    const bool forBrowsing = strcmp(job->region, BROWSE_REGION) == 0;
     for (int i = 0; i < job->store->regionCount(); i++) {
         const char* other = job->store->regionName(i);
-        if (strcmp(other, job->region) != 0 && tilePath(path, sizeof(path), job->root, other, job->tile) && fileExists(path)) {
+        if (strcmp(other, job->region) == 0 || (!forBrowsing && strcmp(other, BROWSE_REGION) == 0)) {
+            continue;
+        }
+        if (tilePath(path, sizeof(path), job->root, other, job->tile) && fileExists(path)) {
             return true;
         }
     }
+    job->inBrowsed = !forBrowsing && tilePath(path, sizeof(path), job->root, BROWSE_REGION, job->tile) && fileExists(path);
     return false;
+}
+
+bool makeFolder(const char* path) {
+    return mkdir(path, 0777) == 0;
+}
+
+/** Moves a browsed tile into a region (tiles/BrowsedMove.h), on the I/O task. */
+struct MoveJob {
+    const char* root;
+    const TileStore* store;
+    const char* region;
+    TileKey tile;
+    /** The source version the region downloads from. */
+    const char* version;
+    BrowsedMove result;
+    uint64_t size;
+};
+
+bool moveJob(IoTask& io, void* context) {
+    (void)io;
+    auto* job = static_cast<MoveJob*>(context);
+    const char* browsedVersion = "";
+    for (int i = 0; i < job->store->regionCount(); i++) {
+        if (strcmp(job->store->regionName(i), BROWSE_REGION) == 0 && job->store->regionVersion(i) != nullptr) {
+            browsedVersion = job->store->regionVersion(i);
+        }
+    }
+    job->result = moveBrowsedFiles(job->root, job->region, job->tile, job->version, browsedVersion, job->size, makeFolder);
+    return true;
+}
+
+struct RemoveBrowsedJob {
+    const char* root;
+    TileKey tile;
+    uint64_t size;
+};
+
+bool removeBrowsedJob(IoTask& io, void* context) {
+    (void)io;
+    auto* job = static_cast<RemoveBrowsedJob*>(context);
+    job->size = removeBrowsedFiles(job->root, job->tile);
+    return true;
 }
 
 struct StoreTileJob {
@@ -770,13 +820,68 @@ bool Downloader::writeMeta(const RegionMeta& out) {
 }
 
 bool Downloader::tileOnCard(const char* region, const TileKey& tile, bool& inThisRegion) {
-    OnCardJob job { rootPath, store, region, tile, false };
+    OnCardJob job { rootPath, store, region, tile, false, false };
     const bool found = io->run(IoPriority::Background, onCardJob, &job);
     inThisRegion = job.inThisRegion;
     return found;
 }
 
-bool Downloader::downloadTile(Connection& connection, const char* region, const TileKey& tile, int& status) {
+Downloader::OnCard Downloader::findTile(const char* region, const TileKey& tile) {
+    OnCardJob job { rootPath, store, region, tile, false, false };
+    if (io->run(IoPriority::Background, onCardJob, &job)) {
+        return job.inThisRegion ? OnCard::InRegion : OnCard::Shared;
+    }
+    return job.inBrowsed ? OnCard::InBrowsed : OnCard::Missing;
+}
+
+BrowsedMove Downloader::moveBrowsedTile(Connection& connection, const TileKey& tile, uint64_t& size) {
+    // Renames write the folder entries on the card, which shares its bus with the display: only while the map is idle
+    while (!idle && !stopRequested && !cancelRequested) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    MoveJob job { rootPath, store, meta.name, tile, meta.version, BrowsedMove::Failed, 0 };
+    if (!io->run(IoPriority::Background, moveJob, &job)) {
+        return BrowsedMove::Failed;
+    }
+    size = job.size;
+    return job.result;
+}
+
+void Downloader::removeBrowsedCopy(Connection& connection, const TileKey& tile) {
+    RemoveBrowsedJob job { rootPath, tile, 0 };
+    io->run(IoPriority::Background, removeBrowsedJob, &job);
+    connection.browsedRemoved += job.size;
+}
+
+void Downloader::settleBrowsed(uint64_t removedBytes) {
+    if (removedBytes == 0) {
+        return;
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    const bool inMemory = browseMetaReady;
+    if (inMemory) {
+        browseMeta.bytes -= std::min(browseMeta.bytes, removedBytes);
+    }
+    RegionMeta copy = browseMeta;
+    xSemaphoreGive(mutex);
+    if (!inMemory && !readMeta(BROWSE_REGION, copy)) {
+        return;
+    }
+    if (!inMemory) {
+        copy.bytes -= std::min(copy.bytes, removedBytes);
+    }
+    writeMeta(copy);
+}
+
+int Downloader::movedTiles() const {
+    int total = 0;
+    for (int i = 0; i < CONNECTIONS; i++) {
+        total += connections[i].movedTiles;
+    }
+    return total;
+}
+
+bool Downloader::downloadTile(Connection& connection, const char* region, const TileKey& tile, int& status, bool waitForIdle) {
     char url[200];
     if (!formatTileUrl(urlTemplate, tile, url, sizeof(url))) {
         return false;
@@ -798,8 +903,9 @@ bool Downloader::downloadTile(Connection& connection, const char* region, const 
         // An empty tile, the sea or empty land at this zoom level
         return true;
     }
-    // Card work waits until the map has been left alone for a moment, writes hold the display's shared bus
-    while (!idle && !stopRequested && !cancelRequested) {
+    // Card work for downloads waits until the map has been left alone for a moment, writes hold the display's shared
+    // bus. A tile the screen needs now is written at once
+    while (waitForIdle && !idle && !stopRequested && !cancelRequested) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     StoreTileJob job { rootPath, region, tile, connection.body, connection.lastFolder, false };
@@ -859,7 +965,7 @@ void Downloader::finishIndex(int connectionIndex) {
     meta.done = done;
     uint64_t bytes = 0;
     for (int i = 0; i < CONNECTIONS; i++) {
-        bytes += connections[i].received;
+        bytes += connections[i].received + connections[i].moved;
     }
     current.done = done;
     current.bytes = meta.bytes + bytes;
@@ -880,10 +986,13 @@ void Downloader::saveProgress() {
     xSemaphoreTake(mutex, portMAX_DELAY);
     RegionMeta copy = meta;
     uint64_t bytes = 0;
+    uint64_t moved = 0;
     for (int i = 0; i < CONNECTIONS; i++) {
-        bytes += connections[i].received;
+        bytes += connections[i].received + connections[i].moved;
+        moved += connections[i].moved;
     }
     copy.bytes = meta.bytes + bytes;
+    copy.moved = meta.moved + moved;
     xSemaphoreGive(mutex);
     writeMeta(copy);
 }
@@ -903,10 +1012,25 @@ void Downloader::connectionLoop(Connection& connection) {
             finishIndex(connection.index);
             continue;
         }
-        bool inThisRegion = false;
-        if (tileOnCard(meta.name, tile, inThisRegion)) {
+        const OnCard onCard = findTile(meta.name, tile);
+        if (onCard == OnCard::InRegion || onCard == OnCard::Shared) {
             finishIndex(connection.index);
             continue;
+        }
+        // A tile browsed earlier moves into the region, unless it came from another version of the tiles
+        bool staleBrowsed = false;
+        if (onCard == OnCard::InBrowsed) {
+            uint64_t size = 0;
+            const BrowsedMove move = moveBrowsedTile(connection, tile, size);
+            if (move == BrowsedMove::Moved) {
+                xSemaphoreTake(mutex, portMAX_DELAY);
+                connection.moved += size;
+                connection.movedTiles++;
+                xSemaphoreGive(mutex);
+                finishIndex(connection.index);
+                continue;
+            }
+            staleBrowsed = move == BrowsedMove::Stale;
         }
         bool ok = false;
         int status = 0;
@@ -924,9 +1048,14 @@ void Downloader::connectionLoop(Connection& connection) {
         if (!ok) {
             failed = true;
         }
-        // The limit holds for the real size too, the estimate can be lower for dense city centres
+        if (ok && staleBrowsed) {
+            // Never two versions of a tile: the old browsed copy goes once the new one is stored
+            removeBrowsedCopy(connection, tile);
+        }
+        // The limit holds for the real size too, the estimate can be lower for dense city centres. Moved tiles were
+        // not downloaded and do not count
         xSemaphoreTake(mutex, portMAX_DELAY);
-        uint64_t bytes = meta.bytes;
+        uint64_t bytes = meta.bytes - std::min(meta.bytes, meta.moved);
         for (int i = 0; i < CONNECTIONS; i++) {
             bytes += connections[i].received;
         }
@@ -1016,9 +1145,16 @@ void Downloader::runDownload() {
     logMemory("download end");
 
     xSemaphoreTake(mutex, portMAX_DELAY);
+    uint64_t leftBrowsed = 0;
+    int moveCount = 0;
     for (int i = 0; i < CONNECTIONS; i++) {
-        meta.bytes += connections[i].received;
+        meta.bytes += connections[i].received + connections[i].moved;
+        meta.moved += connections[i].moved;
+        leftBrowsed += connections[i].moved + connections[i].browsedRemoved;
+        moveCount += connections[i].movedTiles;
         connections[i].received = 0;
+        connections[i].moved = 0;
+        connections[i].browsedRemoved = 0;
     }
     if (!failed && !cancelRequested) {
         meta.done = meta.total;
@@ -1038,6 +1174,11 @@ void Downloader::runDownload() {
     }
     writeMeta(meta);
     store->setRegionVersion(meta.name, meta.version);
+    // The browsed region is smaller by the tiles that moved out of it and the stale copies replaced
+    settleBrowsed(leftBrowsed);
+    if (moveCount > 0) {
+        logInfo("%d browsed tiles moved into %s", moveCount, meta.name);
+    }
     allTilesChanged = true;
     tilesChanged = true;
 
@@ -1265,7 +1406,7 @@ bool Downloader::fetchBrowseTile(const TileKey& tile) {
     bool ok = false;
     for (int attempt = 1; attempt <= 2 && !ok && !stopRequested; attempt++) {
         takeClient(connection);
-        ok = connection.client != nullptr && downloadTile(connection, BROWSE_REGION, tile, status);
+        ok = connection.client != nullptr && downloadTile(connection, BROWSE_REGION, tile, status, false);
         if (!ok) {
             dropClient(connection);
         }

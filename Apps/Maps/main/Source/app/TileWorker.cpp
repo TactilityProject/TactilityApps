@@ -25,6 +25,15 @@ constexpr int CACHE_SPARE_SLOTS = 6;
 constexpr size_t KEEP_FILE_BUFFER = 256 * 1024;
 constexpr UBaseType_t TASK_PRIORITY = 4;
 constexpr uint32_t IDLE_WAIT_MS = 30;
+/** A conversion starts only with a PSRAM block this large free (the compressor needs 320 KB in one block), and this
+ * much PSRAM free in all for the original, the features and the labels. */
+constexpr size_t CONVERT_MIN_BLOCK = 336 * 1024;
+constexpr size_t CONVERT_MIN_FREE = 900 * 1024;
+
+bool memoryForConversion() {
+    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= CONVERT_MIN_BLOCK &&
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= CONVERT_MIN_FREE;
+}
 constexpr char CACHE_MAGIC[4] = { 'T', 'M', 'C', '2' };
 constexpr size_t CACHE_HEADER_BYTES = 12;
 constexpr size_t TILE_PIXELS = static_cast<size_t>(TILE_SIZE) * TILE_SIZE;
@@ -145,14 +154,20 @@ struct ConvertReadJob {
     uint32_t size;
     bool current;
     bool yielded;
+    /** The original is not there (any more): moved into another region or deleted. */
+    bool missing;
 };
 
 bool convertReadJob(IoTask& io, void* context) {
     auto* job = static_cast<ConvertReadJob*>(context);
     char path[PATH_MAX_LENGTH];
     char prepared[PATH_MAX_LENGTH];
-    if (!tilePath(path, sizeof(path), job->root, job->region, job->tile) || !fileSize(path, job->size) ||
+    if (!tilePath(path, sizeof(path), job->root, job->region, job->tile) ||
         !preparedPath(prepared, sizeof(prepared), job->root, job->region, job->tile)) {
+        return false;
+    }
+    if (!fileSize(path, job->size)) {
+        job->missing = true;
         return false;
     }
     // Queued twice, or converted by the other lane meanwhile
@@ -191,6 +206,7 @@ bool chunkReadJob(IoTask& io, void* context) {
 class CardInput final : public ByteInput {
     IoTask* io;
     const char* path;
+    IoPriority priority;
     uint8_t* chunk = nullptr;
     uint32_t chunkOffset = 0;
     size_t chunkLength = 0;
@@ -198,7 +214,9 @@ class CardInput final : public ByteInput {
     bool failed = false;
 
 public:
-    CardInput(IoTask* io, const char* path) : io(io), path(path) { chunk = static_cast<uint8_t*>(largeAlloc(IoTask::CHUNK_BYTES)); }
+    CardInput(IoTask* io, const char* path, IoPriority priority = IoPriority::Background) : io(io), path(path), priority(priority) {
+        chunk = static_cast<uint8_t*>(largeAlloc(IoTask::CHUNK_BYTES));
+    }
     ~CardInput() override { largeFree(chunk); }
 
     bool isReady() const { return chunk != nullptr; }
@@ -208,7 +226,7 @@ public:
         while (done < size && !failed) {
             if (chunkPosition == chunkLength) {
                 ChunkReadJob job { path, chunkOffset + static_cast<uint32_t>(chunkLength), chunk, IoTask::CHUNK_BYTES, 0 };
-                if (!io->run(IoPriority::Background, chunkReadJob, &job)) {
+                if (!io->run(priority, chunkReadJob, &job)) {
                     failed = true;
                     break;
                 }
@@ -280,7 +298,7 @@ bool TileWorker::relieveMemory(size_t bytes) {
     const int after = tileCache.slotCount();
     unlock();
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    logInfo("Memory for a %u KB download: %d of %d cache slots freed, largest block %u KB", static_cast<unsigned>(bytes / 1024), before - after,
+    logInfo("Memory for a %u KB block: %d of %d cache slots freed, largest block %u KB", static_cast<unsigned>(bytes / 1024), before - after,
         before, static_cast<unsigned>(largest / 1024));
     return largest >= bytes;
 }
@@ -450,6 +468,10 @@ void TileWorker::setConversionsPaused(bool paused) {
     }
     lock();
     conversionsPaused = paused;
+    if (!paused) {
+        // The tiles of the download are prepared once the map was left alone for a while from now on
+        idleSince = xTaskGetTickCount();
+    }
     if (!paused && magnifiedOutdated) {
         magnifiedOutdated = false;
         tileCache.dropMagnified();
@@ -479,14 +501,14 @@ bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent) {
         for (int i = kept; i > 0; i--) {
             conversions[i] = conversions[i - 1];
         }
-        conversions[0] = { tile, region };
+        conversions[0] = { tile, region, true };
         conversionCount = kept + 1;
         return true;
     }
     if (conversionCount >= MAX_CONVERSIONS) {
         return false;
     }
-    conversions[conversionCount++] = { tile, region };
+    conversions[conversionCount++] = { tile, region, false };
     return true;
 }
 
@@ -495,7 +517,7 @@ bool TileWorker::collectFromScan(const TileKey& tile, int region, void* context)
     if (found->count >= found->room) {
         return false;
     }
-    found->items[found->count++] = { tile, region };
+    found->items[found->count++] = { tile, region, false };
     return true;
 }
 
@@ -504,6 +526,18 @@ bool TileWorker::convertOne(Lane& lane) {
     if (conversionsPaused) {
         return false;
     }
+    if (lane.trimBuffers.exchange(false)) {
+        lane.heldKind = static_cast<uint8_t>(Found::Nothing);
+        lane.fileBuffer.trim(0);
+        lane.converter.trim(0);
+        lane.converted.release();
+    }
+    const TickType_t now = xTaskGetTickCount();
+    if (static_cast<int32_t>(now - conversionsWaitUntil.load()) < 0) {
+        return false;
+    }
+    // Tiles not on screen wait until the map was left alone for a while: they are queued now, prepared later
+    const bool settled = now - idleSince.load() >= pdMS_TO_TICKS(BACKGROUND_PREPARE_MS);
     lock();
     Conversion job {};
     bool found = false;
@@ -511,9 +545,34 @@ bool TileWorker::convertOne(Lane& lane) {
     for (int i = 0; i < laneCount; i++) {
         otherConverting = otherConverting || lanes[i].converting;
     }
-    if (conversionCount > 0 && !otherConverting) {
+    if (conversionCount > 0 && !otherConverting && (conversions[0].urgent || settled)) {
+        if (!memoryForConversion()) {
+            // The tile cache gives up its least recently used slots for it (they come back when nothing is left to
+            // prepare). Without enough memory even then the tile stays queued, and the next try is after a pause
+            const int queued = conversionCount;
+            const bool firstTry = !lane.triedTrim;
+            lane.triedTrim = true;
+            for (int i = 0; i < laneCount && firstTry; i++) {
+                lanes[i].trimBuffers = true;
+            }
+            unlock();
+            if (firstTry) {
+                // The lanes free their kept buffers first, then this is tried again
+                return true;
+            }
+            if (relieveMemory(CONVERT_MIN_BLOCK) && memoryForConversion()) {
+                return true;
+            }
+            conversionsWaitUntil = now + pdMS_TO_TICKS(MEMORY_BACKOFF_MS);
+            lane.triedTrim = false;
+            logInfo("Preparing tiles waits for memory (largest free PSRAM block %u KB, %u KB free, %d queued)",
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024),
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024), queued);
+            return false;
+        }
+        lane.triedTrim = false;
         // One conversion at a time: each needs about 0.4 MB of PSRAM, which a download needs as well.
-        // The oldest first, so the tiles just drawn from originals come before the scanned ones
+        // The tiles on screen first, then the oldest, so the tiles just drawn from originals come before the scanned ones
         job = conversions[0];
         for (int i = 1; i < conversionCount; i++) {
             conversions[i - 1] = conversions[i];
@@ -522,7 +581,7 @@ bool TileWorker::convertOne(Lane& lane) {
         found = true;
         lane.converting = true;
         lane.convertingTile = job.tile;
-    } else if ((rescanRequested || !scanner.isComplete()) && !scanning) {
+    } else if (settled && (rescanRequested || !scanner.isComplete()) && !scanning) {
         // Only one lane walks the folders at a time, and only that lane touches the scanner
         scanning = true;
     } else {
@@ -561,8 +620,18 @@ bool TileWorker::convertOne(Lane& lane) {
     const uint32_t start = nowMs();
     // The conversion reuses the lane's buffer
     lane.heldKind = static_cast<uint8_t>(Found::Nothing);
-    ConvertReadJob read { root, region, job.tile, &lane.fileBuffer, 0, false, false };
+    ConvertReadJob read { root, region, job.tile, &lane.fileBuffer, 0, false, false, region[0] == '\0' };
     bool ok = region[0] != '\0' && io->run(IoPriority::Background, convertReadJob, &read);
+    if (read.missing) {
+        // The scan finds it again where it is now
+        logInfo("[%d] %d/%d/%d is no longer in %s, not prepared there", lane.index, job.tile.z, job.tile.x, job.tile.y,
+            region[0] != '\0' ? region : "its region");
+        lane.fileBuffer.trim(KEEP_FILE_BUFFER);
+        lock();
+        lane.converting = false;
+        unlock();
+        return true;
+    }
     const uint32_t loaded = nowMs();
     bool requeue = read.yielded;
     const char* reason = "reading the card";
@@ -595,6 +664,7 @@ bool TileWorker::convertOne(Lane& lane) {
                 nowMs() - convertedAt);
             // Tiles drawn from the original or an older prepared copy are drawn again from the new one, which has labels
             preparedGeneration++;
+            preparedCount++;
             lock();
             tileCache.dropMagnified(&job.tile, 1);
             changed = true;
@@ -605,7 +675,13 @@ bool TileWorker::convertOne(Lane& lane) {
     lane.fileBuffer.trim(KEEP_FILE_BUFFER);
     lane.converter.trim(KEEP_FILE_BUFFER / 4);
     bool retry = false;
-    if (!ok && !requeue) {
+    if (!ok && !requeue && !memoryForConversion()) {
+        // Out of memory, not a bad tile: it stays queued and conversions pause, it does not count as a failure
+        conversionsWaitUntil = xTaskGetTickCount() + pdMS_TO_TICKS(MEMORY_BACKOFF_MS);
+        logInfo("[%d] Preparing %d/%d/%d waits for memory (%s, largest free PSRAM block %u KB)", lane.index, job.tile.z, job.tile.x,
+            job.tile.y, reason, static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+        requeue = true;
+    } else if (!ok && !requeue) {
         const auto largest = static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         lock();
         // A tile that failed once, usually for want of memory, is tried once more at the end of the queue
@@ -629,11 +705,21 @@ bool TileWorker::convertOne(Lane& lane) {
     }
     lane.converting = false;
     if (requeue) {
-        queueConversion(job.tile, job.region);
+        queueConversion(job.tile, job.region, job.urgent);
     }
     unlock();
     // Something was done, or the card is busy with more urgent work
     return true;
+}
+
+void TileWorker::preparation(int& done, int& waiting) {
+    lock();
+    waiting = conversionCount;
+    for (int i = 0; i < laneCount; i++) {
+        waiting += lanes[i].converting ? 1 : 0;
+    }
+    unlock();
+    done = preparedCount.load();
 }
 
 void TileWorker::addGap(const TileKey& tile) {
@@ -728,6 +814,12 @@ bool TileWorker::tidyCache() {
 
 bool TileWorker::claimNext(Lane& lane, bool visible, TileKey& tile, uint16_t*& pixels) {
     lock();
+    if (missingRetryAt != 0 && static_cast<int32_t>(xTaskGetTickCount() - missingRetryAt) >= 0) {
+        // Tiles that failed for want of memory get another try
+        missingRetryAt = 0;
+        missingCount = 0;
+        missingNext = 0;
+    }
     bool found = false;
     const int first = visible ? 0 : visibleWanted;
     const int last = visible ? visibleWanted : wantedCount;
@@ -817,6 +909,15 @@ void TileWorker::finish(Lane& lane, const TileKey& tile, bool success, int sourc
     lock();
     if (success) {
         tileCache.commit(tile, sourceZoom);
+        // Drawn while it was in the ring, then the view settled with it on screen: want() looked before it was
+        // finished, so the gap is noted here, or it stayed drawn from a coarser zoom level and was never fetched
+        const int bestZoom = tile.z < MAX_SOURCE_ZOOM ? tile.z : MAX_SOURCE_ZOOM;
+        for (int i = 0; i < visibleWanted && sourceZoom < bestZoom; i++) {
+            if (wanted[i] == tile) {
+                addGap(ancestorOf(tile, bestZoom));
+                break;
+            }
+        }
     } else {
         tileCache.release(tile);
         missing[missingNext] = tile;
@@ -895,6 +996,7 @@ bool TileWorker::loadJob(IoTask& io, void* context) {
         return true;
     }
     job->yielded = io.yielded();
+    job->noMemoryBytes = buffer.lastShortfall();
     return false;
 }
 
@@ -910,6 +1012,44 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
     if (job.yielded) {
         return false;
     }
+    if (job.found == Found::Nothing && job.noMemoryBytes > 0 && visible) {
+        // A large low-zoom tile on screen and no PSRAM block for its file: preparing gives way, the least recently
+        // used cache slots make room, and it is read again. Without this it stayed drawn from a coarser zoom level
+        logInfo("[%d] Tile %d/%d/%d: no %u KB block of PSRAM for its data, making room", lane.index, tile.z, tile.x, tile.y,
+            static_cast<unsigned>(job.noMemoryBytes / 1024));
+        conversionsWaitUntil = xTaskGetTickCount() + pdMS_TO_TICKS(MEMORY_BACKOFF_MS);
+        for (int i = 0; i < laneCount; i++) {
+            lanes[i].trimBuffers = true;
+        }
+        lane.fileBuffer.trim(0);
+        relieveMemory(job.noMemoryBytes + 0x10000);
+        job.noMemoryBytes = 0;
+        io->run(priority, loadJob, &job);
+        if (job.yielded) {
+            return false;
+        }
+    }
+    // Still no block that large: the original is drawn reading it from the card a chunk at a time, as preparing does
+    bool streamedOk = false;
+    RenderStats streamStats {};
+    if (job.found == Found::Nothing && job.noMemoryBytes > 0 && job.source.path[0] != '\0') {
+        CardInput input(io, job.source.path, priority);
+        streamedOk = input.isReady() && lane.renderer.render(&input, job.source.tile, tile, *palette, pixels, &streamStats);
+        if (lane.renderer.wasCancelled()) {
+            return false;
+        }
+    }
+    if (job.found == Found::Nothing && job.noMemoryBytes > 0 && !streamedOk) {
+        // Not even that: tried again in a few seconds, not left drawn from a coarser zoom level
+        logError("[%d] Tile %d/%d/%d: no %u KB block of PSRAM for its data (largest %u KB), tried again in %u s", lane.index, tile.z,
+            tile.x, tile.y, static_cast<unsigned>(job.noMemoryBytes / 1024),
+            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024), static_cast<unsigned>(MEMORY_RETRY_MS / 1000));
+        lock();
+        if (missingRetryAt == 0) {
+            missingRetryAt = xTaskGetTickCount() + pdMS_TO_TICKS(MEMORY_RETRY_MS);
+        }
+        unlock();
+    }
     const uint32_t loaded = nowMs();
     // A tile on screen without data of its own zoom level is a gap that browsing can fill
     if (visible) {
@@ -917,7 +1057,7 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
         int haveZoom = -1;
         if (job.found == Found::Cached) {
             haveZoom = job.cachedSourceZoom;
-        } else if (job.found != Found::Nothing) {
+        } else if (job.found != Found::Nothing || streamedOk) {
             haveZoom = job.source.tile.z;
         }
         if (haveZoom < bestZoom) {
@@ -938,6 +1078,16 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
     }
     RenderStats stats {};
     bool rendered = false;
+    if (streamedOk) {
+        rendered = true;
+        stats = streamStats;
+        logInfo("[%d] Tile %d/%d/%d drawn from its original read in chunks (no %u KB block of PSRAM)", lane.index, tile.z, tile.x,
+            tile.y, static_cast<unsigned>(job.noMemoryBytes / 1024));
+        // Its prepared copy is small and makes the next drawing cheap
+        lock();
+        queueConversion(job.source.tile, job.source.region, true);
+        unlock();
+    }
     if (job.found == Found::Prepared) {
         rendered = lane.renderer.renderPrepared(lane.fileBuffer.bytes(), lane.fileBuffer.size(), tile, *palette, pixels, &stats);
         if (lane.renderer.wasCancelled()) {

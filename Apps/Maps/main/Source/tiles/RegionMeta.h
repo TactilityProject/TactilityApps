@@ -21,6 +21,8 @@ struct RegionMeta {
     int64_t total;
     int64_t done;
     uint64_t bytes;
+    /** The part of bytes that was moved over from the browsed region, not downloaded: outside the download limit. */
+    uint64_t moved;
     /** The catalog region whose outline the tiles follow, empty for a rectangle (Download this area). */
     char outline[64];
     /** The name shown to the user, e.g. "Szeged"; the folder name stays the short 8.3 name. Empty: the folder name. */

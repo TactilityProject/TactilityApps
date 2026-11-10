@@ -107,6 +107,9 @@ bool Input::takeDevicesChanged() {
 }
 
 int Input::readKeys(KeyEvent* events, int maxEvents) {
+    if (touchOnly) {
+        return 0;
+    }
     refreshIfDue();
     int count = 0;
     for (int i = 0; i < keyboardCount && count < maxEvents; i++) {
@@ -125,6 +128,11 @@ int Input::readKeys(KeyEvent* events, int maxEvents) {
 }
 
 bool Input::readMouse(int32_t& dx, int32_t& dy) {
+    if (touchOnly) {
+        dx = 0;
+        dy = 0;
+        return false;
+    }
     refreshIfDue();
     dx = 0;
     dy = 0;

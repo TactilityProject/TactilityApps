@@ -52,6 +52,28 @@ struct LabelStyle {
     uint16_t peak;
     uint16_t halo;
     bool binary;
+    /** House numbers: small and quiet. */
+    uint16_t houseNumber = 0x7BEF;
+};
+
+/** How a POI type looks: its icon (an alpha mask, iconSize x iconSize), colour, and the first zoom it shows at. */
+struct PoiAppearance {
+    const uint8_t* icon;
+    int iconSize;
+    uint16_t color;
+    uint8_t minZoom;
+};
+
+/** Gives the appearance of a POI type; false for types that are never shown. */
+using PoiLookup = bool (*)(uint8_t poiType, PoiAppearance& out);
+
+/** A placed POI or house number, for the sheet: its kind, POI type, name ("" when it has none) and screen point. */
+struct PlacedItem {
+    LabelKind kind;
+    uint8_t poiType;
+    const char* name;
+    int x;
+    int y;
 };
 
 /**
@@ -78,8 +100,13 @@ struct LabelTransform {
  */
 class LabelLayout {
 public:
-    static constexpr int MAX_LABELS = 96;
-    static constexpr int MAX_CANDIDATES = 400;
+    static constexpr int MAX_LABELS = 160;
+    static constexpr int MAX_CANDIDATES = 640;
+    /** POIs and house numbers stop being taken in once the candidates are this full, so names always find room. */
+    static constexpr int POI_CANDIDATE_LIMIT = MAX_CANDIDATES * 3 / 4;
+    static constexpr int NUMBER_CANDIDATE_LIMIT = MAX_CANDIDATES / 2;
+    /** POI names show next to their icon from this zoom. */
+    static constexpr int POI_NAME_ZOOM = 17;
     static constexpr int LINE_REPEAT_PIXELS = 300;
     /** Sprite pixels for all labels of a view, two bytes each (text and halo coverage). */
     static constexpr size_t ARENA_BYTES = 192 * 1024;
@@ -96,6 +123,8 @@ public:
     void setStyle(const LabelStyle& value) { style = value; }
     void setDensity(LabelDensity value) { density = value; }
     void setPreferLatin(bool value) { preferLatin = value; }
+    /** Without a lookup no POIs are shown. */
+    void setPoiLookup(PoiLookup value) { poiLookup = value; }
 
     /** Starts a new placement for a screen of width x height at a view zoom level. */
     void beginView(int width, int height, int viewZoom);
@@ -116,6 +145,16 @@ public:
     /** For tests: the box a placed label covers on screen. */
     void bounds(int index, int& x, int& y, int& w, int& h) const;
     bool isLineLabel(int index) const { return placed[index].line; }
+
+    /** A placed label that can be selected (a POI or a house number); false for the others. */
+    bool item(int index, PlacedItem& out) const;
+    /** The selectable label nearest to (x, y) within radius pixels (offset: how far the labels moved since placed); -1 if none. */
+    int pick(int x, int y, int radius, int offsetX = 0, int offsetY = 0) const;
+    /**
+     * The selectable labels by distance from (x, y), nearest first, at most max of them, into out. Returns how many.
+     * Enter walks this list: the first press takes the nearest, the next the one after it.
+     */
+    int byDistance(int x, int y, int* out, int max, int offsetX = 0, int offsetY = 0) const;
     const char* text(int index) const { return texts + placed[index].textOffset; }
 
 private:
@@ -132,6 +171,10 @@ private:
         uint16_t firstPoint;
         uint16_t pointCount;
         int32_t rank;
+        LabelKind kind;
+        uint8_t poiType;
+        uint8_t iconSize;
+        const uint8_t* icon;
     };
     struct Placed {
         uint32_t textOffset;
@@ -142,6 +185,11 @@ private:
         uint16_t color;
         bool line;
         uint32_t spriteOffset;
+        LabelKind kind;
+        uint8_t poiType;
+        /** The labelled point on screen when placed (for POIs and house numbers). */
+        int16_t anchorX;
+        int16_t anchorY;
     };
 
     bool wants(const LabelRecord& record, uint8_t& priority, uint8_t& fontSize, uint16_t& color) const;
@@ -150,9 +198,10 @@ private:
     bool gridFree(float cx, float cy, float halfWidth, float halfHeight, float angle) const;
     void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle);
     bool placePoint(const Candidate& candidate);
+    bool placePoi(const Candidate& candidate);
     int placeLine(const Candidate& candidate);
     /** Draws text turned by angle (radians) around the centre of a new sprite; false when the arena is full. */
-    bool drawSprite(const Candidate& candidate, float centerX, float centerY, float angle, int textPixels);
+    bool drawSprite(const Candidate& candidate, float centerX, float centerY, float angle, int textPixels, bool withText = true);
     bool alreadyPlaced(const Candidate& candidate, float x, float y) const;
 
     void* (*allocateMemory)(size_t) = nullptr;
@@ -178,6 +227,7 @@ private:
     LabelStyle style {};
     LabelDensity density = LabelDensity::Normal;
     bool preferLatin = false;
+    PoiLookup poiLookup = nullptr;
     uint32_t (*clock)() = nullptr;
     uint32_t spriteTime = 0;
 };

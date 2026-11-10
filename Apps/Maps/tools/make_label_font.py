@@ -9,8 +9,9 @@ Needs fontTools (pip install --user fonttools).
 
 Tactility's own fonts leave out Latin Extended-A and more, so labels lose letters such as S with caron, l with caron,
 L with stroke, S with acute, O with double acute, and all Greek and Cyrillic. The app generates its label fonts from this subset on the device, with
-the binfont-module's binfont_generate(). The subset keeps the text characters common on maps: Basic Latin, Latin-1, Latin
-Extended-A/-B and Additional, schwa, spacing accents, combining marks, Greek, Cyrillic and some punctuation. The generator reads no kerning (only the glyph outlines, advances and the
+the binfont-module's binfont_generate(). The subset keeps Basic Latin and Latin-1 (typed text), plus
+exactly the characters that map names and the interface use, as listed in tools/label_codepoints.txt (made by
+tools/scan_name_codepoints.py from real tiles of several countries). The generator reads no kerning (only the glyph outlines, advances and the
 character map), so hinting and all layout features are dropped to keep the file small. The name table is kept and gets
 a copyright and a SIL Open Font License entry, which the source lacks.
 
@@ -28,27 +29,36 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DEFAULT_SOURCE = os.path.join(ROOT, "reference", "Tactility", "Tactility", "Fonts", "AdwaitaSans-Regular.ttf")
 DEFAULT_OUTPUT = os.path.join(ROOT, "assets", "fonts", "LabelSans.ttf")
 
-RANGES = [
+CODEPOINT_LIST = os.path.join(ROOT, "tools", "label_codepoints.txt")
+
+# Always in the font: typed text such as waypoint names can use any of these
+BASE_RANGES = [
     (0x0020, 0x007E),  # Basic Latin
-    (0x00A0, 0x024F),  # Latin-1 Supplement, Latin Extended-A and -B
-    (0x0259, 0x0259),  # schwa (Azerbaijani)
-    (0x02BB, 0x02BC),  # modifier letters turned comma and apostrophe
-    (0x02C6, 0x02DD),  # modifier letters, spacing accents
-    (0x0300, 0x036F),  # combining marks
-    (0x0370, 0x03FF),  # Greek and Coptic
-    (0x0400, 0x052F),  # Cyrillic and Cyrillic Supplement
-    (0x1E00, 0x1EFF),  # Latin Extended Additional (Vietnamese)
-    (0x2010, 0x2027),  # dashes, quotes, bullet, ellipsis
-    (0x2030, 0x203A),  # per mille, primes, guillemets
-    (0x20AC, 0x20AC),  # euro
-    (0x2116, 0x2116),  # numero sign
+    (0x00A0, 0x00FF),  # Latin-1 Supplement
+    # Whole alphabets, since a scan of a few cities misses letters (Czech capital E with caron, Russian Yo, Latvian,
+    # Lithuanian): Latin Extended-A, Romanian comma-below letters, schwa, basic Greek, basic Cyrillic and Ukrainian Ghe
+    (0x0100, 0x017F),
+    (0x0218, 0x021B),
+    (0x0259, 0x0259),
+    (0x0386, 0x03CE),
+    (0x0400, 0x045F),
+    (0x0490, 0x0491),
 ]
+
+
+def wanted_codepoints():
+    """Basic Latin and Latin-1, plus every character map names and the interface use (tools/scan_name_codepoints.py)."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from scan_name_codepoints import load_codepoints
+    codepoints = {c for first, last in BASE_RANGES for c in range(first, last + 1)}
+    codepoints.update(load_codepoints(CODEPOINT_LIST))
+    return sorted(codepoints)
 
 
 def main(argv):
     source = argv[1] if len(argv) > 1 else DEFAULT_SOURCE
     output = argv[2] if len(argv) > 2 else DEFAULT_OUTPUT
-    codepoints = [c for first, last in RANGES for c in range(first, last + 1)]
+    codepoints = wanted_codepoints()
 
     options = subset.Options()
     options.layout_features = []  # no GSUB/GPOS features

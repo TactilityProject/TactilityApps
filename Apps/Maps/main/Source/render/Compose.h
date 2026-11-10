@@ -73,8 +73,13 @@ struct AffineScratch {
  * Draws the view through an affine transform from rendered tiles, nearest pixel: for zoom animations and pinch, and
  * later rotation. A tile that is not ready is stood in for by a cached ancestor (magnified) or by its four children
  * (shrunk). lookup must return only tiles that are really rendered. Returns the number of tiles drawn as placeholder.
+ * With bilinear, each pixel blends the four nearest source pixels: about four times the work, for a settled turned
+ * view. rowBegin and rowEnd (exclusive, -1 for the last row) limit the rows drawn, so slow frames can go in strips.
  */
 int composeAffine(uint16_t* view, int width, int height, const AffineView& transform, TileLookup lookup, void* context, uint16_t placeholder,
-    AffineScratch& scratch);
+    AffineScratch& scratch, bool bilinear = false, int rowBegin = 0, int rowEnd = -1);
+
+/** RGB565 from from to to by weight / 32 (0..32). */
+uint16_t lerpRgb565(uint16_t from, uint16_t to, uint32_t weight);
 
 } // namespace maps

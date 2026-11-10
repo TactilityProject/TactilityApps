@@ -52,14 +52,54 @@ MvtDecoder::~MvtDecoder() {
 bool MvtDecoder::init() {
     if (valuePool == nullptr) {
         valuePool = static_cast<ValueEntry*>(largeAlloc(VALUE_POOL_SIZE * sizeof(ValueEntry)));
+        valuePoolCapacity = valuePool != nullptr ? VALUE_POOL_SIZE : 0;
     }
     if (namePool == nullptr) {
         namePool = static_cast<char*>(largeAlloc(NAME_POOL_SIZE));
+        namePoolCapacity = namePool != nullptr ? NAME_POOL_SIZE : 0;
     }
     if (chunk == nullptr) {
         chunk = static_cast<TilePoint*>(largeAlloc(CHUNK_POINTS * sizeof(TilePoint)));
     }
     return reader.init() && valuePool != nullptr && namePool != nullptr && chunk != nullptr;
+}
+
+bool MvtDecoder::growPools() {
+    // Without memory for the bigger pools the normal ones stay: more POI strings go without text, nothing fails
+    if (valuePoolCapacity < POI_VALUE_POOL_SIZE) {
+        if (auto* bigger = static_cast<ValueEntry*>(largeAlloc(POI_VALUE_POOL_SIZE * sizeof(ValueEntry)))) {
+            largeFree(valuePool);
+            valuePool = bigger;
+            valuePoolCapacity = POI_VALUE_POOL_SIZE;
+        }
+    }
+    if (namePoolCapacity < POI_NAME_POOL_SIZE) {
+        if (auto* bigger = static_cast<char*>(largeAlloc(POI_NAME_POOL_SIZE))) {
+            largeFree(namePool);
+            namePool = bigger;
+            namePoolCapacity = POI_NAME_POOL_SIZE;
+        }
+    }
+    return valuePool != nullptr && namePool != nullptr;
+}
+
+void MvtDecoder::shrinkPools() {
+    if (valuePoolCapacity > VALUE_POOL_SIZE) {
+        if (auto* smaller = static_cast<ValueEntry*>(largeAlloc(VALUE_POOL_SIZE * sizeof(ValueEntry)))) {
+            largeFree(valuePool);
+            valuePool = smaller;
+            valuePoolCapacity = VALUE_POOL_SIZE;
+        }
+    }
+    if (namePoolCapacity > NAME_POOL_SIZE) {
+        if (auto* smaller = static_cast<char*>(largeAlloc(NAME_POOL_SIZE))) {
+            largeFree(namePool);
+            namePool = smaller;
+            namePoolCapacity = NAME_POOL_SIZE;
+        }
+    }
+    valuePoolUsed = 0;
+    namePoolUsed = 0;
 }
 
 bool MvtDecoder::readVarint(uint64_t& value) {
@@ -170,7 +210,7 @@ bool MvtDecoder::scanValue(size_t valueEnd, ValueEntry& entry) {
                     }
                 }
                 code = static_cast<uint16_t>(valueFromString(text, stored));
-                if (stored > 0 && namePool != nullptr && namePoolUsed + stored <= static_cast<size_t>(NAME_POOL_SIZE)) {
+                if (stored > 0 && namePool != nullptr && namePoolUsed + stored <= namePoolCapacity) {
                     memcpy(namePool + namePoolUsed, text, stored);
                     textOffset = namePoolUsed;
                     textLength = static_cast<uint8_t>(stored);
@@ -254,6 +294,8 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.nameLatinKey = index;
                 } else if (strcmp(name, "rank") == 0) {
                     table.rankKey = index;
+                } else if (strcmp(name, "housenumber") == 0) {
+                    table.houseNumberKey = index;
                 }
             } else if (!reader.skip(static_cast<size_t>(length))) {
                 return false;
@@ -268,7 +310,7 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
             if (!scanValue(reader.tell() + static_cast<size_t>(length), entry)) {
                 return false;
             }
-            if (valuePoolUsed < VALUE_POOL_SIZE) {
+            if (valuePoolUsed < valuePoolCapacity) {
                 valuePool[valuePoolUsed++] = entry;
                 table.valueCount++;
             }
@@ -285,8 +327,11 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
     return true;
 }
 
-bool MvtDecoder::scan(ByteInput* source) {
+bool MvtDecoder::scan(ByteInput* source, bool withPoiLayers) {
     input = source;
+    if (withPoiLayers && !growPools()) {
+        return false;
+    }
     valuePoolUsed = 0;
     namePoolUsed = 0;
     totalSize = 0;
@@ -311,6 +356,9 @@ bool MvtDecoder::scan(ByteInput* source) {
             Layer layer;
             if (!readLayerName(layerEnd, layer)) {
                 return false;
+            }
+            if (!withPoiLayers && (layer == Layer::Poi || layer == Layer::Housenumber)) {
+                layer = Layer::Unknown;
             }
             if (layer != Layer::Unknown) {
                 LayerTable& table = tables[static_cast<int>(layer)];
@@ -341,8 +389,16 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
     const bool isInteger = (code & INTEGER_FLAG) != 0;
     if (keyIndex == table.classKey && !isInteger) {
         info.featureClass = static_cast<Value>(code);
+        if (entry->hasText != 0) {
+            info.classText = namePool + entry->textOffset;
+            info.classTextLength = entry->textLength;
+        }
     } else if (keyIndex == table.subclassKey && !isInteger) {
         info.subclass = static_cast<Value>(code);
+        if (entry->hasText != 0) {
+            info.subclassText = namePool + entry->textOffset;
+            info.subclassTextLength = entry->textLength;
+        }
     } else if (keyIndex == table.brunnelKey && !isInteger) {
         info.brunnel = static_cast<Value>(code);
     } else if (keyIndex == table.adminLevelKey && isInteger) {
@@ -359,6 +415,9 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
         info.nameLatinLength = entry->textLength;
     } else if (keyIndex == table.rankKey && isInteger) {
         info.rank = entry->rank;
+    } else if (keyIndex == table.houseNumberKey && entry->hasText != 0) {
+        info.houseNumber = namePool + entry->textOffset;
+        info.houseNumberLength = entry->textLength;
     }
 }
 

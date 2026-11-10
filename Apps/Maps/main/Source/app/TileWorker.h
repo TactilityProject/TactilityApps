@@ -32,8 +32,10 @@ namespace maps {
  * The SD card cache is kept per style and palette under cache/<style-id>, below a size cap, deleting the least
  * recently used tiles first. It never touches maps/.
  * Tiles around the screen are only rendered after a second without input (idle), and any input cancels them,
- * so they never delay a tile on screen. In idle time the lanes also convert originals into prepared tiles,
- * the ones just drawn from an original first, then every tile on the card found by a PreparedScanner.
+ * so they never delay a tile on screen. In idle time the lanes also convert originals into prepared tiles: the ones
+ * just drawn on screen from an original at once, every other tile on the card (found by a PreparedScanner, such as
+ * the tiles of a new download) only once the map was left alone for BACKGROUND_PREPARE_MS. When PSRAM has no block
+ * large enough, conversions wait MEMORY_BACKOFF_MS and the tile stays queued instead of counting as failed.
  */
 class TileWorker {
 public:
@@ -59,6 +61,16 @@ public:
     bool relieveMemory(size_t bytes);
     /** Takes the freed slots back when memory allows; true when none is missing any more. */
     bool restoreMemory();
+    /** Whether tiles are queued for preparation or being prepared; the cache stays small for them meanwhile. */
+    bool isPreparing() {
+        lock();
+        bool preparing = conversionCount > 0;
+        for (int i = 0; i < laneCount; i++) {
+            preparing = preparing || lanes[i].converting;
+        }
+        unlock();
+        return preparing;
+    }
     bool cacheShrunk() {
         lock();
         const bool shrunk = tileCache.freedSlots() > 0;
@@ -71,6 +83,8 @@ public:
     /** True once since the last call when a tile was added to the cache. */
     bool takeChanged() { return changed.exchange(false); }
     bool isBusy() const { return busyLanes.load() > 0; }
+    /** Background preparation (new originals, or older prepared tiles made again): tiles done since start, tiles waiting. */
+    void preparation(int& done, int& waiting);
     TaskHandle_t laneTask(int lane) const { return lane < laneCount ? lanes[lane].task : nullptr; }
     /** The fewest bytes of stack a render lane had left so far. */
     uint32_t stackLeft(int lane) const {
@@ -93,7 +107,16 @@ public:
     /** Whether rendered tiles are read from and written to the SD card cache. */
     void setSdCache(bool enabled) { sdCache = enabled; }
     /** Idle: no input for a while, so prefetch, conversions and cache tidying may run. */
-    void setIdle(bool value) { idle = value; }
+    void setIdle(bool value) {
+        if (value && !idle) {
+            idleSince = xTaskGetTickCount();
+        }
+        idle = value;
+    }
+    /** Tiles not on screen are prepared only after this long without input and without a download. */
+    static constexpr uint32_t BACKGROUND_PREPARE_MS = 10000;
+    /** How long conversions wait after PSRAM had no block large enough for one. */
+    static constexpr uint32_t MEMORY_BACKOFF_MS = 30000;
     /** Input arrived: prefetch reads and renders stop at once, and idle work waits. */
     void cancelPrefetch();
     /**
@@ -128,11 +151,17 @@ private:
         TileKey convertingTile;
         bool prefetching;
         std::atomic<bool> cancel;
+        /** Preparing waits for memory: the lane frees the buffers it keeps between tiles, so PSRAM has larger blocks. */
+        std::atomic<bool> trimBuffers;
+        /** Whether the buffers were freed for the conversion now waiting; reset once a conversion starts. */
+        bool triedTrim;
     };
 
     struct Conversion {
         TileKey tile;
         int region;
+        /** Drawn on screen from its original: prepared without waiting for BACKGROUND_PREPARE_MS. */
+        bool urgent;
     };
 
     static constexpr int MAX_CONVERSIONS = 32;
@@ -153,6 +182,7 @@ private:
 
     /** Counts finished conversions: an original held in a lane's buffer is not reused once a prepared copy exists. */
     std::atomic<uint32_t> preparedGeneration = 0;
+    std::atomic<int> preparedCount = 0;
 
     struct LoadJob {
         TileWorker* worker;
@@ -166,6 +196,8 @@ private:
         TileFile source;
         int cachedSourceZoom;
         bool yielded;
+        /** The tile's data is on the card but PSRAM had no block this large for it, or 0. */
+        size_t noMemoryBytes;
     };
 
     static void taskMain(void* context);
@@ -212,6 +244,9 @@ private:
     TileKey missing[64] {};
     int missingCount = 0;
     int missingNext = 0;
+    /** Ticks when tiles that failed for want of memory are tried again (the missing list is cleared), or 0. */
+    TickType_t missingRetryAt = 0;
+    static constexpr uint32_t MEMORY_RETRY_MS = 5000;
     static constexpr int MAX_PENDING_WRITES = 32;
     TileKey pendingWrites[MAX_PENDING_WRITES] {};
     int pendingSourceZoom[MAX_PENDING_WRITES] {};
@@ -238,6 +273,9 @@ private:
     bool magnifiedOutdated = false;
     std::atomic<bool> sdCache = true;
     std::atomic<bool> idle = false;
+    /** Ticks: when idle began (or a download ended), and until when conversions wait for memory. */
+    std::atomic<TickType_t> idleSince = 0;
+    std::atomic<TickType_t> conversionsWaitUntil = 0;
     char styleId[8] = "";
     CacheIndex cacheIndex;
     CacheWalker cacheWalker;

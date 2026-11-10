@@ -47,7 +47,7 @@ bool LabelReader::next(LabelRecord& out) {
         return false;
     }
     const uint8_t kind = *cursor++;
-    if (kind > static_cast<uint8_t>(LabelKind::Peak) || cursor >= end) {
+    if (kind > static_cast<uint8_t>(LabelKind::HouseNumber) || cursor >= end) {
         remaining = 0;
         return false;
     }

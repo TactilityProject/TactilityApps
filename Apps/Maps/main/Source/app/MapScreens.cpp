@@ -36,6 +36,8 @@ const char* const ABOUT_PARAGRAPHS[] = {
     "",
     "Root certificates of Google Trust Services and Let's Encrypt are included to reach OpenFreeMap over HTTPS.",
     "",
+    "Label font: Adwaita Sans (SIL Open Font License 1.1). Place icons: Maki by Mapbox (CC0).",
+    "",
     "W/S or drag to scroll. Esc, Backspace, < or a swipe to the right go back.",
 };
 
@@ -396,7 +398,7 @@ void MapView::openRegionActions() {
     } else if (!meta.isComplete()) {
         add("Continue download", REGION_CONTINUE);
     }
-    if (input.hasKeyboard()) {
+    if (canType()) {
         add("Rename", REGION_RENAME);
     }
     add("Delete", REGION_DELETE);
@@ -453,7 +455,7 @@ void MapView::askRenameRegion() {
     if (regionList.selected() >= regionCount) {
         return;
     }
-    if (!input.hasKeyboard()) {
+    if (!canType()) {
         return;
     }
     const RegionMeta& meta = regions[regionList.selected()];
@@ -683,6 +685,10 @@ void MapView::drawAbout() {
     if (aboutLines == 0) {
         // Wrapped once when the page opens
         for (const char* paragraph : ABOUT_PARAGRAPHS) {
+            // The last paragraph names keys: a board with only a touch screen gets the touch words
+            if (paragraph == ABOUT_PARAGRAPHS[sizeof(ABOUT_PARAGRAPHS) / sizeof(ABOUT_PARAGRAPHS[0]) - 1] && !input.hasKeyboard()) {
+                paragraph = "Drag to scroll. < or a swipe to the right goes back.";
+            }
             if (aboutLines >= ABOUT_LINES) {
                 break;
             }
@@ -718,7 +724,12 @@ BoundingBox MapView::frameBox() const {
 }
 
 void MapView::drawDownloadFrame() {
-    drawDownloadScreen(canvas, overlay.font(), theme, downloadView, planDownload(frameBox(), MAX_SOURCE_ZOOM));
+    const DownloadPlan plan = planDownload(frameBox(), MAX_SOURCE_ZOOM);
+    // How many of its tiles are browsed already, counted in the background once the frame stays put
+    browsedCounter.request(plan, nowMs());
+    int64_t onCard = -1;
+    browsedCounter.count(plan, onCard);
+    drawDownloadScreen(canvas, overlay.font(), theme, downloadView, plan, onCard);
 }
 
 bool MapView::makeRegionFolder(const char* title, RegionMeta& meta) {

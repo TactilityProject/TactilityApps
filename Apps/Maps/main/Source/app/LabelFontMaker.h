@@ -14,13 +14,15 @@ namespace maps {
 /**
  * Makes the map's label fonts once, from the small TrueType file the app ships (assets/fonts/LabelSans.ttf: Adwaita Sans
  * with the Latin, Greek and Cyrillic letters common on maps, which Tactility's own fonts lack), with the binfont-module's binfont_generate(). The fonts are
- * cached on the card as <root>/fonts/lbl<em size>b.bin ("b" is the format number: change it when the sizes or the
- * subset change). A short-lived low priority task does the work, so input and the first frame are never held up; the
+ * cached on the card as <root>/fonts/lbl<em size><FONT_VERSION>.bin: raise FONT_VERSION when the sizes or the subset
+ * change, the sizes of the older version are deleted once the new ones are written. A short-lived low priority task does the work, so input and the first frame are never held up; the
  * card is only touched through the I/O task. The map loop looks at isFinished() and opens the cached files.
  */
 class LabelFontMaker {
 public:
     static constexpr int COUNT = 3;
+    /** 'c': the subset from tools/label_codepoints.txt (0.3.0). */
+    static constexpr char FONT_VERSION = 'c';
     /**
      * Em sizes with the letter sizes of Tactility's small, default and large fonts on the T-Deck. The lines are taller
      * (17, 21, 26 px) because the subset's tallest accents (Vietnamese, Cyrillic) count in the line height.

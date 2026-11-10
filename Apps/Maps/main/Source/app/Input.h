@@ -41,8 +41,10 @@ public:
     bool readMouse(int32_t& dx, int32_t& dy);
     bool readTouch(TouchState& state);
     bool hasTouch() const { return touch != nullptr; }
-    bool hasKeyboard() const { return keyboardCount > 0; }
-    bool hasPointer() const { return mouseCount > 0; }
+    bool hasKeyboard() const { return keyboardCount > 0 && !touchOnly; }
+    bool hasPointer() const { return mouseCount > 0 && !touchOnly; }
+    /** Debug scripts ("touchonly"): act as a board with only a touch screen; keyboards and pointers are ignored. */
+    void setTouchOnly(bool value) { touchOnly = value; }
     /** True once after a keyboard or mouse came or went, so the overlay can adapt. */
     bool takeDevicesChanged();
 
@@ -53,6 +55,7 @@ private:
     static int dropStopped(Device** devices, int& count);
 
     Device* keyboards[MAX_DEVICES] {};
+    bool touchOnly = false;
     int keyboardCount = 0;
     Device* mice[MAX_DEVICES] {};
     int mouseCount = 0;

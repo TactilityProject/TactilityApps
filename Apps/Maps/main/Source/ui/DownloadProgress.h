@@ -57,8 +57,11 @@ public:
     void open() { visible = true; focus = 2; }
     void close() { visible = false; }
     bool isOpen() const { return visible; }
-    /** title: region name; lines: up to 5 lines of details; paused decides "Pause" or "Resume". */
-    void set(const char* title, const char* const* lines, int lineCount, bool paused);
+    /**
+     * title: region name; lines: up to 5 lines of details; paused decides "Pause" or "Resume". closeOnly shows only
+     * Close, for work the card can't pause or cancel (tiles fetched while browsing).
+     */
+    void set(const char* title, const char* const* lines, int lineCount, bool paused, bool closeOnly = false);
     void layout(int width, int height, Font& font);
     void draw(Canvas& canvas, Font& font, const UiTheme& theme);
     /** Enter presses the focused button, Tab/arrows/a/d/w/s move the focus, Esc and Backspace give Close. */
@@ -71,6 +74,7 @@ private:
 
     bool visible = false;
     bool paused = false;
+    bool closeOnly = false;
     int focus = 2;
     char title[TITLE_LENGTH] = "";
     char lines[MAX_LINES][LINE_LENGTH] {};

@@ -135,6 +135,40 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::Exit;
             return step;
         }
+        if (strcmp(command, "touchonly") == 0) {
+            step.action = Action::TouchOnly;
+            return step;
+        }
+        if (strcmp(command, "squeeze") == 0) {
+            step.action = Action::Squeeze;
+            step.zoom = atoi(argument);
+            return step;
+        }
+        float v[6] = {};
+        const int found = sscanf(argument, "%f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+        struct TouchCommand {
+            const char* name;
+            TouchKind kind;
+            int values;
+            bool hasDuration;
+        };
+        static constexpr TouchCommand TOUCH_COMMANDS[] = {
+            { "tap", TouchKind::Tap, 2, false }, { "hold", TouchKind::Hold, 2, true }, { "drag", TouchKind::Drag, 4, true },
+            { "pinch", TouchKind::Pinch, 4, true }, { "twist", TouchKind::Twist, 5, true },
+        };
+        for (const TouchCommand& touch : TOUCH_COMMANDS) {
+            if (strcmp(command, touch.name) == 0 && found >= touch.values + (touch.hasDuration ? 1 : 0)) {
+                step.action = Action::Touch;
+                step.touch = touch.kind;
+                for (int i = 0; i < touch.values; i++) {
+                    step.values[i] = v[i];
+                }
+                step.durationMs = touch.hasDuration ? static_cast<uint32_t>(v[touch.values]) : 60;
+                // The next line waits until the fingers lifted and the gesture code had a moment
+                resumeAt = now + step.durationMs + 120;
+                return step;
+            }
+        }
     }
     largeFree(text);
     text = nullptr;
