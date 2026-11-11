@@ -4,13 +4,13 @@ Offline vector maps for [Tactility](https://github.com/TactilityProject/Tactilit
 downloads an area from [OpenFreeMap](https://openfreemap.org/) by itself and draws it fullscreen, with
 anti-aliased roads, water, parks and buildings, from tiles on the SD card.
 
-Version 0.2.0, tested on a LilyGO T-Deck (ESP32-S3, 8 MB PSRAM). Changes are listed in
+Version 0.4.0, tested on a LilyGO T-Deck (ESP32-S3, 8 MB PSRAM); it also runs on ESP32-P4. Changes are listed in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
-Needs Tactility 0.8.0 or newer on an ESP32-S3 board with 8 MB PSRAM, a FAT-formatted SD card, and Wi-Fi
-for downloading maps. Tested on Tactility 0.8.0-dev (main at 0e276da2) on a LilyGO T-Deck.
+Needs Tactility 0.8.0 or newer on an ESP32-S3 or ESP32-P4 board with 8 MB PSRAM, a FAT-formatted SD card, and Wi-Fi
+for downloading maps. Tested on Tactility 0.8.0-dev (main, November 2026) on a LilyGO T-Deck.
 
 1. Install "Maps" from Tactility's App Hub. Or copy the `.app` file to the SD card, open it in the Files app and
    confirm "Install".
