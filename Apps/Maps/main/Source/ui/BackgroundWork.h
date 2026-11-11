@@ -20,6 +20,7 @@ enum class WorkKind : uint8_t {
     GpxImport,       // "Importing GPX"
     MoveBrowsed,     // "Moving browsed tiles"
     AddressIndex,    // "Building the address index"
+    SplitTiles,      // "Splitting tiles"
     Count
 };
 

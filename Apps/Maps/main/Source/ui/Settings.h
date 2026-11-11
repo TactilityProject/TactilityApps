@@ -28,6 +28,8 @@ struct Settings {
     int labels = 2;
     /** Show OpenMapTiles' Latin-script name where a place has one, instead of the local name. */
     bool latinNames = false;
+    /** The mode new routes start with (Settings, "Route mode"): 0 walk, 1 bike, 2 car (RouteProfile). */
+    int routeProfile = 0;
     /** Developer options, only in settings.txt: the monochrome palette on any display, and stall probes. */
     bool devMonochrome = false;
     bool devProbe = false;

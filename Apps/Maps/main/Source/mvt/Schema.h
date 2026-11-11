@@ -60,6 +60,10 @@ struct FeatureInfo {
     int8_t adminLevel = -1;
     bool maritime = false;
     bool ramp = false;
+    /** "oneway" of the transportation layer: 1, -1, or 0 when absent. */
+    int8_t oneway = 0;
+    /** "layer" of the transportation layer (bridges, tunnels), 0 when absent. */
+    int8_t layerNumber = 0;
     /** UTF-8 name of the feature from "name", not null-terminated, nullptr when absent. Valid during beginFeature(). */
     const char* name = nullptr;
     uint16_t nameLength = 0;

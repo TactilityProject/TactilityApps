@@ -391,8 +391,11 @@ bool storeTileJob(IoTask& io, void* context) {
         snprintf(job->lastFolder, PATH_MAX_LENGTH, "%s", folder);
     }
     // Only tiles that are not on the card are fetched, a prepared copy can only be left from a deleted original
-    if (preparedPath(prepared, sizeof(prepared), job->root, job->region, job->tile) && fileExists(prepared)) {
-        remove(prepared);
+    for (int file = 0; file < PREPARED_FILE_COUNT; file++) {
+        if (preparedFilePath(prepared, sizeof(prepared), job->root, job->region, job->tile, static_cast<PreparedFile>(file)) &&
+            fileExists(prepared)) {
+            remove(prepared);
+        }
     }
     // A write of a few hundred KB gives way to tiles on screen, the tile stays in memory and is written again
     const bool ok = io.writeFile(path, temporary, *job->body, true);

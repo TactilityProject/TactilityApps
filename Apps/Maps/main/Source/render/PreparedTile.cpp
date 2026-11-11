@@ -16,6 +16,7 @@ namespace maps {
 namespace {
 
 constexpr char MAGIC[4] = { 'T', 'M', 'P', 'T' };
+constexpr char LABEL_MAGIC[4] = { 'T', 'M', 'P', 'L' };
 constexpr size_t RING_START_CAPACITY = 1024;
 /** Longer rings are stored without simplification. */
 constexpr size_t RING_MAX_POINTS = 65536;
@@ -112,7 +113,10 @@ bool readPreparedHeader(const uint8_t* data, size_t size, PreparedHeader& header
         return false;
     }
     header.version = readU16(data + 4);
-    header.flags = readU16(data + 6);
+    const uint16_t flags = readU16(data + 6);
+    header.flags = flags & 0xFF;
+    header.labelVersion = header.version >= PREPARED_SPLIT_VERSION ? data[9] : 0;
+    header.graphVersion = header.version >= PREPARED_SPLIT_VERSION ? static_cast<uint8_t>(flags >> 8) : 0;
     header.tile.z = data[8];
     header.extent = readU16(data + 10);
     header.tile.x = static_cast<int>(readU32(data + 12));
@@ -126,8 +130,50 @@ bool readPreparedHeader(const uint8_t* data, size_t size, PreparedHeader& header
 }
 
 bool isPreparedCurrent(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize) {
-    return header.version == PREPARED_FORMAT_VERSION && header.tile == tile && header.sourceSize == sourceSize &&
-        header.extent == PREPARED_EXTENT;
+    return preparedPartsNeeded(&header, tile, sourceSize) == 0;
+}
+
+uint8_t preparedPartsNeeded(const PreparedHeader* header, const TileKey& tile, uint32_t sourceSize) {
+    const uint8_t graph = tile.z == GRAPH_ZOOM && PREPARED_GRAPH_FORMAT_VERSION != 0 ? PART_GRAPH : 0;
+    if (header == nullptr || !(header->tile == tile) || header->sourceSize != sourceSize || header->extent != PREPARED_EXTENT) {
+        return PART_GEOMETRY | PART_LABELS | graph;
+    }
+    uint8_t parts = 0;
+    if (header->version != PREPARED_FORMAT_VERSION) {
+        parts |= PART_GEOMETRY;
+    }
+    if (header->version < PREPARED_SPLIT_VERSION || header->labelVersion != PREPARED_LABEL_FORMAT_VERSION) {
+        parts |= PART_LABELS;
+    }
+    if (graph != 0 && (header->version < PREPARED_SPLIT_VERSION || header->graphVersion != PREPARED_GRAPH_FORMAT_VERSION)) {
+        parts |= PART_GRAPH;
+    }
+    return parts;
+}
+
+bool readPreparedLabelHeader(const uint8_t* data, size_t size, PreparedLabelHeader& header) {
+    if (data == nullptr || size < PREPARED_LABEL_HEADER_SIZE || memcmp(data, LABEL_MAGIC, 4) != 0) {
+        return false;
+    }
+    header.version = readU16(data + 4);
+    header.flags = readU16(data + 6);
+    header.tile.z = data[8];
+    header.tile.x = static_cast<int>(readU32(data + 12));
+    header.tile.y = static_cast<int>(readU32(data + 16));
+    header.sourceSize = readU32(data + 20);
+    header.mainCount = readU32(data + 24);
+    header.mainSize = readU32(data + 28);
+    header.mainStored = readU32(data + 32);
+    header.numberCount = readU32(data + 36);
+    header.numberSize = readU32(data + 40);
+    header.numberStored = readU32(data + 44);
+    memcpy(header.sourceVersion, data + 48, PREPARED_VERSION_LENGTH);
+    header.sourceVersion[PREPARED_VERSION_LENGTH] = '\0';
+    return true;
+}
+
+bool isPreparedLabelCurrent(const PreparedLabelHeader& header, const TileKey& tile, uint32_t sourceSize) {
+    return header.version == PREPARED_LABEL_FORMAT_VERSION && header.tile == tile && header.sourceSize == sourceSize;
 }
 
 bool isPreparedReadable(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize) {
@@ -239,6 +285,15 @@ void TileConverter::trim(size_t keepBytes) {
     if (extraLabels.allocated() > keepBytes) {
         extraLabels.release();
     }
+    if (numberLabels.allocated() > keepBytes) {
+        numberLabels.release();
+    }
+    if (poiRecords.allocated() > keepBytes) {
+        poiRecords.release();
+    }
+    if (numberRecords.allocated() > keepBytes) {
+        numberRecords.release();
+    }
     if (labels.allocated() > keepBytes) {
         labels.release();
     }
@@ -283,10 +338,10 @@ bool TileConverter::growRing(size_t points) {
     return true;
 }
 
-bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, uint32_t sourceSize,
-    const char* sourceVersion, bool deflate, ByteWriter& out, ConvertStats* stats) {
-    const uint32_t start = nowMs();
+bool TileConverter::run(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, bool wantGeometry, bool wantLabels) {
     decoder = &tileDecoder;
+    keepGeometry = wantGeometry;
+    keepLabels = wantLabels;
     // The decoder belongs to a render lane: its pools go back to their normal size however the conversion ends
     struct ShrinkPools {
         MvtDecoder& pools;
@@ -305,9 +360,13 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
     }
     labels.clear();
     extraLabels.clear();
+    numberLabels.clear();
+    poiRecords.clear();
+    numberRecords.clear();
     poiBytes = 0;
-    numberBytes = 0;
     labelCount = 0;
+    numberCount = 0;
+    numberStored = 0;
     failureText = "";
     if (!decoder->scan(input, true)) {
         failureText = "reading the tile";
@@ -339,36 +398,44 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
             return false;
         }
     }
-    if (labels.failed() || extraLabels.failed()) {
+    if (labels.failed() || extraLabels.failed() || numberLabels.failed()) {
         failureText = "no memory for the labels";
         return false;
     }
+    return true;
+}
 
-    // The sections go straight into the output: one combined copy of them would double the memory a large tile needs
-    size_t bodySize = 1;
-    uint8_t head[1 + 2 * 10];
-    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
-        if (sectionCounts[i] != 0) {
-            bodySize += encodeVarint(head, sectionCounts[i]) + encodeVarint(head, sections[i].size()) + 1 + sections[i].size();
+
+namespace {
+
+/** Writes a body raw, or as a zlib stream when there is a compressor. */
+class BodyWriter {
+public:
+    BodyWriter(ByteWriter& out, tdefl_compressor* compressor) : out(out), compressor(compressor) {}
+    // 128 probes per search and a zlib header, so InflateReader recognises the stream
+    bool begin() {
+        return compressor == nullptr || tdefl_init(compressor, deflateCallback, &out, 128 | TDEFL_WRITE_ZLIB_HEADER) == TDEFL_STATUS_OKAY;
+    }
+    bool emit(const void* bytes, size_t count) {
+        if (count == 0) {
+            return true;
         }
+        if (compressor == nullptr) {
+            out.putBytes(bytes, count);
+            return !out.failed();
+        }
+        return tdefl_compress_buffer(compressor, bytes, count, TDEFL_NO_FLUSH) == TDEFL_STATUS_OKAY;
     }
-    const size_t labelBytes = labels.size() + extraLabels.size();
-    if (labelCount != 0) {
-        bodySize += encodeVarint(head, labelCount) + encodeVarint(head, labelBytes) + 1 + labelBytes;
+    bool finish() {
+        return compressor == nullptr || tdefl_compress_buffer(compressor, nullptr, 0, TDEFL_FINISH) == TDEFL_STATUS_DONE;
     }
 
-    out.clear();
-    out.putBytes(MAGIC, 4);
-    out.putU16(PREPARED_FORMAT_VERSION);
-    out.putU16(deflate ? PREPARED_FLAG_DEFLATED : 0);
-    out.put(static_cast<uint8_t>(tile.z));
-    out.put(0);
-    out.putU16(PREPARED_EXTENT);
-    out.putU32(static_cast<uint32_t>(tile.x));
-    out.putU32(static_cast<uint32_t>(tile.y));
-    out.putU32(sourceSize);
-    out.putU32(static_cast<uint32_t>(bodySize));
-    out.putU32(0);
+private:
+    ByteWriter& out;
+    tdefl_compressor* compressor;
+};
+
+void putVersion(ByteWriter& out, const char* sourceVersion) {
     // Zero padded, without a terminator when the version fills the field
     char version[PREPARED_VERSION_LENGTH] = {};
     if (sourceVersion != nullptr) {
@@ -376,24 +443,167 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         memcpy(version, sourceVersion, length < PREPARED_VERSION_LENGTH ? length : PREPARED_VERSION_LENGTH);
     }
     out.putBytes(version, PREPARED_VERSION_LENGTH);
-    tdefl_compressor* compressor = nullptr;
-    if (deflate) {
-        compressor = static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor)));
-        // 128 probes per search and a zlib header, so InflateReader recognises the stream
-        if (compressor == nullptr || tdefl_init(compressor, deflateCallback, &out, 128 | TDEFL_WRITE_ZLIB_HEADER) != TDEFL_STATUS_OKAY) {
-            largeFree(compressor);
-            failureText = "no 320 KB block of memory for the compressor";
-            return false;
+}
+
+} // namespace
+
+bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, uint32_t sourceSize,
+    const char* sourceVersion, bool deflate, ByteWriter* geometryOut, ByteWriter* labelOut, ConvertStats* stats) {
+    const uint32_t start = nowMs();
+    if (!run(tileDecoder, input, sourceTile, geometryOut != nullptr, labelOut != nullptr)) {
+        return false;
+    }
+    size_t bodySize = 0;
+    if (labelOut != nullptr && !writeLabelFile(sourceVersion, sourceSize, deflate, *labelOut)) {
+        return false;
+    }
+    if (geometryOut != nullptr && !writeGeometry(sourceVersion, sourceSize, deflate, false, *geometryOut, bodySize)) {
+        return false;
+    }
+    if (stats != nullptr) {
+        *stats = counters;
+        stats->totalMs = nowMs() - start;
+        stats->bodyBytes = static_cast<uint32_t>(bodySize);
+        stats->storedBytes = geometryOut != nullptr ? static_cast<uint32_t>(geometryOut->size() - PREPARED_HEADER_SIZE) : 0;
+        stats->labelBytes = labelOut != nullptr ? static_cast<uint32_t>(labels.size() + extraLabels.size() + numberLabels.size()) : 0;
+        stats->labelStoredBytes = labelOut != nullptr ? static_cast<uint32_t>(labelOut->size()) : 0;
+        stats->numberStoredBytes = numberStored;
+    }
+    return true;
+}
+
+bool TileConverter::convertCombined(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, uint32_t sourceSize,
+    const char* sourceVersion, bool deflate, ByteWriter& out, ConvertStats* stats) {
+    const uint32_t start = nowMs();
+    size_t bodySize = 0;
+    if (!run(tileDecoder, input, sourceTile, true, true) || !writeGeometry(sourceVersion, sourceSize, deflate, true, out, bodySize)) {
+        return false;
+    }
+    if (stats != nullptr) {
+        *stats = counters;
+        stats->totalMs = nowMs() - start;
+        stats->bodyBytes = static_cast<uint32_t>(bodySize);
+        stats->storedBytes = static_cast<uint32_t>(out.size() - PREPARED_HEADER_SIZE);
+    }
+    return true;
+}
+
+bool TileConverter::writeLabelFile(const char* sourceVersion, uint32_t sourceSize, bool deflate, ByteWriter& out) {
+    out.clear();
+    out.putBytes(LABEL_MAGIC, 4);
+    out.putU16(PREPARED_LABEL_FORMAT_VERSION);
+    out.putU16(deflate ? PREPARED_FLAG_DEFLATED : 0);
+    out.put(static_cast<uint8_t>(tile.z));
+    out.put(0);
+    out.putU16(0);
+    out.putU32(static_cast<uint32_t>(tile.x));
+    out.putU32(static_cast<uint32_t>(tile.y));
+    out.putU32(sourceSize);
+    out.putU32(labelCount);
+    out.putU32(static_cast<uint32_t>(labels.size() + extraLabels.size()));
+    out.putU32(0);
+    out.putU32(numberCount);
+    out.putU32(static_cast<uint32_t>(numberLabels.size()));
+    out.putU32(0);
+    putVersion(out, sourceVersion);
+    // The cell index, filled in as the sorted records are written
+    const size_t indexAt = out.size();
+    out.putU32(labelCount - static_cast<uint32_t>(poiRecords.size() / 8));
+    out.putU32(static_cast<uint32_t>(labels.size()));
+    for (size_t i = 8; i < LABEL_INDEX_SIZE; i += 4) {
+        out.putU32(0);
+    }
+    tdefl_compressor* compressor = deflate ? static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor))) : nullptr;
+    if (deflate && compressor == nullptr) {
+        failureText = "no 320 KB block of memory for the compressor";
+        return false;
+    }
+    // Records of one cell together, in the order they came, the cells in order
+    auto emitSorted = [&](BodyWriter& writer, const ByteWriter& bytes, const ByteWriter& records, uint32_t start, size_t table) {
+        const auto* entries = records.bytes();
+        const size_t entryCount = records.size() / 8;
+        uint32_t offset = start;
+        for (int cell = 0; cell < LABEL_CELLS; cell++) {
+            uint32_t count = 0;
+            const uint32_t cellStart = offset;
+            for (size_t i = 0; i < entryCount; i++) {
+                const uint8_t* entry = entries + i * 8;
+                const uint32_t packed = static_cast<uint32_t>(entry[4]) | (static_cast<uint32_t>(entry[5]) << 8) |
+                    (static_cast<uint32_t>(entry[6]) << 16) | (static_cast<uint32_t>(entry[7]) << 24);
+                if (static_cast<int>(packed >> 24) != cell) {
+                    continue;
+                }
+                const uint32_t at = static_cast<uint32_t>(entry[0]) | (static_cast<uint32_t>(entry[1]) << 8) |
+                    (static_cast<uint32_t>(entry[2]) << 16) | (static_cast<uint32_t>(entry[3]) << 24);
+                const uint32_t length = packed & 0xFFFFFF;
+                if (!writer.emit(bytes.bytes() + at, length)) {
+                    return false;
+                }
+                offset += length;
+                count++;
+            }
+            out.setU32(indexAt + table + static_cast<size_t>(cell) * 8, cellStart);
+            out.setU32(indexAt + table + static_cast<size_t>(cell) * 8 + 4, count);
+        }
+        return true;
+    };
+    // Two separate streams, so a view without house numbers reads and inflates only the first
+    BodyWriter main(out, compressor);
+    bool ok = main.begin() && main.emit(labels.bytes(), labels.size()) &&
+        emitSorted(main, extraLabels, poiRecords, static_cast<uint32_t>(labels.size()), 8) && main.finish();
+    const size_t mainEnd = out.size();
+    BodyWriter numbers(out, compressor);
+    ok = ok && (numberLabels.size() == 0 ||
+        (numbers.begin() && emitSorted(numbers, numberLabels, numberRecords, 0, 8 + LABEL_CELLS * 8) && numbers.finish()));
+    largeFree(compressor);
+    if (!ok || out.failed()) {
+        failureText = "no memory for the label file";
+        return false;
+    }
+    out.setU32(32, static_cast<uint32_t>(mainEnd - PREPARED_LABEL_HEADER_SIZE - LABEL_INDEX_SIZE));
+    numberStored = static_cast<uint32_t>(out.size() - mainEnd);
+    out.setU32(44, numberStored);
+    return true;
+}
+
+bool TileConverter::writeGeometry(const char* sourceVersion, uint32_t sourceSize, bool deflate, bool withLabels, ByteWriter& out,
+    size_t& bodySize) {
+    // The sections go straight into the output: one combined copy of them would double the memory a large tile needs
+    bodySize = 1;
+    uint8_t head[1 + 2 * 10];
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        if (sectionCounts[i] != 0) {
+            bodySize += encodeVarint(head, sectionCounts[i]) + encodeVarint(head, sections[i].size()) + 1 + sections[i].size();
         }
     }
-    auto emit = [&](const void* bytes, size_t count) {
-        if (compressor == nullptr) {
-            out.putBytes(bytes, count);
-            return !out.failed();
-        }
-        return tdefl_compress_buffer(compressor, bytes, count, TDEFL_NO_FLUSH) == TDEFL_STATUS_OKAY;
-    };
-    bool ok = true;
+    const uint32_t combinedCount = labelCount + numberCount;
+    const size_t labelBytes = labels.size() + extraLabels.size() + numberLabels.size();
+    if (withLabels && combinedCount != 0) {
+        bodySize += encodeVarint(head, combinedCount) + encodeVarint(head, labelBytes) + 1 + labelBytes;
+    }
+
+    out.clear();
+    out.putBytes(MAGIC, 4);
+    out.putU16(withLabels ? PREPARED_SPLIT_VERSION - 1 : PREPARED_FORMAT_VERSION);
+    // The companion versions this tile was made with (version 5 on)
+    const auto graphVersion = static_cast<uint16_t>(withLabels || tile.z != GRAPH_ZOOM ? 0 : PREPARED_GRAPH_FORMAT_VERSION);
+    out.putU16(static_cast<uint16_t>((deflate ? PREPARED_FLAG_DEFLATED : 0) | (graphVersion << 8)));
+    out.put(static_cast<uint8_t>(tile.z));
+    out.put(withLabels ? 0 : PREPARED_LABEL_FORMAT_VERSION);
+    out.putU16(PREPARED_EXTENT);
+    out.putU32(static_cast<uint32_t>(tile.x));
+    out.putU32(static_cast<uint32_t>(tile.y));
+    out.putU32(sourceSize);
+    out.putU32(static_cast<uint32_t>(bodySize));
+    out.putU32(0);
+    putVersion(out, sourceVersion);
+    tdefl_compressor* compressor = deflate ? static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor))) : nullptr;
+    if (deflate && compressor == nullptr) {
+        failureText = "no 320 KB block of memory for the compressor";
+        return false;
+    }
+    BodyWriter body(out, compressor);
+    bool ok = body.begin();
     for (int i = 0; i < static_cast<int>(Stage::Count) && ok; i++) {
         if (sectionCounts[i] == 0) {
             continue;
@@ -402,37 +612,25 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         head[headSize++] = static_cast<uint8_t>(i);
         headSize += encodeVarint(head + headSize, sectionCounts[i]);
         headSize += encodeVarint(head + headSize, sections[i].size());
-        ok = emit(head, headSize) && emit(sections[i].bytes(), sections[i].size());
+        ok = body.emit(head, headSize) && body.emit(sections[i].bytes(), sections[i].size());
     }
-    if (ok && labelCount != 0) {
+    if (ok && withLabels && combinedCount != 0) {
         size_t headSize = 0;
         head[headSize++] = PREPARED_LABEL_SECTION;
-        headSize += encodeVarint(head + headSize, labelCount);
+        headSize += encodeVarint(head + headSize, combinedCount);
         headSize += encodeVarint(head + headSize, labelBytes);
-        ok = emit(head, headSize) && emit(labels.bytes(), labels.size());
-        if (ok && extraLabels.size() != 0) {
-            ok = emit(extraLabels.bytes(), extraLabels.size());
-        }
+        ok = body.emit(head, headSize) && body.emit(labels.bytes(), labels.size()) && body.emit(extraLabels.bytes(), extraLabels.size()) &&
+            body.emit(numberLabels.bytes(), numberLabels.size());
     }
     const uint8_t endMark = 0xFF;
-    ok = ok && emit(&endMark, 1);
-    if (compressor != nullptr) {
-        ok = ok && tdefl_compress_buffer(compressor, nullptr, 0, TDEFL_FINISH) == TDEFL_STATUS_DONE;
-        largeFree(compressor);
-    }
+    ok = ok && body.emit(&endMark, 1) && body.finish();
+    largeFree(compressor);
     if (!ok || out.failed()) {
         failureText = "no memory for the prepared tile";
         return false;
     }
-    const auto stored = static_cast<uint32_t>(out.size() - PREPARED_HEADER_SIZE);
-    out.setU32(28, stored);
-    if (stats != nullptr) {
-        *stats = counters;
-        stats->totalMs = nowMs() - start;
-        stats->bodyBytes = static_cast<uint32_t>(bodySize);
-        stats->storedBytes = stored;
-    }
-    return !out.failed();
+    out.setU32(28, static_cast<uint32_t>(out.size() - PREPARED_HEADER_SIZE));
+    return true;
 }
 
 bool TileConverter::beginFeature(const FeatureInfo& info) {
@@ -470,6 +668,8 @@ bool TileConverter::beginFeature(const FeatureInfo& info) {
             }
         }
     }
+    drawn = drawn && keepGeometry;
+    hasLabel = hasLabel && keepLabels;
     if (!drawn && !hasLabel) {
         return false;
     }
@@ -652,10 +852,10 @@ void TileConverter::writeLabel(const int32_t* points, int count) {
     const bool poi = labelKind == static_cast<uint8_t>(LabelKind::Poi);
     const bool number = labelKind == static_cast<uint8_t>(LabelKind::HouseNumber);
     if ((!poi && !number && labels.size() >= LABEL_MAX_BYTES) || (poi && poiBytes >= POI_LABEL_MAX_BYTES) ||
-        (number && numberBytes >= NUMBER_LABEL_MAX_BYTES)) {
+        (number && numberLabels.size() >= NUMBER_LABEL_MAX_BYTES)) {
         return;
     }
-    ByteWriter& target = poi || number ? extraLabels : labels;
+    ByteWriter& target = number ? numberLabels : poi ? extraLabels : labels;
     const size_t before = target.size();
     target.put(labelKind);
     target.put(static_cast<uint8_t>(feature.featureClass));
@@ -681,12 +881,19 @@ void TileConverter::writeLabel(const int32_t* points, int count) {
         x = points[i * 2];
         y = points[i * 2 + 1];
     }
+    if (poi || number) {
+        ByteWriter& records = poi ? poiRecords : numberRecords;
+        records.putU32(static_cast<uint32_t>(before));
+        records.putU32(static_cast<uint32_t>(target.size() - before) | (static_cast<uint32_t>(labelCell(points[0], points[1])) << 24));
+    }
     if (poi) {
         poiBytes += target.size() - before;
-    } else if (number) {
-        numberBytes += target.size() - before;
     }
-    labelCount++;
+    if (number) {
+        numberCount++;
+    } else {
+        labelCount++;
+    }
 }
 
 void TileConverter::endFeature() {

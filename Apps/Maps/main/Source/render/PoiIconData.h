@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Alpha masks generated from Maki icons (https://github.com/mapbox/maki, CC0 1.0)
-// by tools/make_poi_icons.py. Never edit by hand.
+// by host/make_poi_icons.py. Never edit by hand.
 #pragma once
 #include <cstdint>
 

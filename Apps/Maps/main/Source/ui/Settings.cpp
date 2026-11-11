@@ -37,6 +37,7 @@ struct NumberEntry {
 constexpr NumberEntry NUMBER_ENTRIES[] = {
     { "pointer_speed", &Settings::pointerSpeed, 0, 2 },
     { "labels", &Settings::labels, 0, 2 },
+    { "route_profile", &Settings::routeProfile, 0, 2 },
 };
 
 constexpr double MICRODEGREES = 1e6;

@@ -94,6 +94,8 @@ private:
         int16_t adminLevelKey = -1;
         int16_t maritimeKey = -1;
         int16_t rampKey = -1;
+        int16_t onewayKey = -1;
+        int16_t layerKey = -1;
         int16_t nameKey = -1;
         int16_t nameLatinKey = -1;
         int16_t rankKey = -1;

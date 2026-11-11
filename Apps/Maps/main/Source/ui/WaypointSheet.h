@@ -35,7 +35,9 @@ public:
         Rename,
         Delete,
         Close,
-        SaveAsWaypoint
+        SaveAsWaypoint,
+        /** "Navigate here" (M5c): a route to the sheet's point. */
+        Navigate
     };
 
     void openNew(const char* defaultName, const char* coordinates, const char* distance, bool editable);
@@ -64,7 +66,7 @@ public:
     Button handleTap(int x, int y);
 
 private:
-    int buttonCount() const { return kind == Mode::Existing ? 3 : 2; }
+    int buttonCount() const { return kind == Mode::Existing ? 4 : 3; }
     int textLines() const { return kind == Mode::Place ? 3 : 2; }
     Button buttonAt(int index) const;
     void append(uint32_t codepoint);
@@ -84,7 +86,7 @@ private:
     Rect frame {};
     Rect back {};
     Rect field {};
-    Rect buttons[3] {};
+    Rect buttons[4] {};
 };
 
 } // namespace maps

@@ -23,6 +23,7 @@ const char* workName(WorkKind kind) {
         case WorkKind::GpxImport: return "Importing GPX";
         case WorkKind::MoveBrowsed: return "Moving browsed tiles";
         case WorkKind::AddressIndex: return "Building the address index";
+        case WorkKind::SplitTiles: return "Splitting tiles";
         default: return "";
     }
 }

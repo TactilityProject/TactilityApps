@@ -80,6 +80,16 @@ BrowsedMove moveBrowsedFiles(const char* root, const char* region, const TileKey
             return BrowsedMove::Failed;
         }
     }
+    // The label and graph files follow, or are made again there when the move cannot take them
+    for (int file = 1; file < PREPARED_FILE_COUNT; file++) {
+        char from[PATH_MAX_LENGTH];
+        char to[PATH_MAX_LENGTH];
+        if (preparedFilePath(from, sizeof(from), root, BROWSE_REGION, tile, static_cast<PreparedFile>(file)) &&
+            preparedFilePath(to, sizeof(to), root, region, tile, static_cast<PreparedFile>(file)) && exists(from) &&
+            (exists(to) || rename(from, to) != 0)) {
+            remove(from);
+        }
+    }
     if (rename(fromOriginal, toOriginal) != 0) {
         return BrowsedMove::Failed;
     }
@@ -88,8 +98,10 @@ BrowsedMove moveBrowsedFiles(const char* root, const char* region, const TileKey
 
 uint64_t removeBrowsedFiles(const char* root, const TileKey& tile) {
     char path[PATH_MAX_LENGTH];
-    if (preparedPath(path, sizeof(path), root, BROWSE_REGION, tile)) {
-        remove(path);
+    for (int file = 0; file < PREPARED_FILE_COUNT; file++) {
+        if (preparedFilePath(path, sizeof(path), root, BROWSE_REGION, tile, static_cast<PreparedFile>(file))) {
+            remove(path);
+        }
     }
     struct stat info {};
     if (tilePath(path, sizeof(path), root, BROWSE_REGION, tile) && stat(path, &info) == 0 && remove(path) == 0) {

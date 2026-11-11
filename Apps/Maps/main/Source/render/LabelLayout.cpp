@@ -136,7 +136,11 @@ bool LabelLayout::begin(void* (*allocate)(size_t), void (*release)(void*)) {
     texts = static_cast<char*>(allocate(TEXT_BYTES));
     candidates = static_cast<Candidate*>(allocate(sizeof(Candidate) * MAX_CANDIDATES));
     linePoints = static_cast<float*>(allocate(sizeof(float) * 2 * MAX_LINE_POINTS));
-    if (arena == nullptr || texts == nullptr || candidates == nullptr || linePoints == nullptr) {
+    widths = static_cast<WidthEntry*>(allocate(sizeof(WidthEntry) * WIDTH_ENTRIES));
+    if (widths != nullptr) {
+        memset(widths, 0, sizeof(WidthEntry) * WIDTH_ENTRIES);
+    }
+    if (arena == nullptr || texts == nullptr || candidates == nullptr || linePoints == nullptr || widths == nullptr) {
         end();
         return false;
     }
@@ -145,7 +149,8 @@ bool LabelLayout::begin(void* (*allocate)(size_t), void (*release)(void*)) {
 
 void LabelLayout::end() {
     if (releaseMemory != nullptr) {
-        for (void* block : { static_cast<void*>(arena), static_cast<void*>(texts), static_cast<void*>(candidates), static_cast<void*>(linePoints) }) {
+        for (void* block : { static_cast<void*>(arena), static_cast<void*>(texts), static_cast<void*>(candidates), static_cast<void*>(linePoints),
+                 static_cast<void*>(widths) }) {
             if (block != nullptr) {
                 releaseMemory(block);
             }
@@ -155,11 +160,16 @@ void LabelLayout::end() {
     texts = nullptr;
     candidates = nullptr;
     linePoints = nullptr;
+    widths = nullptr;
     placedCount = 0;
     candidateCount = 0;
 }
 
 void LabelLayout::setFonts(LabelFont* small, LabelFont* normal, LabelFont* large) {
+    // New fonts measure differently
+    if (widths != nullptr) {
+        memset(widths, 0, sizeof(WidthEntry) * WIDTH_ENTRIES);
+    }
     fonts[SIZE_SMALL] = small;
     fonts[SIZE_NORMAL] = normal != nullptr ? normal : small;
     fonts[SIZE_LARGE] = large != nullptr ? large : fonts[SIZE_NORMAL];
@@ -178,6 +188,7 @@ void LabelLayout::beginView(int width, int height, int viewZoom) {
     screenHeight = height;
     zoom = viewZoom;
     candidateCount = 0;
+    recordCount = 0;
     linePointCount = 0;
     textsUsed = 0;
     gridColumns = (width + CELL - 1) / CELL;
@@ -285,14 +296,55 @@ bool LabelLayout::wants(const LabelRecord& record, uint8_t& priority, uint8_t& f
     return false;
 }
 
-void LabelLayout::addSection(const uint8_t* section, size_t size, int count, const LabelTransform& transform) {
+void LabelLayout::addSection(const uint8_t* section, size_t size, int count, const LabelTransform& transform, const LabelCells* cells) {
     if (candidates == nullptr) {
         return;
     }
+    if (cells == nullptr) {
+        addRecords(section, size, count, transform);
+        return;
+    }
+    addRecords(section, cells->generalBytes, static_cast<int>(cells->generalCount), transform);
+    // POIs, then house numbers, of the cells near the screen only: at z17 that is about a tenth of a z14 tile
+    for (int kind = 0; kind < 2; kind++) {
+        const uint32_t* offsets = kind == 0 ? cells->poiOffset : cells->numberOffset;
+        const uint32_t* counts = kind == 0 ? cells->poiCount : cells->numberCount;
+        for (int cell = 0; cell < LABEL_CELLS; cell++) {
+            if (counts[cell] != 0 && offsets[cell] < size && cellNearScreen(cell, transform)) {
+                addRecords(section + offsets[cell], size - offsets[cell], static_cast<int>(counts[cell]), transform);
+            }
+        }
+    }
+}
+
+bool LabelLayout::cellNearScreen(int cell, const LabelTransform& transform) const {
+    const auto u0 = static_cast<float>((cell % LABEL_GRID) * LABEL_CELL_UNITS);
+    const auto v0 = static_cast<float>((cell / LABEL_GRID) * LABEL_CELL_UNITS);
+    const auto span = static_cast<float>(LABEL_CELL_UNITS);
+    float minX = 1e9f;
+    float minY = 1e9f;
+    float maxX = -1e9f;
+    float maxY = -1e9f;
+    for (int corner = 0; corner < 4; corner++) {
+        const float u = u0 + ((corner & 1) != 0 ? span : 0.0f);
+        const float v = v0 + ((corner & 2) != 0 ? span : 0.0f);
+        const float x = transform.a * u + transform.b * v + transform.x;
+        const float y = transform.c * u + transform.d * v + transform.y;
+        minX = std::min(minX, x);
+        minY = std::min(minY, y);
+        maxX = std::max(maxX, x);
+        maxY = std::max(maxY, y);
+    }
+    // The same margins as the test for single points below
+    return maxX >= -40.0f && maxY >= -20.0f && minX <= screenWidth + 40.0f && minY <= screenHeight + 20.0f;
+}
+
+void LabelLayout::addRecords(const uint8_t* bytes, size_t size, int count, const LabelTransform& transform) {
     LabelReader reader;
-    reader.begin(section, size, count);
+    reader.begin(bytes, size, count);
     LabelRecord record {};
     while (candidateCount < MAX_CANDIDATES && reader.next(record)) {
+        recordCount++;
         Candidate candidate {};
         // POIs and house numbers never crowd out place and street names: they stop before the candidates are full
         if ((record.kind == LabelKind::Poi && candidateCount >= POI_CANDIDATE_LIMIT) ||
@@ -366,6 +418,26 @@ void LabelLayout::addSection(const uint8_t* section, size_t size, int count, con
         textsUsed += length + 1u;
         candidates[candidateCount++] = candidate;
     }
+}
+
+int LabelLayout::candidateWidth(LabelFont& font, const Candidate& candidate) {
+    const char* text = texts + candidate.textOffset;
+    if (widths == nullptr) {
+        return textWidth(font, text, candidate.textLength);
+    }
+    // FNV-1a over the font size and the text; 0 marks an empty slot
+    uint32_t hash = 2166136261u ^ candidate.fontSize;
+    for (int i = 0; i < candidate.textLength; i++) {
+        hash = (hash ^ static_cast<uint8_t>(text[i])) * 16777619u;
+    }
+    hash = hash == 0 ? 1 : hash;
+    WidthEntry& entry = widths[hash & (WIDTH_ENTRIES - 1)];
+    if (entry.hash == hash && entry.used != 0) {
+        return entry.width;
+    }
+    const int width = textWidth(font, text, candidate.textLength);
+    entry = { hash, static_cast<uint16_t>(std::clamp(width, 0, 65535)), 1 };
+    return width;
 }
 
 int LabelLayout::textWidth(LabelFont& font, const char* text, int length) {
@@ -460,7 +532,7 @@ bool LabelLayout::placePoint(const Candidate& candidate) {
     if (font == nullptr || alreadyPlaced(candidate, candidate.x, candidate.y)) {
         return false;
     }
-    const int width = textWidth(*font, texts + candidate.textOffset, candidate.textLength);
+    const int width = candidateWidth(*font, candidate);
     const float halfWidth = width / 2.0f + GAP;
     const float halfHeight = font->lineHeight() / 2.0f + GAP;
     // Peaks get their name above the point, places centred on it
@@ -496,7 +568,7 @@ bool LabelLayout::placePoi(const Candidate& candidate) {
     }
     // The name to the right of the icon when zoomed in and there is room, else the icon alone
     if (zoom >= POI_NAME_ZOOM && candidate.textLength > 0) {
-        const int textPixels = textWidth(*font, name, candidate.textLength);
+        const int textPixels = candidateWidth(*font, candidate);
         const float contentWidth = candidate.iconSize + 3.0f + textPixels;
         const float centerX = candidate.x - candidate.iconSize / 2.0f + contentWidth / 2.0f;
         const float halfHeight = std::max(iconHalf, font->lineHeight() / 2.0f + GAP);
@@ -520,7 +592,7 @@ int LabelLayout::placeLine(const Candidate& candidate) {
     }
     const float* points = linePoints + 2 * candidate.firstPoint;
     const int count = candidate.pointCount;
-    const int width = textWidth(*font, texts + candidate.textOffset, candidate.textLength);
+    const int width = candidateWidth(*font, candidate);
     const float needed = static_cast<float>(width) + 8.0f;
     const float halfHeight = font->lineHeight() / 2.0f + GAP;
     // Distance along the line at each point

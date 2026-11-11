@@ -13,6 +13,10 @@
 #include "../ui/BackgroundWork.h"
 #include "LabelFontMaker.h"
 #include "LabelStore.h"
+#include "Navigator.h"
+#include "../route/RouteFollower.h"
+#include "../ui/NavigationBar.h"
+#include "../ui/RouteCard.h"
 #include "LocationSource.h"
 #include "StallProbe.h"
 #include "TileWorker.h"
@@ -47,13 +51,31 @@ namespace maps {
 
 struct AffineScratch;
 
-#define APP_VERSION "0.3.0"
+#define APP_VERSION "0.4.0"
 constexpr const char* APP_ID = "tactility.maps";
 
 /**
  * The whole app while it runs fullscreen with LVGL stopped: the map, the menu, the Regions, Settings and About
  * screens, and the download frame, all drawn by the app itself.
  */
+/** Positions played from a GPX track, one point a second, for testing navigation indoors ("replay" debug command). */
+class ReplaySource final : public PositionSource {
+public:
+    static constexpr int MAX_POINTS = 2000;
+    static constexpr uint32_t STEP_MS = 1000;
+    bool load(const char* text, size_t size);
+    void clear() { count = 0; }
+    bool isActive() const { return count > 0; }
+    int size() const { return count; }
+    PositionRead read(PositionFix& fix) override;
+
+private:
+    double points[MAX_POINTS][2] {};
+    int count = 0;
+    int next = 0;
+    uint32_t lastStep = 0;
+};
+
 class MapView {
 public:
     bool begin(Device* display, const char* root, const char* dataPath);
@@ -92,7 +114,9 @@ private:
         DownloadChoice,
         Track,
         RegionActions,
-        WaypointActions
+        WaypointActions,
+        /** Where a route starts when there is no GPS fix (M5c). */
+        RouteStart
     };
 
     enum class SettingItem : uint8_t {
@@ -103,11 +127,46 @@ private:
         PointerSpeed,
         Labels,
         LatinNames,
+        RouteMode,
         Count
     };
 
     // MapView.cpp: the map itself
     void centerOn(double lat, double lon, int zoom);
+    /**
+     * "Navigate here": a route to lat, lon with the profile. With a GPS fix it starts there; without one the app asks
+     * where it starts (on the map, the screen centre, or an approximate position), unless ask is false (debug scripts:
+     * the screen centre).
+     */
+    void navigateTo(double lat, double lon, RouteProfile profile, bool ask = true);
+    /** Polls the route search: a toast when it ends, the preview when a route was found. */
+    void updateNavigation(uint32_t now);
+    void fillRouteCard();
+    /** Another mode on the card: the same start and goal again; a running search is cancelled first. */
+    void chooseRouteMode(RouteProfile next);
+    void searchRouteAgain();
+    /** Starts the search from a start point; fromPosition: the start follows the position when the profile changes. */
+    void requestRoute(double fromLat, double fromLon, bool fromPosition, const char* toast);
+    void openRouteStartChoice();
+    void chooseRouteStart(int choice);
+    /** Picking the start on the map: a tap there, or Enter for the crosshair; Esc cancels. */
+    void beginPickStart();
+    void endPickStart(bool chosen, double lat, double lon);
+    void drawPickStart();
+    void fitRoute();
+    void handleRouteCardButton(RouteCard::Button button);
+    void startNavigation();
+    /** The controls laid out for the screen, the menu button below the navigation bar while navigating. */
+    void layoutControls();
+    /** Centres the map on the position; while navigating the position sits low on the screen, to see ahead. */
+    void centerOnPosition();
+    void stopNavigation();
+    void clearRoute();
+    /** A new position while following: the next instruction, off route, arrival. */
+    void followRoute(uint32_t now);
+    /** The route line, above the roads and below labels and pins. */
+    void drawRoute();
+    void startReplay(const char* name);
     /** Remembers the centre and zoom, so the map opens there next time. */
     void saveView();
     void setZoom(int zoom, int anchorX, int anchorY);
@@ -336,6 +395,8 @@ private:
     WorkCard workCard;
     bool workDotShown = false;
     uint32_t lastWorkPulse = 0;
+    /** Where the position sits while navigating, as a share of the screen height from the top: more map ahead. */
+    static constexpr double NAVIGATION_POSITION_Y = 0.72;
     static constexpr int WORK_DOT_X = 8;
     static constexpr int WORK_DOT_Y = 8;
     /** Whether drawStatus drew its pill this frame. */
@@ -364,6 +425,35 @@ private:
     UiTheme theme {};
     TileStore store;
     TileWorker worker;
+    Navigator navigator;
+    bool navigatorStarted = false;
+    /** A debug script waits for the route search ("waitroute"). */
+    bool waitingRoute = false;
+    RouteCard routeCard;
+    NavigationBar navBar;
+    RouteFollower follower;
+    bool navigating = false;
+    bool recalculating = false;
+    /** A search this view asked for (not a bench run) is running. */
+    bool routeRequested = false;
+    /** A mode was chosen while a search ran: a new search starts once it has stopped. */
+    bool restartRoute = false;
+    uint32_t lastRecalculation = 0;
+    uint32_t lastFollowAt = 0;
+    uint32_t lastFollowSignature = 0;
+    uint32_t arrivedAt = 0;
+    double goalLat = 0.0;
+    double goalLon = 0.0;
+    RouteProfile routeProfile = RouteProfile::Walk;
+    /** The start of the last route asked for, and whether it was the position. */
+    double startLat = 0.0;
+    double startLon = 0.0;
+    bool startFromPosition = false;
+    bool pickingStart = false;
+    NavigationBar pickBar;
+    /** Large: in PSRAM with the view. */
+    ReplaySource replay;
+    bool replaying = false;
     Downloader downloader;
     DebugScript script;
     Screen screen = Screen::Map;
@@ -373,7 +463,7 @@ private:
     ListView menu;
     bool menuOpen = false;
     Popup popup = Popup::Main;
-    static constexpr int MAX_POPUP_ACTIONS = 12;
+    static constexpr int MAX_POPUP_ACTIONS = 16;
     int popupActions[MAX_POPUP_ACTIONS] {};
     int popupActionCount = 0;
     HeaderLayout aboutHeader {};

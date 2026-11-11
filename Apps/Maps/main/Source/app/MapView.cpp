@@ -239,12 +239,17 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     cursorY = height / 2;
     // The overlay adapts to the inputs the board has: key hints with a keyboard, focus without touch or pointer
     controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
-    controls.layout(width, height, overlay.scaleBarTop(canvas));
+    layoutControls();
     downloadView = downloadLayout(width, height, overlay.font().lineHeight());
     downloader.setTiming(settings.devProbe);
     downloader.setMemoryRelief([](void* context, size_t bytes) { return static_cast<TileWorker*>(context)->relieveMemory(bytes); }, &worker);
     if (!downloader.start(root, &store, &io)) {
         logError("Downloader not started");
+    }
+    routeProfile = static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2));
+    navigatorStarted = navigator.start(io, store, worker, root);
+    if (!navigatorStarted) {
+        logError("Route search not started");
     }
     probe.watch(xTaskGetCurrentTaskHandle(), "main");
     probe.watch(worker.laneTask(0), "lane0");
@@ -294,6 +299,10 @@ void MapView::end() {
     fontMaker.stop();
     browsedCounter.stop();
     downloader.stop();
+    if (navigatorStarted) {
+        navigator.stop();
+        navigatorStarted = false;
+    }
     worker.stop();
     io.stop();
     probe.stop();
@@ -359,6 +368,29 @@ void MapView::centerOn(double lat, double lon, int newZoom) {
     zoom = newZoom;
     centerX = lonToWorldX(lon, zoom);
     centerY = latToWorldY(lat, zoom);
+    dirty = true;
+    updateWanted();
+}
+
+void MapView::layoutControls() {
+    controls.layout(width, height, overlay.scaleBarTop(canvas), navigating ? navBar.height(sheetFont()) : 0);
+}
+
+void MapView::centerOnPosition() {
+    const PositionFix& fix = position.fix();
+    zoom = std::clamp(zoom, 0, MAX_VIEW_ZOOM);
+    centerX = lonToWorldX(fix.longitude, zoom);
+    centerY = latToWorldY(fix.latitude, zoom);
+    if (navigating) {
+        // The position at NAVIGATION_POSITION_Y of the height: the screen centre is that far ahead of it, in the
+        // direction that is up on the (turned) screen
+        double aheadX;
+        double aheadY;
+        screenToWorldOffset(0.0, height / 2.0 - height * NAVIGATION_POSITION_Y, aheadX, aheadY);
+        const double worldSize = std::ldexp(static_cast<double>(TILE_SIZE), zoom);
+        centerX = std::fmod(centerX + aheadX + worldSize, worldSize);
+        centerY = std::fmin(std::fmax(centerY + aheadY, 0.0), worldSize);
+    }
     dirty = true;
     updateWanted();
 }
@@ -898,7 +930,8 @@ void MapView::pollDownloader(uint32_t now) {
     const Downloader::Status status = downloader.status();
     // Tile cache slots given to a large download come back once nothing downloads
     if (status.state != Downloader::State::Connecting && status.state != Downloader::State::Downloading &&
-        status.state != Downloader::State::Updating && !downloader.isBrowsing() && worker.cacheShrunk() && !worker.isPreparing()) {
+        status.state != Downloader::State::Updating && !downloader.isBrowsing() && worker.cacheShrunk() && !worker.isPreparing() &&
+        navigator.state() != Navigator::State::Searching) {
         worker.restoreMemory();
     }
     downloader.browseProgress(browseDone, browseTotal);
@@ -1031,6 +1064,7 @@ void MapView::drawMap() {
     worker.unlock();
     frameLockMs = locked - start;
     frameComposeMs = nowMs() - locked;
+    drawRoute();
     // Labels placed for this zoom and bearing move with the pixels while panning, until they are placed again
     if (labelsReady && labelZoom == zoom && labelBearing == bearing && labels.count() > 0) {
         double moveX;
@@ -1102,6 +1136,8 @@ void MapView::applyLabelSettings() {
 void MapView::placeLabels() {
     const uint32_t start = nowMs();
     labels.beginView(width, height, zoom);
+    // House numbers show from z17 (z18 with few labels): only then are they read from the label files
+    labelStore.setNumbersWanted(zoom >= 17 + (settings.labels == static_cast<int>(LabelDensity::Few) ? 1 : 0));
     double left;
     double top;
     double right;
@@ -1138,8 +1174,8 @@ void MapView::placeLabels() {
                 const auto scale = static_cast<float>(size / PREPARED_EXTENT);
                 const LabelTransform transform { scale * bearingCos, scale * bearingSin, -scale * bearingSin, scale * bearingCos,
                     static_cast<float>(width / 2.0 + screenX), static_cast<float>(height / 2.0 + screenY) };
-                const bool found = labelStore.with(source, [&](const uint8_t* bytes, size_t size, int count) {
-                    labels.addSection(bytes, size, count, transform);
+                const bool found = labelStore.with(source, [&](const uint8_t* bytes, size_t size, int count, const LabelCells* cells) {
+                    labels.addSection(bytes, size, count, transform, cells);
                 });
                 if (found) {
                     if (sourceCount < 32) {
@@ -1157,8 +1193,8 @@ void MapView::placeLabels() {
     labelZoom = zoom;
     labelBearing = bearing;
     lastLabelPlace = nowMs();
-    logInfo("Labels: %d placed of %d candidates from %d tiles in %u ms (reading %u, placing %u, of that drawing %u)", placedCount,
-        labels.candidateTotal(), sourceCount, static_cast<unsigned>(nowMs() - start), static_cast<unsigned>(added - start),
+    logInfo("Labels: %d placed of %d candidates (%d records) from %d tiles in %u ms (reading %u, placing %u, of that drawing %u)", placedCount,
+        labels.candidateTotal(), labels.recordsRead(), sourceCount, static_cast<unsigned>(nowMs() - start), static_cast<unsigned>(added - start),
         static_cast<unsigned>(nowMs() - added), static_cast<unsigned>(labels.spriteMicros() / 1000));
 }
 
@@ -1193,8 +1229,12 @@ void MapView::updateWork(uint32_t now) {
     };
     int prepared = 0;
     int waiting = 0;
-    worker.preparation(prepared, waiting);
-    set(WorkKind::PrepareTiles, waiting > 0, prepared, prepared + waiting);
+    int splitting = 0;
+    worker.preparation(prepared, waiting, splitting);
+    // Older tiles with labels inside are split into their new files: shown as such while they are the most of the queue
+    const bool split = splitting > 0 && splitting * 2 >= waiting;
+    set(WorkKind::SplitTiles, waiting > 0 && split, prepared, prepared + waiting);
+    set(WorkKind::PrepareTiles, waiting > 0 && !split, prepared, prepared + waiting);
     set(WorkKind::Fonts, labelsReady && missingLabelFonts != 0 && !labelFontsApplied, 0, 0);
     set(WorkKind::IdleUpdate, lastStatus.state == Downloader::State::Updating, static_cast<int32_t>(lastStatus.done),
         static_cast<int32_t>(lastStatus.total));
@@ -1401,12 +1441,21 @@ void MapView::render() {
             if (sheet.isOpen()) {
                 sheet.draw(canvas, sheetFont(), theme);
             }
+            if (routeCard.isOpen()) {
+                routeCard.draw(canvas, sheetFont(), theme);
+            }
+            if (navigating) {
+                navBar.draw(canvas, sheetFont(), theme, width);
+            }
+            if (pickingStart && !menuOpen) {
+                drawPickStart();
+            }
         }
         if (screen == Screen::Map) {
             drawStatus();
             drawRecording();
         }
-        workDotShown = screen == Screen::Map && work.any() && !statusShown && !controls.isVisible() && !sheet.isOpen();
+        workDotShown = screen == Screen::Map && work.any() && !statusShown && !controls.isVisible() && !sheet.isOpen() && !navigating;
         if (workDotShown) {
             drawWorkDot();
         }
@@ -1519,7 +1568,7 @@ void MapView::startFollowing() {
         headingUp = false;
         setBearing(0.0f, true);
     }
-    centerOn(position.fix().latitude, position.fix().longitude, zoom);
+    centerOnPosition();
     dirty = true;
 }
 
@@ -1560,7 +1609,8 @@ void MapView::readLocation() {
     lastLocationCheck = nowMs();
     const bool hadFix = position.hasFix();
     const PositionState before = position.state();
-    if (!position.update(location)) {
+    PositionSource& source = replaying ? static_cast<PositionSource&>(replay) : static_cast<PositionSource&>(location);
+    if (!position.update(source)) {
         return;
     }
     if (!hadFix && position.hasFix()) {
@@ -1570,15 +1620,17 @@ void MapView::readLocation() {
         recorder.addFix(position.fix());
     }
     if (following && position.hasFix()) {
-        centerOn(position.fix().latitude, position.fix().longitude, zoom);
+        // The turn first: the position's place on the screen depends on it while navigating
         if (headingUp && headingFilter.update(position.fix().course, position.fix().speed, nowMs())) {
             setBearing(headingFilter.heading(), false);
         }
+        centerOnPosition();
     }
     if (before != position.state() && !position.hasFix()) {
         following = false;
         headingUp = false;
     }
+    followRoute(nowMs());
     dirty = true;
 }
 
@@ -1677,10 +1729,14 @@ void MapView::run() {
             dirty = true;
         }
         updateWork(now);
+        updateNavigation(now);
         probe.phase("loop");
         const uint32_t afterGaps = nowMs();
 
-        if (!waitingIdle) {
+        if (waitingRoute && navigator.state() != Navigator::State::Searching) {
+            waitingRoute = false;
+        }
+        if (!waitingIdle && !waitingRoute) {
             const DebugScript::Step step = script.next(now);
             switch (step.action) {
                 case DebugScript::Action::Key:
@@ -1716,6 +1772,21 @@ void MapView::run() {
                     break;
                 case DebugScript::Action::Squeeze:
                     squeezeMemory(static_cast<size_t>(step.zoom) * 1024);
+                    break;
+                case DebugScript::Action::RouteBench: {
+                    char path[PATH_MAX_LENGTH];
+                    snprintf(path, sizeof(path), "%s/%s", rootPath, step.name);
+                    navigator.bench(path, step.zoom >= 3 ? RouteProfile::Count : static_cast<RouteProfile>(step.zoom));
+                    break;
+                }
+                case DebugScript::Action::Navigate:
+                    navigateTo(step.lat, step.lon, static_cast<RouteProfile>(std::min(step.zoom, 2)), false);
+                    break;
+                case DebugScript::Action::WaitRoute:
+                    waitingRoute = true;
+                    break;
+                case DebugScript::Action::Replay:
+                    startReplay(step.name);
                     break;
                 case DebugScript::Action::TouchOnly:
                     input.setTouchOnly(true);

@@ -13,8 +13,11 @@ namespace maps {
  */
 class PreparedScanner {
 public:
-    /** Called for a tile that needs converting. Returning false stops the step, it is looked at again next time. */
-    using StaleCallback = bool (*)(const TileKey& tile, int region, void* context);
+    /**
+     * Called for a tile that needs converting; split is true for a tile prepared by a version with labels inside, which
+     * is split into its new files. Returning false stops the step, it is looked at again next time.
+     */
+    using StaleCallback = bool (*)(const TileKey& tile, int region, bool split, void* context);
 
     ~PreparedScanner();
 
@@ -25,8 +28,13 @@ public:
     /** Looks at one folder of tiles. Returns false once every region was looked at. */
     bool step(const TileStore& store, StaleCallback callback, void* context);
 
-    /** Whether the prepared copy at path belongs to this original. */
+    /** Whether the prepared copy at path, and the files made with it, belong to this original and are current. */
     static bool isCurrent(const char* preparedPath, const TileKey& tile, uint32_t sourceSize);
+    /**
+     * The parts (PART_* of PreparedTile.h) a tile needs, from the header of its prepared copy at path. split tells
+     * whether that copy is an older one with labels inside.
+     */
+    static uint8_t partsNeeded(const char* preparedPath, const TileKey& tile, uint32_t sourceSize, bool* split = nullptr);
 
 private:
     static constexpr int MAX_COLUMNS = 4096;

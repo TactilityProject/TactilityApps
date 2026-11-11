@@ -45,7 +45,8 @@ public:
     static constexpr int SIZE = 32;
     static constexpr int EDGE = 6;
 
-    void layout(int width, int height, int scaleBarTop);
+    /** top: the height of a bar along the top edge (navigation), the menu button goes below it. */
+    void layout(int width, int height, int scaleBarTop, int top = 0);
     void setInputs(const InputKinds& kinds) { inputs = kinds; }
     const InputKinds& inputKinds() const { return inputs; }
     /** Focus mode: no touch and no pointer, the arrow keys move between the buttons. */

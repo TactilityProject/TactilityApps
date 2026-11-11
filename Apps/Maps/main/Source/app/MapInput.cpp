@@ -64,6 +64,21 @@ void MapView::handleKey(uint32_t key) {
         handleSheetButton(sheet.handleKey(key));
         return;
     }
+    if (routeCard.isOpen() && !menuOpen && screen == Screen::Map) {
+        handleRouteCardButton(routeCard.handleKey(key));
+        return;
+    }
+    if (pickingStart && !menuOpen && screen == Screen::Map) {
+        // Enter takes the crosshair, Esc or Backspace cancels; the other keys move the map as always
+        if (key == keys::ENTER || key == keys::YES) {
+            endPickStart(true, worldYToLat(centerY, zoom), worldXToLon(centerX, zoom));
+            return;
+        }
+        if (key == keys::ESCAPE || key == keys::BACKSPACE || key == keys::NO) {
+            endPickStart(false, 0.0, 0.0);
+            return;
+        }
+    }
     if (menuOpen) {
         if (key == 'm' || key == 'M') {
             closeMenu();
@@ -188,7 +203,13 @@ void MapView::handleMapKey(uint32_t key) {
             break;
         case keys::ESCAPE:
         case keys::BACKSPACE:
-            exitRequested = true;
+            // While navigating the first press stops it, the next one leaves the app
+            if (navigating) {
+                stopNavigation();
+                showToast("Navigation stopped. To go on: Menu, Show route");
+            } else {
+                exitRequested = true;
+            }
             break;
         case 'p':
         case 'P':
@@ -308,7 +329,7 @@ void MapView::click(bool fromPointer) {
                placeOrderCount > 0 && !menuOpen && !downloadCard.isOpen()) {
         // Enter again: the next nearest place
         selectNextPlace();
-    } else if (menuOpen || sheet.isOpen() || downloadCard.isOpen() || workCard.isOpen() || screen != Screen::Map) {
+    } else if (menuOpen || sheet.isOpen() || downloadCard.isOpen() || workCard.isOpen() || screen != Screen::Map || pickingStart) {
         handleKey(keys::ENTER);
     } else if (controls.isVisible() && controls.usesFocus()) {
         pressControl(controls.focused());
@@ -560,7 +581,8 @@ void MapView::handleTap(int x, int y) {
         gestures.consumeTap();
         return;
     }
-    if (screen == Screen::Map && !menuOpen && pillRect.width > 0 && pillRect.contains(x, y)) {
+    if (screen == Screen::Map && !menuOpen && pillRect.width > 0 && pillRect.contains(x, y) &&
+        !(routeCard.isOpen() && routeCard.modeBounds().contains(x, y))) {
         openDownloadCard();
         gestures.consumeTap();
         return;
@@ -568,6 +590,30 @@ void MapView::handleTap(int x, int y) {
     if (sheet.isOpen() && screen == Screen::Map) {
         // A tap outside the sheet closes it and does nothing else
         handleSheetButton(sheet.handleTap(x, y));
+        gestures.consumeTap();
+        return;
+    }
+    if (navigating && screen == Screen::Map && !menuOpen && y < navBar.height(sheetFont())) {
+        // The navigation bar: its X stops navigating, the rest of it does nothing (the controls are not under it)
+        if (navBar.stopHit(x, y)) {
+            stopNavigation();
+            showToast("Navigation stopped. To go on: Menu, Show route");
+        }
+        gestures.consumeTap();
+        return;
+    }
+    if (pickingStart && screen == Screen::Map && !menuOpen) {
+        // The tapped point is the start
+        double worldX;
+        double worldY;
+        screenToWorldOffset(x - width / 2.0, y - height / 2.0, worldX, worldY);
+        endPickStart(true, worldYToLat(centerY + worldY, zoom), worldXToLon(centerX + worldX, zoom));
+        gestures.consumeTap();
+        return;
+    }
+    if (routeCard.isOpen() && screen == Screen::Map && !menuOpen) {
+        // The same for the route card: a tap on the map closes it (the route stays)
+        handleRouteCardButton(routeCard.handleTap(x, y));
         gestures.consumeTap();
         return;
     }

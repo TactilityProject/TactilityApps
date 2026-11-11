@@ -17,6 +17,10 @@ bool saveBmp(const char* path, const uint16_t* pixels, int width, int height);
  * from d1 to d2), "twist <cx> <cy> <r> <a1> <a2> <ms>" (two fingers at distance 2r turning from a1 to a2 degrees).
  * "touchonly": from then on the app acts as a board with only a touch screen (keyboards and pointers ignored).
  * "squeeze <KB>": PSRAM is held in 64 KB pieces until no free block is that large, to test drawing with little memory.
+ * Navigation (M5c): "routebench <file> <walk|bike|car|all>" runs the route search over the pairs of a file in the app's
+ * folder (host/routing/export_pairs.py) and logs each; "navigate <lat> <lon> <walk|bike|car>" asks for a route from the
+ * position (or the screen centre) as "Navigate here" does; "waitroute" waits until no search runs; "replay <file>"
+ * plays a GPX track from the app's folder as positions, one point per second ("replay stop" ends it).
  */
 class DebugScript {
 public:
@@ -30,7 +34,11 @@ public:
         Touch,
         TouchOnly,
         /** "squeeze <KB>": PSRAM is held in pieces until no free block is that large, as after a long session. */
-        Squeeze
+        Squeeze,
+        RouteBench,
+        Navigate,
+        WaitRoute,
+        Replay
     };
 
     enum class TouchKind : uint8_t { Tap, Hold, Drag, Pinch, Twist };

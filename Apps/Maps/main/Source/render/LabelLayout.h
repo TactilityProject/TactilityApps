@@ -128,8 +128,11 @@ public:
 
     /** Starts a new placement for a screen of width x height at a view zoom level. */
     void beginView(int width, int height, int viewZoom);
-    /** Adds the labels of one source tile's label section. */
-    void addSection(const uint8_t* section, size_t size, int count, const LabelTransform& transform);
+    /**
+     * Adds the labels of one source tile's label section. With cells (a split tile's label file) only the POI and house
+     * number cells near the screen are read.
+     */
+    void addSection(const uint8_t* section, size_t size, int count, const LabelTransform& transform, const LabelCells* cells = nullptr);
     /** Places the candidates and draws their sprites. Returns the number of labels placed. */
     int place();
     /** Drops all labels, for example when the view changed so much that they would be wrong. */
@@ -139,6 +142,8 @@ public:
     void draw(Canvas& canvas, int offsetX, int offsetY, bool lineLabels) const;
     int count() const { return placedCount; }
     int candidateTotal() const { return candidateCount; }
+    /** Records read by the addSection() calls since beginView(), for the log. */
+    int recordsRead() const { return recordCount; }
     /** Time the last place() spent drawing sprites, set through setClock(). */
     uint32_t spriteMicros() const { return spriteTime; }
     void setClock(uint32_t (*micros)()) { clock = micros; }
@@ -195,6 +200,15 @@ private:
     bool wants(const LabelRecord& record, uint8_t& priority, uint8_t& fontSize, uint16_t& color) const;
     LabelFont* fontFor(int size) const;
     int textWidth(LabelFont& font, const char* text, int length);
+    /** textWidth of a candidate's name, remembered across placements (the same names come back view after view). */
+    int candidateWidth(LabelFont& font, const Candidate& candidate);
+    struct WidthEntry {
+        uint32_t hash;
+        uint16_t width;
+        uint16_t used;
+    };
+    static constexpr int WIDTH_ENTRIES = 1024;
+    WidthEntry* widths = nullptr;
     bool gridFree(float cx, float cy, float halfWidth, float halfHeight, float angle) const;
     void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle);
     bool placePoint(const Candidate& candidate);
@@ -230,6 +244,9 @@ private:
     PoiLookup poiLookup = nullptr;
     uint32_t (*clock)() = nullptr;
     uint32_t spriteTime = 0;
+    int recordCount = 0;
+    void addRecords(const uint8_t* bytes, size_t size, int count, const LabelTransform& transform);
+    bool cellNearScreen(int cell, const LabelTransform& transform) const;
 };
 
 } // namespace maps

@@ -6,6 +6,7 @@
 #include <tactility/drivers/keyboard.h>
 #include <tactility/drivers/mouse.h>
 #include <tactility/drivers/touch.h>
+#include <lvgl/devices/keyboard.h>
 
 namespace maps {
 
@@ -46,7 +47,8 @@ void Input::begin() {
     if (device_get_first_active_by_type(&TOUCH_TYPE, &touch) != ERROR_NONE) {
         touch = nullptr;
     }
-    logInfo("Input: %d keyboards, %d mice, %s", keyboardCount, mouseCount, touch != nullptr ? "touch" : "no touch");
+    logInfo("Input: %d keyboards, %d mice, %s, %s", keyboardCount, mouseCount, typingKeyboard ? "typing keyboard" : "no typing keyboard",
+        touch != nullptr ? "touch" : "no touch");
 }
 
 void Input::end() {
@@ -88,9 +90,13 @@ void Input::rescan() {
     device_for_each_of_type(&KEYBOARD_TYPE, &keyboardCollect, collectDevice);
     Collect mouseCollect { mice, &mouseCount };
     device_for_each_of_type(&MOUSE_TYPE, &mouseCollect, collectDevice);
-    if (dropped > 0 || keyboardCount != keyboardsBefore || mouseCount != miceBefore) {
+    // A started keyboard device (the kernel's hardware discovery), and one of them present: buttons
+    // (button-control) say they are not since the software keyboard fix, so they show no key hints
+    const bool typingBefore = typingKeyboard;
+    typingKeyboard = device_has_active_by_type(&KEYBOARD_TYPE) && lvgl_hardware_keyboard_is_available();
+    if (dropped > 0 || keyboardCount != keyboardsBefore || mouseCount != miceBefore || typingKeyboard != typingBefore) {
         devicesChanged = true;
-        logInfo("Input: %d keyboards, %d mice", keyboardCount, mouseCount);
+        logInfo("Input: %d keyboards, %d mice, %s", keyboardCount, mouseCount, typingKeyboard ? "typing keyboard" : "no typing keyboard");
     }
 }
 

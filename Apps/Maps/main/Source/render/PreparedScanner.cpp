@@ -89,10 +89,11 @@ bool visitFile(const char* name, bool isDirectory, void* context) {
         !preparedPath(path, sizeof(path), store.root(), store.regionName(visit->region), tile)) {
         return true;
     }
-    if (PreparedScanner::isCurrent(path, tile, size)) {
+    bool split = false;
+    if (PreparedScanner::partsNeeded(path, tile, size, &split) == 0) {
         return true;
     }
-    if (!visit->callback(tile, visit->region, visit->context)) {
+    if (!visit->callback(tile, visit->region, split, visit->context)) {
         // The queue is full: this tile is looked at again next time
         visit->seen--;
         visit->stopped = true;
@@ -117,15 +118,28 @@ void PreparedScanner::restart() {
 }
 
 bool PreparedScanner::isCurrent(const char* preparedPath, const TileKey& tile, uint32_t sourceSize) {
+    return partsNeeded(preparedPath, tile, sourceSize) == 0;
+}
+
+uint8_t PreparedScanner::partsNeeded(const char* preparedPath, const TileKey& tile, uint32_t sourceSize, bool* split) {
+    if (split != nullptr) {
+        *split = false;
+    }
     FILE* file = fopen(preparedPath, "rb");
     if (file == nullptr) {
-        return false;
+        return preparedPartsNeeded(nullptr, tile, sourceSize);
     }
     uint8_t bytes[PREPARED_HEADER_SIZE];
     const bool read = fread(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
     fclose(file);
     PreparedHeader header {};
-    return read && readPreparedHeader(bytes, sizeof(bytes), header) && isPreparedCurrent(header, tile, sourceSize);
+    if (!read || !readPreparedHeader(bytes, sizeof(bytes), header)) {
+        return preparedPartsNeeded(nullptr, tile, sourceSize);
+    }
+    if (split != nullptr) {
+        *split = header.version < PREPARED_SPLIT_VERSION && isPreparedReadable(header, tile, sourceSize);
+    }
+    return preparedPartsNeeded(&header, tile, sourceSize);
 }
 
 bool PreparedScanner::listColumns(const TileStore& store) {

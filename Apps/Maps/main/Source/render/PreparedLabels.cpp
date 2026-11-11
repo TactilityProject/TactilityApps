@@ -106,6 +106,28 @@ bool LabelReader::next(LabelRecord& out) {
     return true;
 }
 
+bool readLabelCells(const uint8_t* index, uint32_t mainSize, uint32_t numberSize, bool numbers, LabelCells& out) {
+    auto u32 = [&](size_t offset) {
+        return static_cast<uint32_t>(index[offset]) | (static_cast<uint32_t>(index[offset + 1]) << 8) |
+            (static_cast<uint32_t>(index[offset + 2]) << 16) | (static_cast<uint32_t>(index[offset + 3]) << 24);
+    };
+    out.generalCount = u32(0);
+    out.generalBytes = u32(4);
+    if (out.generalBytes > mainSize) {
+        return false;
+    }
+    for (int cell = 0; cell < LABEL_CELLS; cell++) {
+        out.poiOffset[cell] = u32(8 + cell * 8);
+        out.poiCount[cell] = u32(12 + cell * 8);
+        out.numberOffset[cell] = u32(8 + LABEL_CELLS * 8 + cell * 8) + mainSize;
+        out.numberCount[cell] = numbers ? u32(12 + LABEL_CELLS * 8 + cell * 8) : 0;
+        if (out.poiOffset[cell] > mainSize || (numbers && out.numberOffset[cell] > mainSize + numberSize)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool findLabelSection(const uint8_t* body, size_t bodySize, const uint8_t*& section, size_t& sectionSize, int& count) {
     const uint8_t* cursor = body;
     const uint8_t* end = body + bodySize;

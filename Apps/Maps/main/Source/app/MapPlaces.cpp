@@ -200,6 +200,12 @@ void MapView::handleSheetButton(WaypointSheet::Button button) {
         case WaypointSheet::Button::Delete:
             askDeleteWaypoint(selectedWaypoint);
             break;
+        case WaypointSheet::Button::Navigate:
+            // "Navigate here", with the profile chosen last
+            placeOrderCount = 0;
+            selectedWaypoint = -1;
+            navigateTo(sheetLat, sheetLon, static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2)));
+            break;
         default:
             break;
     }

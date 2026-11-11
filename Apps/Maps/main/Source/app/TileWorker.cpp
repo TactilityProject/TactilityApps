@@ -153,6 +153,8 @@ struct ConvertReadJob {
     FileBuffer* buffer;
     uint32_t size;
     bool current;
+    /** The files the tile needs (PART_* of PreparedTile.h). */
+    uint8_t parts;
     bool yielded;
     /** The original is not there (any more): moved into another region or deleted. */
     bool missing;
@@ -171,7 +173,8 @@ bool convertReadJob(IoTask& io, void* context) {
         return false;
     }
     // Queued twice, or converted by the other lane meanwhile
-    job->current = PreparedScanner::isCurrent(prepared, job->tile, job->size);
+    job->parts = PreparedScanner::partsNeeded(prepared, job->tile, job->size);
+    job->current = job->parts == 0;
     const bool ok = job->current || io.readFile(path, *job->buffer);
     job->yielded = io.yielded();
     return ok;
@@ -258,17 +261,83 @@ struct ConvertWriteJob {
     const char* root;
     const char* region;
     TileKey tile;
+    /** nullptr for a file that is current. */
     const ByteWriter* bytes;
+    const ByteWriter* labels;
+    const ByteWriter* graph;
     bool yielded;
 };
 
+/** Writes one prepared file through its temporary name. */
+bool writePreparedFile(IoTask& io, const ConvertWriteJob& job, PreparedFile file, const ByteWriter& bytes) {
+    char path[PATH_MAX_LENGTH];
+    char temporary[PATH_MAX_LENGTH];
+    return preparedFilePath(path, sizeof(path), job.root, job.region, job.tile, file) &&
+        preparedFileTempPath(temporary, sizeof(temporary), job.root, job.region, job.tile, file) &&
+        io.writeFile(path, temporary, bytes.bytes(), bytes.size(), true);
+}
+
+/**
+ * Records in the .prt header that its companion files are current now: byte 9 is the label file version, byte 7 the
+ * graph file version. Two bytes in one sector, written in place, for a companion made again without the geometry.
+ */
+bool markCompanions(const char* path) {
+    FILE* file = fopen(path, "r+b");
+    if (file == nullptr) {
+        return false;
+    }
+    const uint8_t graph = PREPARED_GRAPH_FORMAT_VERSION;
+    const uint8_t label = PREPARED_LABEL_FORMAT_VERSION;
+    const bool ok = fseek(file, 7, SEEK_SET) == 0 && fwrite(&graph, 1, 1, file) == 1 && fseek(file, 9, SEEK_SET) == 0 &&
+        fwrite(&label, 1, 1, file) == 1;
+    return fclose(file) == 0 && ok;
+}
+
 bool convertWriteJob(IoTask& io, void* context) {
     auto* job = static_cast<ConvertWriteJob*>(context);
-    char prepared[PATH_MAX_LENGTH];
-    char temporary[PATH_MAX_LENGTH];
-    const bool ok = preparedPath(prepared, sizeof(prepared), job->root, job->region, job->tile) &&
-        preparedTempPath(temporary, sizeof(temporary), job->root, job->region, job->tile) &&
-        io.writeFile(prepared, temporary, job->bytes->bytes(), job->bytes->size(), true);
+    // The companions first: a .prt of the new version says they are there
+    bool ok = job->labels == nullptr || writePreparedFile(io, *job, PreparedFile::Labels, *job->labels);
+    ok = ok && (job->graph == nullptr || writePreparedFile(io, *job, PreparedFile::Graph, *job->graph));
+    if (ok && job->bytes != nullptr) {
+        ok = writePreparedFile(io, *job, PreparedFile::Geometry, *job->bytes);
+    } else if (ok) {
+        char path[PATH_MAX_LENGTH];
+        ok = preparedFilePath(path, sizeof(path), job->root, job->region, job->tile, PreparedFile::Geometry) && markCompanions(path);
+    }
+    job->yielded = io.yielded();
+    return ok;
+}
+
+struct LabelReadJob {
+    const char* root;
+    const char* region;
+    TileKey tile;
+    bool numbers;
+    FileBuffer* buffer;
+    PreparedLabelHeader header;
+    bool yielded;
+};
+
+/** Reads the header of a .prl file and its labels, with the house numbers only when they are wanted. */
+bool labelReadJob(IoTask& io, void* context) {
+    auto* job = static_cast<LabelReadJob*>(context);
+    char path[PATH_MAX_LENGTH];
+    if (!preparedFilePath(path, sizeof(path), job->root, job->region, job->tile, PreparedFile::Labels)) {
+        return false;
+    }
+    FILE* file = fopen(path, "rb");
+    if (file == nullptr) {
+        return false;
+    }
+    uint8_t head[PREPARED_LABEL_HEADER_SIZE];
+    const bool read = fread(head, 1, sizeof(head), file) == sizeof(head);
+    fclose(file);
+    if (!read || !readPreparedLabelHeader(head, sizeof(head), job->header) || !(job->header.tile == job->tile) ||
+        job->header.version != PREPARED_LABEL_FORMAT_VERSION) {
+        return false;
+    }
+    const size_t wanted = PREPARED_LABEL_HEADER_SIZE + LABEL_INDEX_SIZE + job->header.mainStored + (job->numbers ? job->header.numberStored : 0);
+    const bool ok = io.readFile(path, *job->buffer, wanted);
     job->yielded = io.yielded();
     return ok;
 }
@@ -290,10 +359,13 @@ bool scanJob(IoTask& io, void* context) {
 
 } // namespace
 
-bool TileWorker::relieveMemory(size_t bytes) {
+bool TileWorker::relieveMemory(size_t bytes, size_t totalBytes, int minSlots) {
     lock();
     const int before = tileCache.slotCount();
-    while (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < bytes && tileCache.slotCount() > MIN_CACHE_SLOTS && tileCache.freeSlot()) {
+    // Never fewer than the tiles on screen (9 in a turned view), or they are drawn again and again
+    const int keep = std::max(minSlots > 0 ? minSlots : MIN_CACHE_SLOTS, visibleWanted);
+    while ((heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < bytes || heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < totalBytes) &&
+        tileCache.slotCount() > keep && tileCache.freeSlot()) {
     }
     const int after = tileCache.slotCount();
     unlock();
@@ -480,7 +552,7 @@ void TileWorker::setConversionsPaused(bool paused) {
     unlock();
 }
 
-bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent) {
+bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent, bool split) {
     for (int i = 0; i < failedConversionCount; i++) {
         if (failedConversions[i] == tile) {
             return true;
@@ -488,6 +560,7 @@ bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent) {
     }
     for (int i = 0; i < conversionCount; i++) {
         if (conversions[i].tile == tile) {
+            conversions[i].split = conversions[i].split || split;
             return true;
         }
     }
@@ -501,29 +574,108 @@ bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent) {
         for (int i = kept; i > 0; i--) {
             conversions[i] = conversions[i - 1];
         }
-        conversions[0] = { tile, region, true };
+        conversions[0] = { tile, region, true, split };
         conversionCount = kept + 1;
         return true;
     }
     if (conversionCount >= MAX_CONVERSIONS) {
         return false;
     }
-    conversions[conversionCount++] = { tile, region, false };
+    conversions[conversionCount++] = { tile, region, false, split };
     return true;
 }
 
-bool TileWorker::collectFromScan(const TileKey& tile, int region, void* context) {
+bool TileWorker::collectFromScan(const TileKey& tile, int region, bool split, void* context) {
     auto* found = static_cast<ScanResult*>(context);
     if (found->count >= found->room) {
         return false;
     }
-    found->items[found->count++] = { tile, region, false };
+    found->items[found->count++] = { tile, region, false, split };
+    return true;
+}
+
+bool TileWorker::loadLabels(Lane& lane) {
+    LabelStore::Request request {};
+    if (labelStore == nullptr || !labelStore->takeRequest(request)) {
+        return false;
+    }
+    char region[REGION_NAME_MAX + 1] = "";
+    lock();
+    if (request.region >= 0 && request.region < store->regionCount()) {
+        snprintf(region, sizeof(region), "%s", store->regionName(request.region));
+    }
+    unlock();
+    if (region[0] == '\0') {
+        labelStore->done(request.tile);
+        return true;
+    }
+    // However it ends, the request is no longer being read
+    struct Done {
+        LabelStore* store;
+        TileKey tile;
+        ~Done() { store->done(tile); }
+    } done { labelStore, request.tile };
+    const uint32_t start = nowMs();
+    // The lane's file buffer: the file it held for its last tile is read again when needed
+    lane.heldKind = static_cast<uint8_t>(Found::Nothing);
+    LabelReadJob read { root, region, request.tile, request.numbers, &lane.fileBuffer, {}, false };
+    const bool ok = io->run(IoPriority::Visible, labelReadJob, &read);
+    if (!ok) {
+        if (read.yielded) {
+            labelStore->done(request.tile);
+            labelStore->request(request.tile, request.region);
+        }
+        return true;
+    }
+    const uint32_t loaded = nowMs();
+    const PreparedLabelHeader& header = read.header;
+    const size_t size = header.mainSize + (request.numbers ? header.numberSize : 0);
+    const int count = static_cast<int>(header.mainCount + (request.numbers ? header.numberCount : 0));
+    // The cells first, then the records; a tile without labels keeps an empty entry, so it is not asked for again
+    auto* block = static_cast<uint8_t*>(largeAlloc(sizeof(LabelCells) + size));
+    bool inflated = block != nullptr &&
+        readLabelCells(lane.fileBuffer.bytes() + PREPARED_LABEL_HEADER_SIZE, header.mainSize, header.numberSize, request.numbers,
+            *reinterpret_cast<LabelCells*>(block));
+    uint8_t* bytes = block != nullptr ? block + sizeof(LabelCells) : nullptr;
+    const uint8_t* stored = lane.fileBuffer.bytes() + PREPARED_LABEL_HEADER_SIZE + LABEL_INDEX_SIZE;
+    const bool deflated = (header.flags & PREPARED_FLAG_DEFLATED) != 0;
+    // Part A, then part B right after it, so the records read as one section
+    const uint32_t partSize[2] = { header.mainSize, request.numbers ? header.numberSize : 0 };
+    const uint32_t partStored[2] = { header.mainStored, request.numbers ? header.numberStored : 0 };
+    size_t offset = 0;
+    for (int part = 0; part < 2 && inflated; part++) {
+        if (partSize[part] == 0) {
+            stored += partStored[part];
+            continue;
+        }
+        if (deflated) {
+            MemoryInput input(stored, partStored[part]);
+            inflated = lane.renderer.tileDecoder().inflate(&input, bytes + offset, partSize[part]);
+        } else {
+            inflated = partStored[part] == partSize[part];
+            if (inflated) {
+                memcpy(bytes + offset, stored, partSize[part]);
+            }
+        }
+        stored += partStored[part];
+        offset += partSize[part];
+    }
+    lane.fileBuffer.trim(KEEP_FILE_BUFFER);
+    if (!inflated) {
+        largeFree(block);
+        logError("[%d] Labels of %d/%d/%d do not read", lane.index, request.tile.z, request.tile.x, request.tile.y);
+        return true;
+    }
+    labelStore->adopt(request.tile, block, size, count, request.numbers, request.region);
+    logInfo("[%d] Labels %d/%d/%d%s: %u bytes, read %u ms, inflate %u ms", lane.index, request.tile.z, request.tile.x, request.tile.y,
+        request.numbers ? " with house numbers" : "", static_cast<unsigned>(size), static_cast<unsigned>(loaded - start),
+        static_cast<unsigned>(nowMs() - loaded));
     return true;
 }
 
 bool TileWorker::convertOne(Lane& lane) {
     // The compressor needs one 320 KB block of PSRAM, which a download leaves too fragmented to find
-    if (conversionsPaused) {
+    if (conversionsPaused || routing) {
         return false;
     }
     if (lane.trimBuffers.exchange(false)) {
@@ -610,7 +762,7 @@ bool TileWorker::convertOne(Lane& lane) {
         io->run(IoPriority::Background, scanJob, &scan);
         lock();
         for (int i = 0; i < result.count; i++) {
-            queueConversion(result.items[i].tile, result.items[i].region);
+            queueConversion(result.items[i].tile, result.items[i].region, false, result.items[i].split);
         }
         scanning = false;
         unlock();
@@ -620,7 +772,7 @@ bool TileWorker::convertOne(Lane& lane) {
     const uint32_t start = nowMs();
     // The conversion reuses the lane's buffer
     lane.heldKind = static_cast<uint8_t>(Found::Nothing);
-    ConvertReadJob read { root, region, job.tile, &lane.fileBuffer, 0, false, false, region[0] == '\0' };
+    ConvertReadJob read { root, region, job.tile, &lane.fileBuffer, 0, false, 0, false, region[0] == '\0' };
     bool ok = region[0] != '\0' && io->run(IoPriority::Background, convertReadJob, &read);
     if (read.missing) {
         // The scan finds it again where it is now
@@ -642,6 +794,10 @@ bool TileWorker::convertOne(Lane& lane) {
     }
     if ((ok && !read.current) || streamed) {
         ConvertStats stats {};
+        const ByteWriter* writeGeometry = nullptr;
+        const ByteWriter* writeLabels = nullptr;
+        const ByteWriter* writeGraph = nullptr;
+        GraphStats graphStats {};
         char path[PATH_MAX_LENGTH];
         CardInput cardInput(io, path);
         MemoryInput memoryInput(lane.fileBuffer.bytes(), lane.fileBuffer.size());
@@ -650,30 +806,56 @@ bool TileWorker::convertOne(Lane& lane) {
             ok = tilePath(path, sizeof(path), root, region, job.tile) && cardInput.isReady();
             input = &cardInput;
         }
-        if (ok) {
-            ok = lane.converter.convert(lane.renderer.tileDecoder(), input, job.tile, read.size, version, deflatePrepared, lane.converted, &stats);
+        ByteWriter* geometry = (read.parts & PART_GEOMETRY) != 0 ? &lane.converted : nullptr;
+        ByteWriter* labels = (read.parts & PART_LABELS) != 0 ? &lane.convertedLabels : nullptr;
+        if (ok && (geometry != nullptr || labels != nullptr)) {
+            ok = lane.converter.convert(lane.renderer.tileDecoder(), input, job.tile, read.size, version, deflatePrepared, geometry, labels, &stats);
             reason = ok ? "writing the card" : lane.converter.failure();
+            writeGeometry = geometry;
+            writeLabels = labels;
+        }
+        if (ok && (read.parts & PART_GRAPH) != 0) {
+            // The routing graph of a z14 tile, from the original read again from the start
+            CardInput graphCard(io, path);
+            MemoryInput graphMemory(lane.fileBuffer.bytes(), lane.fileBuffer.size());
+            ByteInput* graphInput = streamed ? static_cast<ByteInput*>(&graphCard) : &graphMemory;
+            ok = lane.graphBuilder.build(lane.renderer.tileDecoder(), graphInput, job.tile, read.size, version, true, lane.convertedGraph, &graphStats);
+            reason = ok ? "writing the card" : lane.graphBuilder.failure();
+            writeGraph = &lane.convertedGraph;
         }
         const uint32_t convertedAt = nowMs();
-        ConvertWriteJob write { root, region, job.tile, &lane.converted, false };
+        ConvertWriteJob write { root, region, job.tile, writeGeometry, writeLabels, writeGraph, false };
         ok = ok && io->run(IoPriority::Background, convertWriteJob, &write);
         requeue = write.yielded;
         if (ok) {
-            logInfo("[%d] Prepared %d/%d/%d%s: %u -> %u bytes, read %u ms, convert %u ms, write %u ms", lane.index, job.tile.z, job.tile.x,
-                job.tile.y, streamed ? " in chunks" : "", static_cast<unsigned>(read.size), static_cast<unsigned>(lane.converted.size()), loaded - start, convertedAt - loaded,
+            logInfo("[%d] %s %d/%d/%d%s: %u -> %u + %u + %u bytes (.prt + .prl + .prg), read %u ms, convert %u ms (graph %u ms, %u nodes, "
+                    "%u edges), write %u ms",
+                lane.index, job.split ? "Split" : "Prepared", job.tile.z, job.tile.x, job.tile.y, streamed ? " in chunks" : "",
+                static_cast<unsigned>(read.size), writeGeometry != nullptr ? static_cast<unsigned>(writeGeometry->size()) : 0,
+                writeLabels != nullptr ? static_cast<unsigned>(writeLabels->size()) : 0,
+                writeGraph != nullptr ? static_cast<unsigned>(writeGraph->size()) : 0, loaded - start, convertedAt - loaded,
+                static_cast<unsigned>(graphStats.totalMs), static_cast<unsigned>(graphStats.nodes), static_cast<unsigned>(graphStats.edges),
                 nowMs() - convertedAt);
             // Tiles drawn from the original or an older prepared copy are drawn again from the new one, which has labels
-            preparedGeneration++;
             preparedCount++;
-            lock();
-            tileCache.dropMagnified(&job.tile, 1);
-            changed = true;
-            unlock();
+            if (writeGeometry != nullptr || writeLabels != nullptr) {
+                preparedGeneration++;
+                lock();
+                tileCache.dropMagnified(&job.tile, 1);
+                changed = true;
+                unlock();
+            }
         }
     }
     // A read or write that gave way to tiles on screen is tried again later
     lane.fileBuffer.trim(KEEP_FILE_BUFFER);
     lane.converter.trim(KEEP_FILE_BUFFER / 4);
+    if (lane.convertedLabels.allocated() > KEEP_FILE_BUFFER / 4) {
+        lane.convertedLabels.release();
+    }
+    // The graph builder's working memory goes back after each tile: graphs are made once per tile
+    lane.graphBuilder.trim();
+    lane.convertedGraph.release();
     bool retry = false;
     if (!ok && !requeue && !memoryForConversion()) {
         // Out of memory, not a bad tile: it stays queued and conversions pause, it does not count as a failure
@@ -705,16 +887,20 @@ bool TileWorker::convertOne(Lane& lane) {
     }
     lane.converting = false;
     if (requeue) {
-        queueConversion(job.tile, job.region, job.urgent);
+        queueConversion(job.tile, job.region, job.urgent, job.split);
     }
     unlock();
     // Something was done, or the card is busy with more urgent work
     return true;
 }
 
-void TileWorker::preparation(int& done, int& waiting) {
+void TileWorker::preparation(int& done, int& waiting, int& splitting) {
     lock();
     waiting = conversionCount;
+    splitting = 0;
+    for (int i = 0; i < conversionCount; i++) {
+        splitting += conversions[i].split ? 1 : 0;
+    }
     for (int i = 0; i < laneCount; i++) {
         waiting += lanes[i].converting ? 1 : 0;
     }
@@ -822,7 +1008,9 @@ bool TileWorker::claimNext(Lane& lane, bool visible, TileKey& tile, uint16_t*& p
     }
     bool found = false;
     const int first = visible ? 0 : visibleWanted;
-    const int last = visible ? visibleWanted : wantedCount;
+    // The ring around the screen only fits in what the cache holds now: while a route search has borrowed slots, it
+    // evicted the visible tiles, which were drawn again (the map blinked)
+    const int last = visible ? visibleWanted : std::min(wantedCount, std::max(visibleWanted, tileCache.slotCount() - CACHE_SPARE_SLOTS));
     for (int i = first; i < last && !found; i++) {
         const TileKey& candidate = wanted[i];
         if (tileCache.contains(candidate)) {
@@ -973,6 +1161,7 @@ bool TileWorker::loadJob(IoTask& io, void* context) {
             (held == Found::Original && lane.heldGeneration == worker->preparedGeneration.load()))) {
         job->found = held;
         job->olderPrepared = lane.heldOlder;
+        job->splitPrepared = lane.heldSplit;
         return true;
     }
     lane.heldKind = static_cast<uint8_t>(Found::Nothing);
@@ -984,9 +1173,11 @@ bool TileWorker::loadJob(IoTask& io, void* context) {
         io.readFile(path, buffer) && readPreparedHeader(buffer.bytes(), buffer.size(), header) &&
         isPreparedReadable(header, job->source.tile, job->source.size)) {
         job->found = Found::Prepared;
-        job->olderPrepared = header.version < PREPARED_FORMAT_VERSION;
+        job->olderPrepared = preparedPartsNeeded(&header, job->source.tile, job->source.size) != 0;
+        job->splitPrepared = header.version >= PREPARED_SPLIT_VERSION;
         lane.heldKind = static_cast<uint8_t>(Found::Prepared);
         lane.heldOlder = job->olderPrepared;
+        lane.heldSplit = job->splitPrepared;
         return true;
     }
     if (!io.yielded() && io.readFile(job->source.path, buffer)) {
@@ -1094,10 +1285,14 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
             return false;
         }
         if (rendered && job.olderPrepared) {
-            // A tile on screen from an older format (no labels) is made again before the idle scan gets to it
+            // A tile on screen from an older format is made again (split) before the idle scan gets to it
             lock();
-            queueConversion(job.source.tile, job.source.region, true);
+            queueConversion(job.source.tile, job.source.region, true, !job.splitPrepared);
             unlock();
+        }
+        if (rendered && job.splitPrepared && labelStore != nullptr) {
+            // Its labels are in the .prl file: a lane reads them once no tile on screen waits
+            labelStore->request(job.source.tile, job.source.region);
         }
         if (!rendered) {
             // A damaged prepared tile: the original is drawn and the copy made again
@@ -1150,12 +1345,13 @@ void TileWorker::loop(Lane& lane) {
         // Tiles on screen first, then the SD card cache, then the tiles around the screen, then conversions
         bool visible = true;
         if (!claimNext(lane, true, tile, pixels)) {
-            if (writeOne(lane)) {
+            if (loadLabels(lane) || writeOne(lane)) {
                 continue;
             }
             visible = false;
             // Around the screen and other idle work only after a while without input
-            if (!idle || !claimNext(lane, false, tile, pixels)) {
+            // Not during a route search: the user waits for it, and the cache has lent it most of its slots
+            if (!idle || routing || !claimNext(lane, false, tile, pixels)) {
                 if (!idle || (!convertOne(lane) && !tidyCache())) {
                     vTaskDelay(pdMS_TO_TICKS(IDLE_WAIT_MS));
                 }

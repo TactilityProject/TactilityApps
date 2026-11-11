@@ -171,9 +171,10 @@ bool MvtDecoder::readLayerName(size_t layerEnd, Layer& layer) {
 
 bool MvtDecoder::scanValue(size_t valueEnd, ValueEntry& entry) {
     entry = {};
-    entry.rank = -1;
+    // INT32_MIN: not an integer value (oneway and layer read negative integers from here)
+    entry.rank = INT32_MIN;
     uint16_t code = 0;
-    int32_t rank = -1;
+    int32_t rank = INT32_MIN;
     uint32_t textOffset = 0;
     uint8_t textLength = 0;
     bool hasText = false;
@@ -288,6 +289,10 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.maritimeKey = index;
                 } else if (strcmp(name, "ramp") == 0) {
                     table.rampKey = index;
+                } else if (strcmp(name, "oneway") == 0) {
+                    table.onewayKey = index;
+                } else if (strcmp(name, "layer") == 0) {
+                    table.layerKey = index;
                 } else if (strcmp(name, "name") == 0) {
                     table.nameKey = index;
                 } else if (strcmp(name, "name:latin") == 0) {
@@ -407,6 +412,11 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
         info.maritime = (code & 0x7FFF) != 0;
     } else if (keyIndex == table.rampKey && isInteger) {
         info.ramp = (code & 0x7FFF) != 0;
+    } else if (keyIndex == table.onewayKey && entry->hasText == 0 && entry->rank != INT32_MIN) {
+        // Negative integers have no integer code, their value is kept in rank
+        info.oneway = static_cast<int8_t>(entry->rank > 0 ? 1 : (entry->rank < 0 ? -1 : 0));
+    } else if (keyIndex == table.layerKey && entry->hasText == 0 && entry->rank != INT32_MIN) {
+        info.layerNumber = static_cast<int8_t>(entry->rank < -8 ? -8 : (entry->rank > 7 ? 7 : entry->rank));
     } else if (keyIndex == table.nameKey && entry->hasText != 0) {
         info.name = namePool + entry->textOffset;
         info.nameLength = entry->textLength;

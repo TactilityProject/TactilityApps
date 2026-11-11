@@ -41,7 +41,12 @@ public:
     bool readMouse(int32_t& dx, int32_t& dy);
     bool readTouch(TouchState& state);
     bool hasTouch() const { return touch != nullptr; }
-    bool hasKeyboard() const { return keyboardCount > 0 && !touchOnly; }
+    /**
+     * A keyboard that types text, so key hints make sense. Keys are read from every keyboard device, but buttons
+     * (button-control) and a trackball also register as one: only a started keyboard device that reports itself
+     * present counts, as for Tactility's software keyboard.
+     */
+    bool hasKeyboard() const { return typingKeyboard && !touchOnly; }
     bool hasPointer() const { return mouseCount > 0 && !touchOnly; }
     /** Debug scripts ("touchonly"): act as a board with only a touch screen; keyboards and pointers are ignored. */
     void setTouchOnly(bool value) { touchOnly = value; }
@@ -56,6 +61,7 @@ private:
 
     Device* keyboards[MAX_DEVICES] {};
     bool touchOnly = false;
+    bool typingKeyboard = false;
     int keyboardCount = 0;
     Device* mice[MAX_DEVICES] {};
     int mouseCount = 0;

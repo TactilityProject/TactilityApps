@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.0
+
+Offline navigation: routes for walking, cycling and driving, found on the device from the downloaded maps, with a
+preview and turn-by-turn following. Prepared tiles are split into smaller files, so maps open and label faster.
+
+**Navigation**
+- "Go" (Navigate here) on the sheet of a place, a house number, a waypoint and a point held on the map. The route
+  starts at your GPS position; without a fix the app asks: a point you tap (or the crosshair), the screen centre, or
+  the approximate Wi-Fi/IP position with its accuracy.
+- Modes Walk, Bike and Car as icons at the top of the route preview: one tap (or W, B, C) searches the same route
+  for another mode, also during a search. New routes start with Settings → Route mode. Car routes follow road
+  types only, without turn restrictions or access rules, and the card says so.
+- The map shows the whole route as a blue line with a white casing (a thick dark line on monochrome displays) and a
+  card with length, time and mode, and Start and Close. A failed search keeps the card with the reason.
+- Start: heading-up following with a bar for the next turn and the street ("In 120 m turn left onto ..."), the
+  distance and time left; passed parts turn grey. Off the route for 10 s: a new route from where you are. Within
+  about 25 m: "You have arrived".
+- The route is kept until Menu → Clear route, also across restarts. Menu → Show route and Stop navigation.
+- The road graph is made per z14 tile in idle time from the tiles on the card (a `.prg` next to each tile).
+- When the search runs out of memory it tries once more heading straight for the destination (the route may be a
+  little longer); only then do long routes stop with a message. On the T-Deck 47 of 50 Bratislava test routes on foot
+  and 48 of 50 by car are found (was 42 and 38).
+- The map no longer blinks while a route is searched: tiles around the screen are not drawn meanwhile.
+- Start and destination no longer snap to small pieces of road that lead nowhere for the mode (a car on a service road
+  in a pedestrian zone or on a one-way piece, a short path off the network): such searches read the whole city and
+  ended "too long" or "no route". A car may stop up to 500 m from the destination.
+- Key hints (the letters on the buttons, "Enter: change" in lists) only on boards with a keyboard that types:
+  found with Tactility's device discovery, so buttons (Wio Tracker) and a trackball alone no longer count.
+- While navigating your position sits low on the screen; the bar has an X to stop (Esc too), and the menu button is
+  below the bar.
+
+**Faster maps**
+- Prepared tiles are three files: geometry, labels and the routing graph. Drawing reads only the geometry (a dense
+  city tile 127 KB → 69 KB); labels are read when they are placed, house numbers only from z17, and only the parts
+  of a tile near the screen. Older tiles are split in idle time ("Splitting tiles"); they keep working meanwhile.
+- Label placement with POIs takes about half as long as before.
+
+**For developers**
+- Debug script commands `routebench`, `navigate`, `waitroute` and `replay` (a GPX track as positions, to test
+  following indoors). Host tools `graph_tiles` and `route_tiles`, and `host/routing/check_prg.py`, which compares the
+  device graphs with the PC study.
+
 ## 0.3.0
 
 Points of interest and house numbers, a background work indicator, smoother turned maps, a smaller label font, and

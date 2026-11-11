@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 
 namespace maps {
 
@@ -52,8 +53,11 @@ public:
     /** Makes the running and waiting prefetch reads stop at their next chunk, after input moved the view. */
     void cancelPrefetch() { prefetchGeneration++; }
 
-    /** For jobs: reads a whole file into buffer in large chunks. Returns false on error or when it yielded. */
-    bool readFile(const char* path, FileBuffer& buffer);
+    /**
+     * For jobs: reads a whole file into buffer in large chunks, or only its first limit bytes. Returns false on error,
+     * when the file is shorter than limit, or when it yielded.
+     */
+    bool readFile(const char* path, FileBuffer& buffer, size_t limit = 0);
     /** For jobs: writes bytes to path through path.tmp and a rename, in large chunks. */
     bool writeFile(const char* path, const char* temporaryPath, const uint8_t* bytes, size_t size, bool canYield);
     /** The same for a file in pieces. */

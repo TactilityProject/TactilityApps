@@ -4,6 +4,7 @@
 #include "TileMath.h"
 
 #include <cstddef>
+#include <cstdint>
 
 namespace maps {
 
@@ -17,6 +18,14 @@ bool tilePath(char* out, size_t size, const char* root, const char* region, cons
 bool preparedPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
 /** Writes "<root>/maps/<region>/<z>/<x>/<y>.ptm", where a prepared tile is written before it is renamed. */
 bool preparedTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
+
+/** The prepared files next to an original: geometry (.prt), labels (.prl) and the routing graph (.prg). */
+enum class PreparedFile : uint8_t { Geometry, Labels, Graph };
+constexpr int PREPARED_FILE_COUNT = 3;
+/** Writes "<root>/maps/<region>/<z>/<x>/<y>.prt", ".prl" or ".prg". */
+bool preparedFilePath(char* out, size_t size, const char* root, const char* region, const TileKey& tile, PreparedFile file);
+/** Where that file is written before it is renamed: ".ptm", ".plm" or ".pgm". */
+bool preparedFileTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile, PreparedFile file);
 
 /** Writes "<root>/maps/<region>/<z>/<x>", the folder of a tile column. */
 bool tileFolderPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);

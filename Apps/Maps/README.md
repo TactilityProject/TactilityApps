@@ -111,6 +111,43 @@ browsed tiles into a download. It pulses on colour screens and is solid on monoc
 It hides while the progress label or the controls show. Tap or click it for a card listing what runs.
 Not to be confused with the red ● of track recording.
 
+**Navigation.** Routes are found on the device from the maps you downloaded: no internet and no extra
+download. A place, a waypoint, a house number or a point you hold on the map opens a sheet with **Go**
+(Navigate here; key N or G on a place or waypoint). The route starts at your position when there is a GPS fix.
+Without one the app asks where it starts: **Choose on the map** (tap the start, or move the map and press Enter
+for the crosshair; Esc cancels), **Screen centre**, or **My position** when Tactility has an approximate position
+(Wi-Fi or IP based; its accuracy is shown, e.g. ±25 km). It is searched in the background; the map then shows the whole route,
+a bar with the three modes at the top and a card with its length, time and mode, and **Start** and **Close** (keys
+S, Esc).
+
+- **Modes:** Walk, Bike and Car, as icons at the top. Tap one (or press W, B, C, or 1, 2, 3; P goes to the next) to
+  search the same route for that mode, also while a search still runs. A new route starts with the mode set in
+  Settings → Route mode (Walk unless changed). When a search fails the card says why and stays, so another mode can
+  be tried. Walk uses every road and path and ignores one-way streets; Bike leaves out motorways and
+  trunk roads and keeps to one-way streets; Car leaves out paths, footways, steps and tracks and keeps to one-way
+  streets. Time estimates: walk 4.5 km/h, bike 15 km/h, car by road type (110 km/h on motorways down to 20 km/h
+  on service roads).
+- **Car routes follow road types only**, without turn restrictions or access rules (the map tiles have
+  neither): the card says so. Check signs.
+- **Start** follows the route: the map turns with your direction (heading up), your position sits low on the screen
+  so you see further ahead, and a bar at the top shows the next turn with an arrow and the street, e.g. "In 120 m
+  turn left onto Štefánikova", and below it the distance and time left. The X at the right end of the bar (or Esc)
+  stops navigating; the menu button is below the bar. The route ahead is blue, the part you passed grey. More than 40 m off the route for 10 seconds:
+  "Off route — recalculating", and a new route from where you are (at most every 20 s). Within about 25 m of the
+  destination: "You have arrived"; following stops and the line stays.
+- **Start and destination** snap to the nearest road the mode may use within 200 m (500 m for a car: the last bit is
+  on foot), leaving out small pieces of road that lead nowhere for that mode, such as a service road inside a
+  pedestrian zone for a car.
+- **The route stays** until Menu → Clear route, also after leaving the app. Menu → Show route shows it and its
+  card again; Menu → Stop navigation stops following.
+- **Limits:** a search may use about 2.5 MB of memory (less when the map holds more). When the memory runs out it
+  tries once more with a search that heads straight for the destination, which may give a slightly longer route;
+  only if that fails too, very long routes (across a big city, corner to corner) stop with "Route too long for this
+  device; try a shorter one". Routes are found only where the tiles were
+  downloaded at the highest detail (z14) and prepared: right after a download the app first prepares the new
+  tiles in idle time (the amber dot). Without a road within 200 m of the start or the destination, or without
+  a connection between them in the downloaded map, the app says so.
+
 **Menu:** Download map, Downloaded maps, Waypoints, Add waypoint, Record track, GPX files, Location, Settings, About and
 licences, Exit. W/S, trackball or finger to move; Enter, click or tap to choose; Esc, Backspace or tap
 outside to close.

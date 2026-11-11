@@ -153,14 +153,18 @@ void IoTask::loop() {
     }
 }
 
-bool IoTask::readFile(const char* path, FileBuffer& buffer) {
+bool IoTask::readFile(const char* path, FileBuffer& buffer, size_t limit) {
     buffer.clear();
     FILE* file = fopen(path, "rb");
     if (file == nullptr) {
         return false;
     }
     bool ok = fseek(file, 0, SEEK_END) == 0;
-    const long size = ok ? ftell(file) : -1;
+    long size = ok ? ftell(file) : -1;
+    if (limit > 0) {
+        ok = ok && size >= static_cast<long>(limit);
+        size = static_cast<long>(limit);
+    }
     ok = ok && size > 0 && fseek(file, 0, SEEK_SET) == 0 && buffer.reserve(static_cast<size_t>(size));
     size_t done = 0;
     while (ok && done < static_cast<size_t>(size)) {

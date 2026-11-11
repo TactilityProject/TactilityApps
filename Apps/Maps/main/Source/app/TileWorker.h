@@ -9,6 +9,7 @@
 #include "../render/CacheWalker.h"
 #include "../render/PreparedScanner.h"
 #include "../render/PreparedTile.h"
+#include "../route/RouteGraph.h"
 #include "../render/Style.h"
 #include "../render/TileCache.h"
 #include "../render/TileRenderer.h"
@@ -58,7 +59,8 @@ public:
      * Frees tile cache slots, least recently used first, until PSRAM has a free block of bytes, keeping at least
      * MIN_CACHE_SLOTS. For downloads of large low-zoom tiles late in a session. Returns whether the block is there.
      */
-    bool relieveMemory(size_t bytes);
+    /** Frees cache slots until PSRAM has a block of bytes and, when given, totalBytes free in all. */
+    bool relieveMemory(size_t bytes, size_t totalBytes = 0, int minSlots = 0);
     /** Takes the freed slots back when memory allows; true when none is missing any more. */
     bool restoreMemory();
     /** Whether tiles are queued for preparation or being prepared; the cache stays small for them meanwhile. */
@@ -83,8 +85,11 @@ public:
     /** True once since the last call when a tile was added to the cache. */
     bool takeChanged() { return changed.exchange(false); }
     bool isBusy() const { return busyLanes.load() > 0; }
-    /** Background preparation (new originals, or older prepared tiles made again): tiles done since start, tiles waiting. */
-    void preparation(int& done, int& waiting);
+    /**
+     * Background preparation (new originals, or older prepared tiles made again): tiles done since start, tiles
+     * waiting, and of those the older tiles with labels inside that are split into their new files.
+     */
+    void preparation(int& done, int& waiting, int& splitting);
     TaskHandle_t laneTask(int lane) const { return lane < laneCount ? lanes[lane].task : nullptr; }
     /** The fewest bytes of stack a render lane had left so far. */
     uint32_t stackLeft(int lane) const {
@@ -104,6 +109,8 @@ public:
      * again from the downloaded tiles once, when the pause ends, not after every batch.
      */
     void setConversionsPaused(bool paused);
+    /** While a route search runs no tiles are prepared and none around the screen drawn: it needs the card, the memory and the cores. */
+    void setRouting(bool value) { routing = value; }
     /** Whether rendered tiles are read from and written to the SD card cache. */
     void setSdCache(bool enabled) { sdCache = enabled; }
     /** Idle: no input for a while, so prefetch, conversions and cache tidying may run. */
@@ -139,6 +146,7 @@ private:
         TileKey heldTile;
         int heldRegion;
         bool heldOlder;
+        bool heldSplit;
         uint32_t heldGeneration;
         TaskHandle_t task;
         TileKey current;
@@ -147,6 +155,11 @@ private:
         uint16_t* encodeBuffer;
         TileConverter converter;
         ByteWriter converted;
+        ByteWriter convertedLabels;
+        GraphBuilder graphBuilder;
+        ByteWriter convertedGraph;
+        /** Inflated labels of a .prl file, handed to the label store. */
+        FileBuffer labelFile;
         bool converting;
         TileKey convertingTile;
         bool prefetching;
@@ -162,6 +175,8 @@ private:
         int region;
         /** Drawn on screen from its original: prepared without waiting for BACKGROUND_PREPARE_MS. */
         bool urgent;
+        /** An older prepared tile with labels inside, split into its new files. */
+        bool split;
     };
 
     static constexpr int MAX_CONVERSIONS = 32;
@@ -183,6 +198,7 @@ private:
     /** Counts finished conversions: an original held in a lane's buffer is not reused once a prepared copy exists. */
     std::atomic<uint32_t> preparedGeneration = 0;
     std::atomic<int> preparedCount = 0;
+    std::atomic<int> splitWaiting = 0;
 
     struct LoadJob {
         TileWorker* worker;
@@ -192,6 +208,8 @@ private:
         bool skipPrepared;
         /** The prepared copy is of an older format: drawn as it is, made again soon. */
         bool olderPrepared;
+        /** The prepared copy has no labels inside (version 5 on): they are read from its .prl file. */
+        bool splitPrepared;
         Found found;
         TileFile source;
         int cachedSourceZoom;
@@ -215,8 +233,10 @@ private:
     void addGap(const TileKey& tile);
     /** Adds a tile to the conversion queue unless it is there already. Call between lock() and unlock(). */
     /** Queues a tile for conversion; urgent ones (on screen) go first and push the last queued one out when full. */
-    bool queueConversion(const TileKey& tile, int region, bool urgent = false);
-    static bool collectFromScan(const TileKey& tile, int region, void* context);
+    bool queueConversion(const TileKey& tile, int region, bool urgent = false, bool split = false);
+    static bool collectFromScan(const TileKey& tile, int region, bool split, void* context);
+    /** Reads the labels of one split tile the label store asked for. Returns false when none were wanted. */
+    bool loadLabels(Lane& lane);
     /** Converts one queued tile, or looks at one more folder for tiles to convert. Returns false when there is nothing to do. */
     bool convertOne(Lane& lane);
     /** Deletes the least recently used SD cache tile while the cache is over its cap, or tidies one cache folder. */
@@ -270,6 +290,7 @@ private:
     std::atomic<bool> rescanRequested = false;
     std::atomic<bool> deflatePrepared = true;
     std::atomic<bool> conversionsPaused = false;
+    std::atomic<bool> routing = false;
     bool magnifiedOutdated = false;
     std::atomic<bool> sdCache = true;
     std::atomic<bool> idle = false;

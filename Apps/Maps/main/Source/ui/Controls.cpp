@@ -5,9 +5,9 @@
 
 namespace maps {
 
-void Controls::layout(int width, int height, int scaleBarTop) {
+void Controls::layout(int width, int height, int scaleBarTop, int top) {
     // The zoom pair sits on the right edge around the middle, the position button above the scale bar
-    rects[static_cast<int>(Control::Menu)] = { EDGE, EDGE, SIZE, SIZE };
+    rects[static_cast<int>(Control::Menu)] = { EDGE, top + EDGE, SIZE, SIZE };
     rects[static_cast<int>(Control::ZoomIn)] = { width - EDGE - SIZE, height / 2 - SIZE - 3, SIZE, SIZE };
     rects[static_cast<int>(Control::ZoomOut)] = { width - EDGE - SIZE, height / 2 + 3, SIZE, SIZE };
     const int positionTop = std::max(height / 2 + SIZE + 12, scaleBarTop - EDGE - SIZE);

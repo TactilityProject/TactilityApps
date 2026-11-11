@@ -26,6 +26,16 @@ bool preparedTempPath(char* out, size_t size, const char* root, const char* regi
     return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.ptm", root, region, tile.z, tile.x, tile.y), size);
 }
 
+bool preparedFilePath(char* out, size_t size, const char* root, const char* region, const TileKey& tile, PreparedFile file) {
+    static const char* const EXTENSIONS[PREPARED_FILE_COUNT] = { "prt", "prl", "prg" };
+    return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.%s", root, region, tile.z, tile.x, tile.y, EXTENSIONS[static_cast<int>(file)]), size);
+}
+
+bool preparedFileTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile, PreparedFile file) {
+    static const char* const EXTENSIONS[PREPARED_FILE_COUNT] = { "ptm", "plm", "pgm" };
+    return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.%s", root, region, tile.z, tile.x, tile.y, EXTENSIONS[static_cast<int>(file)]), size);
+}
+
 bool tileFolderPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile) {
     return fits(snprintf(out, size, "%s/maps/%s/%d/%d", root, region, tile.z, tile.x), size);
 }

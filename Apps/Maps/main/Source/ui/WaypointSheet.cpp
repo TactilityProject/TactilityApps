@@ -24,7 +24,9 @@ const char* labelOf(WaypointSheet::Button button) {
         case WaypointSheet::Button::Close:
             return "Close";
         case WaypointSheet::Button::SaveAsWaypoint:
-            return "Save as waypoint";
+            return "Save";
+        case WaypointSheet::Button::Navigate:
+            return "Go";
         default:
             return "";
     }
@@ -51,7 +53,7 @@ void WaypointSheet::openExisting(const char* name, const char* coordinates, cons
     snprintf(coordinateText, sizeof(coordinateText), "%s", coordinates);
     snprintf(distanceText, sizeof(distanceText), "%s", distance);
     // Close first, so a stray Enter changes nothing
-    focus = 2;
+    focus = 3;
     visible = true;
 }
 
@@ -64,7 +66,7 @@ void WaypointSheet::openPlace(const char* name, const char* type, const char* co
     snprintf(coordinateText, sizeof(coordinateText), "%s", coordinates);
     snprintf(distanceText, sizeof(distanceText), "%s", distance);
     // Close first, so pressing Enter again on the map's next item does not save anything by mistake
-    focus = 1;
+    focus = 2;
     visible = true;
 }
 
@@ -73,9 +75,10 @@ void WaypointSheet::setDistance(const char* distance) {
 }
 
 WaypointSheet::Button WaypointSheet::buttonAt(int index) const {
-    static constexpr Button NEW_BUTTONS[] = { Button::Save, Button::Cancel };
-    static constexpr Button EXISTING_BUTTONS[] = { Button::Rename, Button::Delete, Button::Close };
-    static constexpr Button PLACE_BUTTONS[] = { Button::SaveAsWaypoint, Button::Close };
+    // "Go" is "Navigate here": a route to the point, from the position or the screen centre
+    static constexpr Button NEW_BUTTONS[] = { Button::Save, Button::Navigate, Button::Cancel };
+    static constexpr Button EXISTING_BUTTONS[] = { Button::Navigate, Button::Rename, Button::Delete, Button::Close };
+    static constexpr Button PLACE_BUTTONS[] = { Button::Navigate, Button::SaveAsWaypoint, Button::Close };
     if (index < 0 || index >= buttonCount()) {
         return Button::None;
     }
@@ -214,6 +217,9 @@ WaypointSheet::Button WaypointSheet::handleKey(uint32_t key) {
         if (key == keys::BACKSPACE) {
             return Button::Close;
         }
+        if (key == 'n' || key == 'N' || key == 'g' || key == 'G') {
+            return Button::Navigate;
+        }
         return key == 's' || key == 'S' ? Button::SaveAsWaypoint : Button::None;
     }
     if (kind == Mode::Existing) {
@@ -226,6 +232,9 @@ WaypointSheet::Button WaypointSheet::handleKey(uint32_t key) {
         }
         if (key == 'x' || key == 'X' || key == keys::DELETE) {
             return Button::Delete;
+        }
+        if (key == 'n' || key == 'N' || key == 'g' || key == 'G') {
+            return Button::Navigate;
         }
         return Button::None;
     }

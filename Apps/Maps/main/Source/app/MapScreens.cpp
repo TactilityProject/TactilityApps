@@ -43,6 +43,9 @@ const char* const ABOUT_PARAGRAPHS[] = {
 
 /** The menu row with the running download's details, before the menu items. */
 constexpr int MENU_DOWNLOAD_DETAILS = 100;
+constexpr int MENU_ROUTE_SHOW = 101;
+constexpr int MENU_ROUTE_STOP = 102;
+constexpr int MENU_ROUTE_CLEAR = 103;
 
 /** What can be done with a region or a waypoint, the rows of their action popups. */
 enum RegionAction : int {
@@ -138,6 +141,18 @@ void MapView::openMenu() {
         }
         menu.add(status.state == Downloader::State::Updating ? "Update" : "Download", detail);
         popupActions[popupActionCount++] = MENU_DOWNLOAD_DETAILS;
+    }
+    // A route: show it again, stop following it, or clear it (it is kept until then, also across restarts)
+    if (navigator.hasRoute()) {
+        if (navigating) {
+            menu.add("Stop navigation");
+            popupActions[popupActionCount++] = MENU_ROUTE_STOP;
+        } else {
+            menu.add("Show route");
+            popupActions[popupActionCount++] = MENU_ROUTE_SHOW;
+        }
+        menu.add("Clear route");
+        popupActions[popupActionCount++] = MENU_ROUTE_CLEAR;
     }
     int item = 0;
     for (const char* label : MENU_LABELS) {
@@ -236,6 +251,17 @@ void MapView::handlePopupAction(UiAction action) {
             if (chosen == MENU_DOWNLOAD_DETAILS) {
                 closeMenu();
                 openDownloadCard();
+            } else if (chosen == MENU_ROUTE_SHOW) {
+                closeMenu();
+                fillRouteCard();
+                fitRoute();
+            } else if (chosen == MENU_ROUTE_STOP) {
+                closeMenu();
+                stopNavigation();
+                showToast("Navigation stopped, the route stays");
+            } else if (chosen == MENU_ROUTE_CLEAR) {
+                closeMenu();
+                clearRoute();
             } else {
                 chooseMenu(static_cast<MenuItem>(chosen));
             }
@@ -265,6 +291,10 @@ void MapView::handlePopupAction(UiAction action) {
         case Popup::WaypointActions:
             closeMenu();
             chooseWaypointAction(chosen);
+            break;
+        case Popup::RouteStart:
+            closeMenu();
+            chooseRouteStart(chosen);
             break;
     }
 }
@@ -603,6 +633,7 @@ void MapView::fillSettingList() {
     static const char* const LABEL_DENSITIES[] = { "Off", "Few", "Normal" };
     settingList.add("Labels", LABEL_DENSITIES[std::clamp(settings.labels, 0, 2)]);
     settingList.add("Latin names", settings.latinNames ? "On" : "Off");
+    settingList.add("Route mode", routeProfileName(static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2))));
     settingList.layoutFullScreen(width, height, overlay.font());
     settingList.select(selected);
 }
@@ -628,6 +659,10 @@ void MapView::toggleSetting(SettingItem item) {
         case SettingItem::LatinNames:
             settings.latinNames = !settings.latinNames;
             applyLabelSettings();
+            break;
+        case SettingItem::RouteMode:
+            // The mode a new route starts with; the card can switch it for one route
+            settings.routeProfile = (settings.routeProfile + 1) % static_cast<int>(RouteProfile::Count);
             break;
         case SettingItem::PointerSpeed:
             settings.pointerSpeed = (settings.pointerSpeed + 1) % PointerAcceleration::SPEEDS;

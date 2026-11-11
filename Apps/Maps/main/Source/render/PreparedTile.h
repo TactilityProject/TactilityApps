@@ -35,8 +35,19 @@ namespace maps {
  *           PoiTypes.h, rank + 1, name at most 63 bytes, empty for types shown without a name, one point), and
  *           kind 6, house number (class 0, no rank, the number as the name, no latin name, one point). Both come
  *           after the other labels. Version 3 tiles have neither and are still readable.
+ *
+ * Version 5 (M5.2) splits a tile into three files next to the original, each with its own format version, so a
+ * change to one makes only that one again:
+ *   <y>.prt  geometry only, the layout above without the label section. Header byte 9 is the version of the label
+ *            file, the high byte of the flags the version of the graph file, both made from the same original
+ *            (0: not made). A tile whose companions are older is current for drawing but queued for them.
+ *   <y>.prl  labels, POIs and house numbers (see PreparedLabelHeader). Read only when labels are placed.
+ *   <y>.prg  the routing graph of a z14 tile (RouteGraph.h). Read only when routing.
+ * Versions 2-4 still draw, with their labels, until the tile is split in idle time.
  */
-constexpr uint16_t PREPARED_FORMAT_VERSION = 4;
+constexpr uint16_t PREPARED_FORMAT_VERSION = 5;
+/** The first version without labels inside: its labels are in the .prl file. */
+constexpr uint16_t PREPARED_SPLIT_VERSION = 5;
 constexpr uint16_t PREPARED_MIN_READABLE_VERSION = 2;
 constexpr uint8_t PREPARED_LABEL_SECTION = 10;
 // 2 px per unit at z18 from z14 data. 1024 looked stepped at z17-z19; 4096 made deflated tiles 35 % larger
@@ -46,9 +57,52 @@ constexpr size_t PREPARED_HEADER_SIZE = 64;
 constexpr size_t PREPARED_VERSION_LENGTH = 32;
 constexpr uint16_t PREPARED_FLAG_DEFLATED = 1;
 
+/**
+ * The label file <y>.prl (little endian): an 80-byte header, the cell index (LABEL_INDEX_SIZE bytes, PreparedLabels.h),
+ * then part A (labels, then POIs sorted by cell) and part B (house numbers sorted by cell), each raw or as its own zlib
+ * stream, so a view below the house number zoom reads only the header, the index and part A. The records are those of
+ * the label section above (PreparedLabels.h).
+ *   header: "TMPL", u16 version, u16 flags (1 deflated), u8 z, u8 0, u16 0, u32 x, u32 y, u32 source size,
+ *           u32 A count, u32 A size, u32 A stored size, u32 B count, u32 B size, u32 B stored size,
+ *           char source version[32]
+ */
+constexpr uint8_t PREPARED_LABEL_FORMAT_VERSION = 2;
+constexpr size_t PREPARED_LABEL_HEADER_SIZE = 80;
+/** The version of the routing graph file (route/RouteGraph.h), 0 while the app makes none. */
+constexpr uint8_t PREPARED_GRAPH_FORMAT_VERSION = 1;
+/** Only tiles of this zoom have a routing graph. */
+constexpr int GRAPH_ZOOM = 14;
+
+struct PreparedLabelHeader {
+    uint16_t version;
+    uint16_t flags;
+    TileKey tile;
+    uint32_t sourceSize;
+    uint32_t mainCount;
+    uint32_t mainSize;
+    uint32_t mainStored;
+    uint32_t numberCount;
+    uint32_t numberSize;
+    uint32_t numberStored;
+    char sourceVersion[PREPARED_VERSION_LENGTH + 1];
+};
+
+bool readPreparedLabelHeader(const uint8_t* data, size_t size, PreparedLabelHeader& header);
+bool isPreparedLabelCurrent(const PreparedLabelHeader& header, const TileKey& tile, uint32_t sourceSize);
+
+/** What a conversion makes: the files of a tile that are missing or older than this app's formats. */
+enum PreparedPart : uint8_t {
+    PART_GEOMETRY = 1,
+    PART_LABELS = 2,
+    PART_GRAPH = 4,
+};
+
 struct PreparedHeader {
     uint16_t version;
     uint16_t flags;
+    /** Version 5 on: the versions of the .prl and .prg files made with it (0: none). */
+    uint8_t labelVersion;
+    uint8_t graphVersion;
     TileKey tile;
     int extent;
     uint32_t sourceSize;
@@ -59,11 +113,14 @@ struct PreparedHeader {
 
 bool readPreparedHeader(const uint8_t* data, size_t size, PreparedHeader& header);
 
-/** Whether a prepared tile was made by this format version from this original. */
+/** Whether a prepared tile and its companion files were made by this app's format versions from this original. */
 bool isPreparedCurrent(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize);
 
 /** Whether a prepared tile can still be drawn, even when it was made by an older format version. */
 bool isPreparedReadable(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize);
+
+/** The parts a tile needs, from the header of its .prt (nullptr when there is none or it is unreadable). */
+uint8_t preparedPartsNeeded(const PreparedHeader* header, const TileKey& tile, uint32_t sourceSize);
 
 /** A byte buffer that grows as needed. */
 class ByteWriter {
@@ -111,6 +168,9 @@ struct ConvertStats {
     uint32_t pointsKept;
     uint32_t bodyBytes;
     uint32_t storedBytes;
+    uint32_t labelBytes;
+    uint32_t labelStoredBytes;
+    uint32_t numberStoredBytes;
 };
 
 /**
@@ -125,10 +185,14 @@ public:
     TileConverter& operator=(const TileConverter&) = delete;
 
     /**
-     * Writes the prepared tile of the vector tile in input to out. sourceSize is the size of the original file,
+     * Writes the prepared files of the vector tile in input: the geometry (.prt) to geometryOut and the labels (.prl)
+     * to labelOut; either may be nullptr when that file is current. sourceSize is the size of the original file,
      * sourceVersion the tile set version it came from.
      */
     bool convert(MvtDecoder& decoder, ByteInput* input, const TileKey& tile, uint32_t sourceSize, const char* sourceVersion,
+        bool deflate, ByteWriter* geometryOut, ByteWriter* labelOut, ConvertStats* stats);
+    /** The old single-file layout (version 4, labels inside), for tests and the comparison tool only. */
+    bool convertCombined(MvtDecoder& decoder, ByteInput* input, const TileKey& tile, uint32_t sourceSize, const char* sourceVersion,
         bool deflate, ByteWriter& out, ConvertStats* stats);
     /** Why the last convert() failed. */
     const char* failure() const { return failureText; }
@@ -145,6 +209,9 @@ private:
     bool growRing(size_t points);
     int simplifyRing(int count, float tolerance);
     void writeLabel(const int32_t* points, int count);
+    bool run(MvtDecoder& decoder, ByteInput* input, const TileKey& tile, bool wantGeometry, bool wantLabels);
+    bool writeGeometry(const char* sourceVersion, uint32_t sourceSize, bool deflate, bool withLabels, ByteWriter& out, size_t& bodySize);
+    bool writeLabelFile(const char* sourceVersion, uint32_t sourceSize, bool deflate, ByteWriter& out);
 
     MvtDecoder* decoder = nullptr;
     const char* failureText = "";
@@ -157,11 +224,19 @@ private:
     uint32_t sectionCounts[static_cast<int>(Stage::Count)] {};
     ByteWriter rings;
     ByteWriter labels;
-    /** The poi and house number labels, written apart so that they cannot crowd out the others in labels. */
+    /** The poi labels, written apart so that they cannot crowd out the others in labels. */
     ByteWriter extraLabels;
+    /** House numbers: their own part of the label file. */
+    ByteWriter numberLabels;
+    /** Per POI and house number record: u32 offset, u32 length | cell << 24, to write them sorted by cell. */
+    ByteWriter poiRecords;
+    ByteWriter numberRecords;
     size_t poiBytes = 0;
-    size_t numberBytes = 0;
     uint32_t labelCount = 0;
+    uint32_t numberCount = 0;
+    bool keepGeometry = true;
+    bool keepLabels = true;
+    uint32_t numberStored = 0;
     int section = 0;
     FeatureInfo feature {};
     uint32_t ringCount = 0;

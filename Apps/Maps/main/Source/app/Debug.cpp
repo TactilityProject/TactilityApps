@@ -144,6 +144,29 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.zoom = atoi(argument);
             return step;
         }
+        // The profile as a number in zoom: 0 walk, 1 bike, 2 car, 3 all
+        auto profileOf = [](const char* text) {
+            return strcmp(text, "bike") == 0 ? 1 : (strcmp(text, "car") == 0 ? 2 : (strcmp(text, "all") == 0 ? 3 : 0));
+        };
+        char word[16] = "";
+        if (strcmp(command, "routebench") == 0 && sscanf(argument, "%31s %15s", step.name, word) >= 1) {
+            step.action = Action::RouteBench;
+            step.zoom = profileOf(word);
+            return step;
+        }
+        if (strcmp(command, "navigate") == 0 && sscanf(argument, "%lf %lf %15s", &step.lat, &step.lon, word) >= 2) {
+            step.action = Action::Navigate;
+            step.zoom = profileOf(word);
+            return step;
+        }
+        if (strcmp(command, "waitroute") == 0) {
+            step.action = Action::WaitRoute;
+            return step;
+        }
+        if (strcmp(command, "replay") == 0 && sscanf(argument, "%31s", step.name) == 1) {
+            step.action = Action::Replay;
+            return step;
+        }
         float v[6] = {};
         const int found = sscanf(argument, "%f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
         struct TouchCommand {
