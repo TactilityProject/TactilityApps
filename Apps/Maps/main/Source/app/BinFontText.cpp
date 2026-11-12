@@ -2,6 +2,7 @@
 #include "BinFontText.h"
 
 #include "../platform/Platform.h"
+#include "../search/TextFold.h"
 
 #include <binfont/binfont.h>
 #include <binfont/render.h>
@@ -9,6 +10,7 @@
 #include <lvgl.h>
 #include <lvgl/fonts.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -116,10 +118,65 @@ void BinFontText::close() {
     owned = false;
 }
 
+namespace {
+
+/** Upper case Latin letters beyond Latin-1 (Latin Extended-A and -B pairs, Latin Extended Additional). */
+bool isUpperLatin(uint32_t c) {
+    if (c >= 0xC0 && c <= 0xDE) {
+        return c != 0xD7;
+    }
+    if ((c >= 0x100 && c <= 0x137) || (c >= 0x14A && c <= 0x177) || (c >= 0x1E00 && c <= 0x1EFF) || (c >= 0x218 && c <= 0x21B)) {
+        return (c & 1) == 0;
+    }
+    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) {
+        return (c & 1) == 1;
+    }
+    return c == 0x178 || c == 0x181 || c == 0x186 || c == 0x189 || c == 0x18A || c == 0x191 || c == 0x198 || c == 0x1A0 || c == 0x1AF;
+}
+
+} // namespace
+
+const char* BinFontText::withFallback(const char* text) {
+    // Only rewritten when a glyph is missing
+    bool missing = false;
+    for (const char* p = text; *p != '\0' && !missing;) {
+        BinFontGlyph glyph;
+        missing = !binfont_get_glyph(font, nextCodepoint(p), &glyph);
+    }
+    if (!missing) {
+        return text;
+    }
+    size_t used = 0;
+    const char* p = text;
+    while (*p != '\0' && used + 8 < sizeof(fallbackText)) {
+        const char* start = p;
+        const uint32_t codepoint = nextCodepoint(p);
+        BinFontGlyph glyph;
+        if (binfont_get_glyph(font, codepoint, &glyph)) {
+            while (start < p && used + 1 < sizeof(fallbackText)) {
+                fallbackText[used++] = *start++;
+            }
+            continue;
+        }
+        // The search's fold: diacritics off, lower case ("Š" -> "s"), then the case back
+        char one[8] = {};
+        memcpy(one, start, std::min<size_t>(static_cast<size_t>(p - start), sizeof(one) - 1));
+        char folded[16];
+        foldLatin(one, folded, sizeof(folded));
+        for (size_t i = 0; folded[i] != '\0' && used + 1 < sizeof(fallbackText); i++) {
+            const char c = folded[i];
+            fallbackText[used++] = isUpperLatin(codepoint) && c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
+        }
+    }
+    fallbackText[used] = '\0';
+    return fallbackText;
+}
+
 int BinFontText::textWidth(const char* text) {
     if (font == nullptr) {
         return 0;
     }
+    text = withFallback(text);
     // The same advances and kerning binfont_draw_text_rgb565() applies
     int32_t widthX16 = 0;
     uint32_t previous = 0;
@@ -153,7 +210,7 @@ void BinFontText::drawText(Canvas& canvas, int x, int y, const char* text, uint1
             return;
         }
     }
-    binfont_draw_text_rgb565(target, x, y + ascentPixels, font, text, color, PIXEL_BUFFER_CONVERSION_AVERAGE);
+    binfont_draw_text_rgb565(target, x, y + ascentPixels, font, withFallback(text), color, PIXEL_BUFFER_CONVERSION_AVERAGE);
 }
 
 bool BinFontText::glyph(uint32_t codepoint, LabelGlyph& out, bool withMask) {

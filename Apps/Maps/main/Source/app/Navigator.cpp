@@ -151,6 +151,11 @@ bool Navigator::start(IoTask& ioTask, TileStore& tileStore, TileWorker& tileWork
         task = nullptr;
         return false;
     }
+    if (routeReady.load()) {
+        // A route request coming first makes its own side roads
+        job = Job::Sides;
+        xSemaphoreGive(wake);
+    }
     return true;
 }
 
@@ -244,6 +249,8 @@ void Navigator::loop() {
         }
         if (next == Job::Route) {
             runRoute();
+        } else if (next == Job::Sides) {
+            runSides();
         } else if (next == Job::Bench) {
             runBench();
         }
@@ -292,6 +299,12 @@ void Navigator::runRoute() {
     Route& next = routes[1 - current];
     const RouteResult found = search.find(source, requestFrom[0], requestFrom[1], requestTo[0], requestTo[1], requestProfile, next, &stats);
     giveMemory();
+    if (found == RouteResult::Found) {
+        // The roads beside the route, for the follower's edge rule
+        const uint32_t sidesStarted = nowMs();
+        search.addSides(source, next.points, next.sides);
+        logInfo("Route: %u side segments in %u ms", static_cast<unsigned>(next.sides.size()), static_cast<unsigned>(nowMs() - sidesStarted));
+    }
     logInfo("Route %s: %s, %.0f m, %.0f s, %u points, %u steps; %u ms (reading %u ms), settled %u, tiles %u (%u missing), peak %u KB%s",
         routeProfileName(requestProfile), routeResultText(found), next.lengthM, next.seconds, static_cast<unsigned>(next.points.size()),
         static_cast<unsigned>(next.steps.size()), stats.totalMs, stats.loadMs, stats.settled, stats.tilesRead, stats.tilesMissing, stats.peakBytes / 1024,
@@ -310,6 +323,34 @@ void Navigator::runRoute() {
         next.clear();
         currentState = State::Failed;
     }
+}
+
+void Navigator::runSides() {
+    // The loaded route's side roads: worked out on a copy of its points, then given to the route if it is still the same
+    GrowArray<RoutePoint> points;
+    lock();
+    const uint32_t generation = changes.load();
+    const Route& route = routes[current];
+    if (points.reserve(route.points.size())) {
+        for (const RoutePoint& point : route.points) {
+            points.push(point);
+        }
+    }
+    unlock();
+    if (points.size() < 2) {
+        return;
+    }
+    CardSource source(*io, *store);
+    GrowArray<RouteSide> sides;
+    const uint32_t started = nowMs();
+    search.addSides(source, points, sides);
+    lock();
+    if (changes.load() == generation) {
+        routes[current].sides.swap(sides);
+    }
+    unlock();
+    logInfo("Route: %u side segments for the loaded route in %u ms", static_cast<unsigned>(routes[current].sides.size()),
+        static_cast<unsigned>(nowMs() - started));
 }
 
 void Navigator::runBench() {

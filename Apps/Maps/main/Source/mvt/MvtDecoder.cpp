@@ -297,6 +297,8 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.nameKey = index;
                 } else if (strcmp(name, "name:latin") == 0) {
                     table.nameLatinKey = index;
+                } else if (strcmp(name, "name_en") == 0 || (strcmp(name, "name:en") == 0 && table.nameEnKey < 0)) {
+                    table.nameEnKey = index;
                 } else if (strcmp(name, "rank") == 0) {
                     table.rankKey = index;
                 } else if (strcmp(name, "housenumber") == 0) {
@@ -423,6 +425,9 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
     } else if (keyIndex == table.nameLatinKey && entry->hasText != 0) {
         info.nameLatin = namePool + entry->textOffset;
         info.nameLatinLength = entry->textLength;
+    } else if (keyIndex == table.nameEnKey && entry->hasText != 0) {
+        info.nameEn = namePool + entry->textOffset;
+        info.nameEnLength = entry->textLength;
     } else if (keyIndex == table.rankKey && isInteger) {
         info.rank = entry->rank;
     } else if (keyIndex == table.houseNumberKey && entry->hasText != 0) {

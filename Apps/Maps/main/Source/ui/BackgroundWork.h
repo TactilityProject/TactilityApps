@@ -19,7 +19,7 @@ enum class WorkKind : uint8_t {
     CacheCleanup,    // "Cleaning the cache"
     GpxImport,       // "Importing GPX"
     MoveBrowsed,     // "Moving browsed tiles"
-    AddressIndex,    // "Building the address index"
+    AddressIndex,    // "Building search index" (M6)
     SplitTiles,      // "Splitting tiles"
     Count
 };

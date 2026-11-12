@@ -20,7 +20,13 @@ bool saveBmp(const char* path, const uint16_t* pixels, int width, int height);
  * Navigation (M5c): "routebench <file> <walk|bike|car|all>" runs the route search over the pairs of a file in the app's
  * folder (host/routing/export_pairs.py) and logs each; "navigate <lat> <lon> <walk|bike|car>" asks for a route from the
  * position (or the screen centre) as "Navigate here" does; "waitroute" waits until no search runs; "replay <file>"
- * plays a GPX track from the app's folder as positions, one point per second ("replay stop" ends it).
+ * plays a GPX track from the app's folder as positions, one point per second ("replay stop" ends it);
+ * "replay <file> <accuracy> <noise> [seed]" reports that accuracy in metres and moves the points by correlated random
+ * noise of that many metres (0.4.1). "offroute <name> <value>" sets a value of the off-route rule (OffRouteTuning).
+ * Search (M6): "searchindex [force [region]]" starts building the search indexes now ("force" also rebuilds current
+ * ones, of that region only when one is named),
+ * "waitsearchindex" waits until the build is over, "filecheck <path>" logs the size and CRC-32 of a file under the
+ * app's folder (to compare an index built on the device with the PC's).
  */
 class DebugScript {
 public:
@@ -38,7 +44,11 @@ public:
         RouteBench,
         Navigate,
         WaitRoute,
-        Replay
+        Replay,
+        OffRoute,
+        SearchIndex,
+        WaitSearchIndex,
+        FileCheck
     };
 
     enum class TouchKind : uint8_t { Tap, Hold, Drag, Pinch, Twist };

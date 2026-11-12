@@ -113,6 +113,12 @@ DebugScript::Step DebugScript::next(uint32_t now) {
                 step.key = 10;
             } else if (strcmp(argument, "bs") == 0) {
                 step.key = '\b';
+            } else if (strcmp(argument, "space") == 0) {
+                step.key = ' ';
+            } else if (strcmp(argument, "up") == 0) {
+                step.key = 0x2191;
+            } else if (strcmp(argument, "down") == 0) {
+                step.key = 0x2193;
             } else {
                 step.key = static_cast<uint8_t>(argument[0]);
             }
@@ -163,8 +169,30 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::WaitRoute;
             return step;
         }
-        if (strcmp(command, "replay") == 0 && sscanf(argument, "%31s", step.name) == 1) {
+        if (strcmp(command, "replay") == 0 && sscanf(argument, "%31s %f %f %f", step.name, &step.values[0], &step.values[1], &step.values[2]) >= 1) {
+            // replay <file> [accuracy m] [noise m] [seed]
             step.action = Action::Replay;
+            return step;
+        }
+        if (strcmp(command, "searchindex") == 0) {
+            step.action = Action::SearchIndex;
+            step.zoom = strncmp(argument, "force", 5) == 0 ? 1 : 0;
+            // "searchindex force <region>": that region only
+            if (step.zoom != 0 && sscanf(argument, "force %31s", step.name) != 1) {
+                step.name[0] = '\0';
+            }
+            return step;
+        }
+        if (strcmp(command, "waitsearchindex") == 0) {
+            step.action = Action::WaitSearchIndex;
+            return step;
+        }
+        if (strcmp(command, "filecheck") == 0 && sscanf(argument, "%31s", step.name) == 1) {
+            step.action = Action::FileCheck;
+            return step;
+        }
+        if (strcmp(command, "offroute") == 0 && sscanf(argument, "%31s %f", step.name, &step.values[0]) == 2) {
+            step.action = Action::OffRoute;
             return step;
         }
         float v[6] = {};
