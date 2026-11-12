@@ -1,0 +1,938 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "PreparedTile.h"
+
+#include "../platform/Platform.h"
+#include "../tiles/TileStore.h"
+#include "PoiTypes.h"
+#include "PreparedLabels.h"
+
+#include <miniz.h>
+
+#include <cmath>
+#include <cstring>
+
+namespace maps {
+
+namespace {
+
+constexpr char MAGIC[4] = { 'T', 'M', 'P', 'T' };
+constexpr char LABEL_MAGIC[4] = { 'T', 'M', 'P', 'L' };
+constexpr size_t RING_START_CAPACITY = 1024;
+/** Longer rings are stored without simplification. */
+constexpr size_t RING_MAX_POINTS = 65536;
+/** Labels beyond this many bytes are dropped, they are for the screen around the current tile only. */
+constexpr size_t LABEL_MAX_BYTES = 48 * 1024;
+/** The same for the poi labels and for the house number labels, each (a dense city tile has thousands). */
+constexpr size_t POI_LABEL_MAX_BYTES = 80 * 1024;
+constexpr size_t NUMBER_LABEL_MAX_BYTES = 40 * 1024;
+/** Poi and house number texts are cut to this many bytes, at a character boundary. */
+constexpr size_t POI_TEXT_MAX_BYTES = 63;
+constexpr uint8_t FLAG_MARITIME = 1 << 2;
+constexpr uint8_t FLAG_RAMP = 1 << 3;
+constexpr uint8_t FLAG_SUBCLASS = 1 << 4;
+constexpr uint8_t FLAG_BRUNNEL = 1 << 5;
+constexpr uint8_t FLAG_ADMIN = 1 << 6;
+
+uint16_t readU16(const uint8_t* bytes) {
+    return static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
+}
+
+uint32_t readU32(const uint8_t* bytes) {
+    return static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8) | (static_cast<uint32_t>(bytes[2]) << 16) |
+        (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
+int32_t roundToInt(float value) {
+    return static_cast<int32_t>(std::floor(value + 0.5f));
+}
+
+/** The section a layer's features go to, -1 for layers that are not drawn. */
+int sectionOf(Layer layer) {
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        const auto stage = static_cast<Stage>(i);
+        if (stage == preparedSection(stage) && stageLayer(stage) == layer) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/** The label kind of a layer, -1 for layers without labels. */
+int labelKindOf(Layer layer) {
+    switch (layer) {
+        case Layer::Place:
+            return static_cast<int>(LabelKind::Place);
+        case Layer::TransportationName:
+            return static_cast<int>(LabelKind::Road);
+        case Layer::WaterName:
+            return static_cast<int>(LabelKind::Water);
+        case Layer::Waterway:
+            return static_cast<int>(LabelKind::Waterway);
+        case Layer::MountainPeak:
+            return static_cast<int>(LabelKind::Peak);
+        case Layer::Poi:
+            return static_cast<int>(LabelKind::Poi);
+        case Layer::Housenumber:
+            return static_cast<int>(LabelKind::HouseNumber);
+        default:
+            return -1;
+    }
+}
+
+/** The length of text cut to at most maxBytes without splitting a UTF-8 character. */
+uint16_t cutUtf8(const char* text, size_t length, size_t maxBytes) {
+    if (length <= maxBytes) {
+        return static_cast<uint16_t>(length);
+    }
+    while (maxBytes > 0 && (static_cast<uint8_t>(text[maxBytes]) & 0xC0) == 0x80) {
+        maxBytes--;
+    }
+    return static_cast<uint16_t>(maxBytes);
+}
+
+size_t encodeVarint(uint8_t* out, uint64_t value) {
+    size_t count = 0;
+    while (value >= 0x80) {
+        out[count++] = static_cast<uint8_t>(value | 0x80);
+        value >>= 7;
+    }
+    out[count++] = static_cast<uint8_t>(value);
+    return count;
+}
+
+int deflateCallback(const void* buffer, int length, void* user) {
+    auto* out = static_cast<ByteWriter*>(user);
+    out->putBytes(buffer, static_cast<size_t>(length));
+    return out->failed() ? 0 : 1;
+}
+
+} // namespace
+
+bool readPreparedHeader(const uint8_t* data, size_t size, PreparedHeader& header) {
+    if (data == nullptr || size < PREPARED_HEADER_SIZE || memcmp(data, MAGIC, 4) != 0) {
+        return false;
+    }
+    header.version = readU16(data + 4);
+    const uint16_t flags = readU16(data + 6);
+    header.flags = flags & 0xFF;
+    header.labelVersion = header.version >= PREPARED_SPLIT_VERSION ? data[9] : 0;
+    header.graphVersion = header.version >= PREPARED_SPLIT_VERSION ? static_cast<uint8_t>(flags >> 8) : 0;
+    header.tile.z = data[8];
+    header.extent = readU16(data + 10);
+    header.tile.x = static_cast<int>(readU32(data + 12));
+    header.tile.y = static_cast<int>(readU32(data + 16));
+    header.sourceSize = readU32(data + 20);
+    header.bodySize = readU32(data + 24);
+    header.storedSize = readU32(data + 28);
+    memcpy(header.sourceVersion, data + 32, PREPARED_VERSION_LENGTH);
+    header.sourceVersion[PREPARED_VERSION_LENGTH] = '\0';
+    return true;
+}
+
+bool isPreparedCurrent(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize) {
+    return preparedPartsNeeded(&header, tile, sourceSize) == 0;
+}
+
+uint8_t preparedPartsNeeded(const PreparedHeader* header, const TileKey& tile, uint32_t sourceSize) {
+    const uint8_t graph = tile.z == GRAPH_ZOOM && PREPARED_GRAPH_FORMAT_VERSION != 0 ? PART_GRAPH : 0;
+    if (header == nullptr || !(header->tile == tile) || header->sourceSize != sourceSize || header->extent != PREPARED_EXTENT) {
+        return PART_GEOMETRY | PART_LABELS | graph;
+    }
+    uint8_t parts = 0;
+    if (header->version != PREPARED_FORMAT_VERSION) {
+        parts |= PART_GEOMETRY;
+    }
+    if (header->version < PREPARED_SPLIT_VERSION || header->labelVersion != PREPARED_LABEL_FORMAT_VERSION) {
+        parts |= PART_LABELS;
+    }
+    if (graph != 0 && (header->version < PREPARED_SPLIT_VERSION || header->graphVersion != PREPARED_GRAPH_FORMAT_VERSION)) {
+        parts |= PART_GRAPH;
+    }
+    return parts;
+}
+
+bool readPreparedLabelHeader(const uint8_t* data, size_t size, PreparedLabelHeader& header) {
+    if (data == nullptr || size < PREPARED_LABEL_HEADER_SIZE || memcmp(data, LABEL_MAGIC, 4) != 0) {
+        return false;
+    }
+    header.version = readU16(data + 4);
+    header.flags = readU16(data + 6);
+    header.tile.z = data[8];
+    header.tile.x = static_cast<int>(readU32(data + 12));
+    header.tile.y = static_cast<int>(readU32(data + 16));
+    header.sourceSize = readU32(data + 20);
+    header.mainCount = readU32(data + 24);
+    header.mainSize = readU32(data + 28);
+    header.mainStored = readU32(data + 32);
+    header.numberCount = readU32(data + 36);
+    header.numberSize = readU32(data + 40);
+    header.numberStored = readU32(data + 44);
+    memcpy(header.sourceVersion, data + 48, PREPARED_VERSION_LENGTH);
+    header.sourceVersion[PREPARED_VERSION_LENGTH] = '\0';
+    return true;
+}
+
+bool isPreparedLabelCurrent(const PreparedLabelHeader& header, const TileKey& tile, uint32_t sourceSize) {
+    return header.version == PREPARED_LABEL_FORMAT_VERSION && header.tile == tile && header.sourceSize == sourceSize;
+}
+
+bool isPreparedReadable(const PreparedHeader& header, const TileKey& tile, uint32_t sourceSize) {
+    return header.version >= PREPARED_MIN_READABLE_VERSION && header.version <= PREPARED_FORMAT_VERSION &&
+        header.tile == tile && header.sourceSize == sourceSize && header.extent == PREPARED_EXTENT;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+
+ByteWriter::~ByteWriter() {
+    largeFree(data);
+}
+
+void ByteWriter::release() {
+    largeFree(data);
+    data = nullptr;
+    capacity = 0;
+    clear();
+}
+
+bool ByteWriter::reserveExact(size_t size) {
+    if (size <= capacity) {
+        return true;
+    }
+    auto* grown = static_cast<uint8_t*>(largeAlloc(size));
+    if (grown == nullptr) {
+        error = true;
+        return false;
+    }
+    if (length > 0) {
+        memcpy(grown, data, length);
+    }
+    largeFree(data);
+    data = grown;
+    capacity = size;
+    return true;
+}
+
+bool ByteWriter::reserve(size_t size) {
+    if (size <= capacity) {
+        return true;
+    }
+    size_t next = capacity < 4096 ? 4096 : capacity;
+    while (next < size) {
+        next *= 2;
+    }
+    auto* grown = static_cast<uint8_t*>(largeAlloc(next));
+    if (grown == nullptr) {
+        error = true;
+        return false;
+    }
+    if (length > 0) {
+        memcpy(grown, data, length);
+    }
+    largeFree(data);
+    data = grown;
+    capacity = next;
+    return true;
+}
+
+void ByteWriter::put(uint8_t value) {
+    if (length < capacity || reserve(length + 1)) {
+        data[length++] = value;
+    }
+}
+
+void ByteWriter::putBytes(const void* bytes, size_t count) {
+    if (count > 0 && reserve(length + count)) {
+        memcpy(data + length, bytes, count);
+        length += count;
+    }
+}
+
+void ByteWriter::putVarint(uint64_t value) {
+    while (value >= 0x80) {
+        put(static_cast<uint8_t>(value | 0x80));
+        value >>= 7;
+    }
+    put(static_cast<uint8_t>(value));
+}
+
+void ByteWriter::putU16(uint16_t value) {
+    put(static_cast<uint8_t>(value));
+    put(static_cast<uint8_t>(value >> 8));
+}
+
+void ByteWriter::putU32(uint32_t value) {
+    for (int i = 0; i < 4; i++) {
+        put(static_cast<uint8_t>(value >> (8 * i)));
+    }
+}
+
+void ByteWriter::setU32(size_t offset, uint32_t value) {
+    if (offset + 4 <= length) {
+        for (int i = 0; i < 4; i++) {
+            data[offset + i] = static_cast<uint8_t>(value >> (8 * i));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+
+void TileConverter::trim(size_t keepBytes) {
+    for (auto& writer : sections) {
+        if (writer.allocated() > keepBytes) {
+            writer.release();
+        }
+    }
+    if (extraLabels.allocated() > keepBytes) {
+        extraLabels.release();
+    }
+    if (numberLabels.allocated() > keepBytes) {
+        numberLabels.release();
+    }
+    if (poiRecords.allocated() > keepBytes) {
+        poiRecords.release();
+    }
+    if (numberRecords.allocated() > keepBytes) {
+        numberRecords.release();
+    }
+    if (labels.allocated() > keepBytes) {
+        labels.release();
+    }
+}
+
+TileConverter::~TileConverter() {
+    largeFree(ringPoints);
+    largeFree(keep);
+    largeFree(stack);
+}
+
+bool TileConverter::growRing(size_t points) {
+    if (points <= ringCapacity) {
+        return true;
+    }
+    if (points > RING_MAX_POINTS) {
+        return false;
+    }
+    size_t next = ringCapacity == 0 ? RING_START_CAPACITY : ringCapacity;
+    while (next < points) {
+        next *= 2;
+    }
+    auto* grownPoints = static_cast<float*>(largeAlloc(next * 2 * sizeof(float)));
+    auto* grownKeep = static_cast<uint8_t*>(largeAlloc(next));
+    auto* grownStack = static_cast<uint32_t*>(largeAlloc(next * 2 * sizeof(uint32_t)));
+    if (grownPoints == nullptr || grownKeep == nullptr || grownStack == nullptr) {
+        largeFree(grownPoints);
+        largeFree(grownKeep);
+        largeFree(grownStack);
+        return false;
+    }
+    if (ringLength > 0) {
+        memcpy(grownPoints, ringPoints, ringLength * 2 * sizeof(float));
+    }
+    largeFree(ringPoints);
+    largeFree(keep);
+    largeFree(stack);
+    ringPoints = grownPoints;
+    keep = grownKeep;
+    stack = grownStack;
+    ringCapacity = next;
+    return true;
+}
+
+bool TileConverter::run(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, bool wantGeometry, bool wantLabels) {
+    decoder = &tileDecoder;
+    keepGeometry = wantGeometry;
+    keepLabels = wantLabels;
+    // The decoder belongs to a render lane: its pools go back to their normal size however the conversion ends
+    struct ShrinkPools {
+        MvtDecoder& pools;
+        ~ShrinkPools() { pools.shrinkPools(); }
+    } shrinkPools { tileDecoder };
+    tile = sourceTile;
+    counters = {};
+    // A tile is drawn at its own zoom level and magnified for the levels above it while no closer tile exists
+    minZoom = tile.z;
+    maxZoom = tile.z + TileStore::MAX_OVERZOOM < MAX_VIEW_ZOOM ? tile.z + TileStore::MAX_OVERZOOM : MAX_VIEW_ZOOM;
+    // Units per pixel at z16, where the drop and simplification thresholds are measured
+    pixelsPerUnitAt16 = tile.z <= 16 ? std::ldexp(static_cast<float>(TILE_SIZE) / PREPARED_EXTENT, 16 - tile.z) : 1.0f;
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        sections[i].clear();
+        sectionCounts[i] = 0;
+    }
+    labels.clear();
+    extraLabels.clear();
+    numberLabels.clear();
+    poiRecords.clear();
+    numberRecords.clear();
+    poiBytes = 0;
+    labelCount = 0;
+    numberCount = 0;
+    numberStored = 0;
+    failureText = "";
+    if (!decoder->scan(input, true)) {
+        failureText = "reading the tile";
+        return false;
+    }
+    Layer layers[static_cast<int>(Stage::Count) + 7];
+    int layerCount = 0;
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        const auto stage = static_cast<Stage>(i);
+        if (stage == preparedSection(stage)) {
+            layers[layerCount++] = stageLayer(stage);
+        }
+    }
+    layers[layerCount++] = Layer::Place;
+    layers[layerCount++] = Layer::TransportationName;
+    layers[layerCount++] = Layer::WaterName;
+    layers[layerCount++] = Layer::Waterway;
+    layers[layerCount++] = Layer::MountainPeak;
+    layers[layerCount++] = Layer::Poi;
+    layers[layerCount++] = Layer::Housenumber;
+    // The sections are separate buffers, so one pass in file order collects all of them
+    if (!decoder->sweep(layers, layerCount, *this)) {
+        failureText = "decoding, or no memory for the features";
+        return false;
+    }
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        if (sections[i].failed()) {
+            failureText = "no memory for the features";
+            return false;
+        }
+    }
+    if (labels.failed() || extraLabels.failed() || numberLabels.failed()) {
+        failureText = "no memory for the labels";
+        return false;
+    }
+    return true;
+}
+
+
+namespace {
+
+/** Writes a body raw, or as a zlib stream when there is a compressor. */
+class BodyWriter {
+public:
+    BodyWriter(ByteWriter& out, tdefl_compressor* compressor) : out(out), compressor(compressor) {}
+    // 128 probes per search and a zlib header, so InflateReader recognises the stream
+    bool begin() {
+        return compressor == nullptr || tdefl_init(compressor, deflateCallback, &out, 128 | TDEFL_WRITE_ZLIB_HEADER) == TDEFL_STATUS_OKAY;
+    }
+    bool emit(const void* bytes, size_t count) {
+        if (count == 0) {
+            return true;
+        }
+        if (compressor == nullptr) {
+            out.putBytes(bytes, count);
+            return !out.failed();
+        }
+        return tdefl_compress_buffer(compressor, bytes, count, TDEFL_NO_FLUSH) == TDEFL_STATUS_OKAY;
+    }
+    bool finish() {
+        return compressor == nullptr || tdefl_compress_buffer(compressor, nullptr, 0, TDEFL_FINISH) == TDEFL_STATUS_DONE;
+    }
+
+private:
+    ByteWriter& out;
+    tdefl_compressor* compressor;
+};
+
+void putVersion(ByteWriter& out, const char* sourceVersion) {
+    // Zero padded, without a terminator when the version fills the field
+    char version[PREPARED_VERSION_LENGTH] = {};
+    if (sourceVersion != nullptr) {
+        const size_t length = strlen(sourceVersion);
+        memcpy(version, sourceVersion, length < PREPARED_VERSION_LENGTH ? length : PREPARED_VERSION_LENGTH);
+    }
+    out.putBytes(version, PREPARED_VERSION_LENGTH);
+}
+
+} // namespace
+
+bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, uint32_t sourceSize,
+    const char* sourceVersion, bool deflate, ByteWriter* geometryOut, ByteWriter* labelOut, ConvertStats* stats) {
+    const uint32_t start = nowMs();
+    if (!run(tileDecoder, input, sourceTile, geometryOut != nullptr, labelOut != nullptr)) {
+        return false;
+    }
+    size_t bodySize = 0;
+    if (labelOut != nullptr && !writeLabelFile(sourceVersion, sourceSize, deflate, *labelOut)) {
+        return false;
+    }
+    if (geometryOut != nullptr && !writeGeometry(sourceVersion, sourceSize, deflate, false, *geometryOut, bodySize)) {
+        return false;
+    }
+    if (stats != nullptr) {
+        *stats = counters;
+        stats->totalMs = nowMs() - start;
+        stats->bodyBytes = static_cast<uint32_t>(bodySize);
+        stats->storedBytes = geometryOut != nullptr ? static_cast<uint32_t>(geometryOut->size() - PREPARED_HEADER_SIZE) : 0;
+        stats->labelBytes = labelOut != nullptr ? static_cast<uint32_t>(labels.size() + extraLabels.size() + numberLabels.size()) : 0;
+        stats->labelStoredBytes = labelOut != nullptr ? static_cast<uint32_t>(labelOut->size()) : 0;
+        stats->numberStoredBytes = numberStored;
+    }
+    return true;
+}
+
+bool TileConverter::convertCombined(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, uint32_t sourceSize,
+    const char* sourceVersion, bool deflate, ByteWriter& out, ConvertStats* stats) {
+    const uint32_t start = nowMs();
+    size_t bodySize = 0;
+    if (!run(tileDecoder, input, sourceTile, true, true) || !writeGeometry(sourceVersion, sourceSize, deflate, true, out, bodySize)) {
+        return false;
+    }
+    if (stats != nullptr) {
+        *stats = counters;
+        stats->totalMs = nowMs() - start;
+        stats->bodyBytes = static_cast<uint32_t>(bodySize);
+        stats->storedBytes = static_cast<uint32_t>(out.size() - PREPARED_HEADER_SIZE);
+    }
+    return true;
+}
+
+bool TileConverter::writeLabelFile(const char* sourceVersion, uint32_t sourceSize, bool deflate, ByteWriter& out) {
+    out.clear();
+    out.putBytes(LABEL_MAGIC, 4);
+    out.putU16(PREPARED_LABEL_FORMAT_VERSION);
+    out.putU16(deflate ? PREPARED_FLAG_DEFLATED : 0);
+    out.put(static_cast<uint8_t>(tile.z));
+    out.put(0);
+    out.putU16(0);
+    out.putU32(static_cast<uint32_t>(tile.x));
+    out.putU32(static_cast<uint32_t>(tile.y));
+    out.putU32(sourceSize);
+    out.putU32(labelCount);
+    out.putU32(static_cast<uint32_t>(labels.size() + extraLabels.size()));
+    out.putU32(0);
+    out.putU32(numberCount);
+    out.putU32(static_cast<uint32_t>(numberLabels.size()));
+    out.putU32(0);
+    putVersion(out, sourceVersion);
+    // The cell index, filled in as the sorted records are written
+    const size_t indexAt = out.size();
+    out.putU32(labelCount - static_cast<uint32_t>(poiRecords.size() / 8));
+    out.putU32(static_cast<uint32_t>(labels.size()));
+    for (size_t i = 8; i < LABEL_INDEX_SIZE; i += 4) {
+        out.putU32(0);
+    }
+    tdefl_compressor* compressor = deflate ? static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor))) : nullptr;
+    if (deflate && compressor == nullptr) {
+        failureText = "no 320 KB block of memory for the compressor";
+        return false;
+    }
+    // Records of one cell together, in the order they came, the cells in order
+    auto emitSorted = [&](BodyWriter& writer, const ByteWriter& bytes, const ByteWriter& records, uint32_t start, size_t table) {
+        const auto* entries = records.bytes();
+        const size_t entryCount = records.size() / 8;
+        uint32_t offset = start;
+        for (int cell = 0; cell < LABEL_CELLS; cell++) {
+            uint32_t count = 0;
+            const uint32_t cellStart = offset;
+            for (size_t i = 0; i < entryCount; i++) {
+                const uint8_t* entry = entries + i * 8;
+                const uint32_t packed = static_cast<uint32_t>(entry[4]) | (static_cast<uint32_t>(entry[5]) << 8) |
+                    (static_cast<uint32_t>(entry[6]) << 16) | (static_cast<uint32_t>(entry[7]) << 24);
+                if (static_cast<int>(packed >> 24) != cell) {
+                    continue;
+                }
+                const uint32_t at = static_cast<uint32_t>(entry[0]) | (static_cast<uint32_t>(entry[1]) << 8) |
+                    (static_cast<uint32_t>(entry[2]) << 16) | (static_cast<uint32_t>(entry[3]) << 24);
+                const uint32_t length = packed & 0xFFFFFF;
+                if (!writer.emit(bytes.bytes() + at, length)) {
+                    return false;
+                }
+                offset += length;
+                count++;
+            }
+            out.setU32(indexAt + table + static_cast<size_t>(cell) * 8, cellStart);
+            out.setU32(indexAt + table + static_cast<size_t>(cell) * 8 + 4, count);
+        }
+        return true;
+    };
+    // Two separate streams, so a view without house numbers reads and inflates only the first
+    BodyWriter main(out, compressor);
+    bool ok = main.begin() && main.emit(labels.bytes(), labels.size()) &&
+        emitSorted(main, extraLabels, poiRecords, static_cast<uint32_t>(labels.size()), 8) && main.finish();
+    const size_t mainEnd = out.size();
+    BodyWriter numbers(out, compressor);
+    ok = ok && (numberLabels.size() == 0 ||
+        (numbers.begin() && emitSorted(numbers, numberLabels, numberRecords, 0, 8 + LABEL_CELLS * 8) && numbers.finish()));
+    largeFree(compressor);
+    if (!ok || out.failed()) {
+        failureText = "no memory for the label file";
+        return false;
+    }
+    out.setU32(32, static_cast<uint32_t>(mainEnd - PREPARED_LABEL_HEADER_SIZE - LABEL_INDEX_SIZE));
+    numberStored = static_cast<uint32_t>(out.size() - mainEnd);
+    out.setU32(44, numberStored);
+    return true;
+}
+
+bool TileConverter::writeGeometry(const char* sourceVersion, uint32_t sourceSize, bool deflate, bool withLabels, ByteWriter& out,
+    size_t& bodySize) {
+    // The sections go straight into the output: one combined copy of them would double the memory a large tile needs
+    bodySize = 1;
+    uint8_t head[1 + 2 * 10];
+    for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
+        if (sectionCounts[i] != 0) {
+            bodySize += encodeVarint(head, sectionCounts[i]) + encodeVarint(head, sections[i].size()) + 1 + sections[i].size();
+        }
+    }
+    const uint32_t combinedCount = labelCount + numberCount;
+    const size_t labelBytes = labels.size() + extraLabels.size() + numberLabels.size();
+    if (withLabels && combinedCount != 0) {
+        bodySize += encodeVarint(head, combinedCount) + encodeVarint(head, labelBytes) + 1 + labelBytes;
+    }
+
+    out.clear();
+    out.putBytes(MAGIC, 4);
+    out.putU16(withLabels ? PREPARED_SPLIT_VERSION - 1 : PREPARED_FORMAT_VERSION);
+    // The companion versions this tile was made with (version 5 on)
+    const auto graphVersion = static_cast<uint16_t>(withLabels || tile.z != GRAPH_ZOOM ? 0 : PREPARED_GRAPH_FORMAT_VERSION);
+    out.putU16(static_cast<uint16_t>((deflate ? PREPARED_FLAG_DEFLATED : 0) | (graphVersion << 8)));
+    out.put(static_cast<uint8_t>(tile.z));
+    out.put(withLabels ? 0 : PREPARED_LABEL_FORMAT_VERSION);
+    out.putU16(PREPARED_EXTENT);
+    out.putU32(static_cast<uint32_t>(tile.x));
+    out.putU32(static_cast<uint32_t>(tile.y));
+    out.putU32(sourceSize);
+    out.putU32(static_cast<uint32_t>(bodySize));
+    out.putU32(0);
+    putVersion(out, sourceVersion);
+    tdefl_compressor* compressor = deflate ? static_cast<tdefl_compressor*>(largeAlloc(sizeof(tdefl_compressor))) : nullptr;
+    if (deflate && compressor == nullptr) {
+        failureText = "no 320 KB block of memory for the compressor";
+        return false;
+    }
+    BodyWriter body(out, compressor);
+    bool ok = body.begin();
+    for (int i = 0; i < static_cast<int>(Stage::Count) && ok; i++) {
+        if (sectionCounts[i] == 0) {
+            continue;
+        }
+        size_t headSize = 0;
+        head[headSize++] = static_cast<uint8_t>(i);
+        headSize += encodeVarint(head + headSize, sectionCounts[i]);
+        headSize += encodeVarint(head + headSize, sections[i].size());
+        ok = body.emit(head, headSize) && body.emit(sections[i].bytes(), sections[i].size());
+    }
+    if (ok && withLabels && combinedCount != 0) {
+        size_t headSize = 0;
+        head[headSize++] = PREPARED_LABEL_SECTION;
+        headSize += encodeVarint(head + headSize, combinedCount);
+        headSize += encodeVarint(head + headSize, labelBytes);
+        ok = body.emit(head, headSize) && body.emit(labels.bytes(), labels.size()) && body.emit(extraLabels.bytes(), extraLabels.size()) &&
+            body.emit(numberLabels.bytes(), numberLabels.size());
+    }
+    const uint8_t endMark = 0xFF;
+    ok = ok && body.emit(&endMark, 1) && body.finish();
+    largeFree(compressor);
+    if (!ok || out.failed()) {
+        failureText = "no memory for the prepared tile";
+        return false;
+    }
+    out.setU32(28, static_cast<uint32_t>(out.size() - PREPARED_HEADER_SIZE));
+    return true;
+}
+
+bool TileConverter::beginFeature(const FeatureInfo& info) {
+    counters.featuresIn++;
+    section = sectionOf(info.layer);
+    const int kind = labelKindOf(info.layer);
+    bool hasLabel = kind >= 0 && info.name != nullptr && info.nameLength > 0;
+    uint8_t poiTypeId = 0;
+    if (info.layer == Layer::Poi || info.layer == Layer::Housenumber) {
+        hasLabel = false;
+        if (info.layer == Layer::Poi) {
+            poiTypeId = poiTypeFor(info.classText, info.classTextLength, info.subclassText, info.subclassTextLength);
+            if (poiTypeId != 0) {
+                const PoiType& type = poiType(poiTypeId);
+                // A tile of zoom z serves z up to z + 5, so types that start at 16 are kept from the tiles of 15 on
+                const bool named = info.name != nullptr && info.nameLength > 0;
+                // Tiles of the highest data zoom serve every zoom above it, so they keep the small types too
+                hasLabel = (tile.z >= MAX_SOURCE_ZOOM || tile.z >= static_cast<int>(type.minZoom) - 1) && (named || type.unnamedOk);
+            }
+        } else {
+            // House numbers only come from the highest data zoom, they are meant for the closest views
+            hasLabel = tile.z >= MAX_SOURCE_ZOOM && info.houseNumber != nullptr && info.houseNumberLength > 0 &&
+                info.geometryType == GEOMETRY_POINT;
+        }
+    }
+    // Kept when the style draws it in one of the section's stages at one of the zoom levels the tile is used for
+    const Palette& palette = colorPalette();
+    bool drawn = false;
+    if (section >= 0) {
+        for (int zoom = minZoom; zoom <= maxZoom && !drawn; zoom++) {
+            for (int i = 0; i < static_cast<int>(Stage::Count) && !drawn; i++) {
+                const auto stage = static_cast<Stage>(i);
+                DrawStyle style {};
+                drawn = static_cast<int>(preparedSection(stage)) == section && styleFor(info, stage, zoom, palette, style);
+            }
+        }
+    }
+    drawn = drawn && keepGeometry;
+    hasLabel = hasLabel && keepLabels;
+    if (!drawn && !hasLabel) {
+        return false;
+    }
+    feature = info;
+    if (hasLabel && info.layer == Layer::Poi) {
+        feature.featureClass = static_cast<Value>(poiTypeId);
+        feature.nameLength = info.name != nullptr ? cutUtf8(info.name, info.nameLength, POI_TEXT_MAX_BYTES) : 0;
+        feature.nameLatinLength = info.nameLatin != nullptr ? cutUtf8(info.nameLatin, info.nameLatinLength, POI_TEXT_MAX_BYTES) : 0;
+    } else if (hasLabel && info.layer == Layer::Housenumber) {
+        feature.featureClass = Value::None;
+        feature.rank = -1;
+        feature.name = info.houseNumber;
+        feature.nameLength = cutUtf8(info.houseNumber, info.houseNumberLength, POI_TEXT_MAX_BYTES);
+        feature.nameLatin = nullptr;
+        feature.nameLatinLength = 0;
+    }
+    drawFeature = drawn;
+    labelFeature = hasLabel;
+    labelKind = static_cast<uint8_t>(kind);
+    rings.clear();
+    ringCount = 0;
+    lastX = 0;
+    lastY = 0;
+    minX = 1e30f;
+    minY = 1e30f;
+    maxX = -1e30f;
+    maxY = -1e30f;
+    unitsPerSourceUnit = static_cast<float>(PREPARED_EXTENT) / static_cast<float>(decoder->extent(info.layer));
+    return true;
+}
+
+void TileConverter::beginRing() {
+    ringLength = 0;
+    ringOverflow = false;
+}
+
+void TileConverter::points(const TilePoint* chunk, int count) {
+    counters.pointsIn += static_cast<uint32_t>(count);
+    if (!growRing(ringLength + static_cast<size_t>(count))) {
+        // Kept unsimplified in the buffer it has, the rest of a huge ring is lost
+        ringOverflow = true;
+        count = static_cast<int>(ringCapacity - ringLength);
+    }
+    for (int i = 0; i < count; i++) {
+        const float x = static_cast<float>(chunk[i].x) * unitsPerSourceUnit;
+        const float y = static_cast<float>(chunk[i].y) * unitsPerSourceUnit;
+        // The decoder repeats the last point of a chunk at the start of the next one
+        if (ringLength > 0 && ringPoints[ringLength * 2 - 2] == x && ringPoints[ringLength * 2 - 1] == y) {
+            continue;
+        }
+        ringPoints[ringLength * 2] = x;
+        ringPoints[ringLength * 2 + 1] = y;
+        ringLength++;
+    }
+}
+
+int TileConverter::simplifyRing(int count, float tolerance) {
+    // Douglas-Peucker with an explicit stack, keeping the end points
+    for (int i = 0; i < count; i++) {
+        keep[i] = 0;
+    }
+    keep[0] = 1;
+    keep[count - 1] = 1;
+    int depth = 0;
+    stack[depth++] = 0;
+    stack[depth++] = static_cast<uint32_t>(count - 1);
+    const float toleranceSquared = tolerance * tolerance;
+    while (depth > 0) {
+        const auto last = static_cast<int>(stack[--depth]);
+        const auto first = static_cast<int>(stack[--depth]);
+        if (last - first < 2) {
+            continue;
+        }
+        const float ax = ringPoints[first * 2];
+        const float ay = ringPoints[first * 2 + 1];
+        const float dx = ringPoints[last * 2] - ax;
+        const float dy = ringPoints[last * 2 + 1] - ay;
+        const float lengthSquared = dx * dx + dy * dy;
+        float worst = -1.0f;
+        int worstIndex = -1;
+        for (int i = first + 1; i < last; i++) {
+            const float px = ringPoints[i * 2] - ax;
+            const float py = ringPoints[i * 2 + 1] - ay;
+            float distanceSquared;
+            if (lengthSquared <= 0.0f) {
+                distanceSquared = px * px + py * py;
+            } else {
+                const float cross = px * dy - py * dx;
+                distanceSquared = cross * cross / lengthSquared;
+            }
+            if (distanceSquared > worst) {
+                worst = distanceSquared;
+                worstIndex = i;
+            }
+        }
+        if (worst > toleranceSquared) {
+            keep[worstIndex] = 1;
+            stack[depth++] = static_cast<uint32_t>(first);
+            stack[depth++] = static_cast<uint32_t>(worstIndex);
+            stack[depth++] = static_cast<uint32_t>(worstIndex);
+            stack[depth++] = static_cast<uint32_t>(last);
+        }
+    }
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        if (keep[i] != 0) {
+            ringPoints[kept * 2] = ringPoints[i * 2];
+            ringPoints[kept * 2 + 1] = ringPoints[i * 2 + 1];
+            kept++;
+        }
+    }
+    return kept;
+}
+
+void TileConverter::endRing(bool closed) {
+    if (ringLength == 0) {
+        return;
+    }
+    // A pixel at z18 (a quarter at z16), about half a unit, so lines stay smooth when magnified up to z19
+    const float tolerance = 0.25f / pixelsPerUnitAt16;
+    int count = static_cast<int>(ringLength);
+    if (count > 2 && !ringOverflow) {
+        count = simplifyRing(count, tolerance);
+    }
+    // Quantised in place, dropping points that land on the previous one
+    auto* quantised = reinterpret_cast<int32_t*>(ringPoints);
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        const float x = ringPoints[i * 2];
+        const float y = ringPoints[i * 2 + 1];
+        const int32_t qx = roundToInt(x);
+        const int32_t qy = roundToInt(y);
+        if (kept > 0 && quantised[kept * 2 - 2] == qx && quantised[kept * 2 - 1] == qy) {
+            continue;
+        }
+        minX = std::fmin(minX, x);
+        minY = std::fmin(minY, y);
+        maxX = std::fmax(maxX, x);
+        maxY = std::fmax(maxY, y);
+        quantised[kept * 2] = qx;
+        quantised[kept * 2 + 1] = qy;
+        kept++;
+    }
+    if (closed && kept > 1 && quantised[0] == quantised[kept * 2 - 2] && quantised[1] == quantised[kept * 2 - 1]) {
+        kept--;
+    }
+    if (labelFeature) {
+        const bool single = labelKind == static_cast<uint8_t>(LabelKind::Poi) || labelKind == static_cast<uint8_t>(LabelKind::HouseNumber);
+        const int minimum = feature.geometryType == GEOMETRY_POINT || single ? 1 : 2;
+        if (kept >= minimum) {
+            // Poi and house number labels are one point, the first of an outline. These layers have a wide buffer
+            // around the tile: points outside belong to the neighbour, which writes them itself.
+            const bool inside = quantised[0] >= 0 && quantised[0] < PREPARED_EXTENT && quantised[1] >= 0 && quantised[1] < PREPARED_EXTENT;
+            if (!single || inside) {
+                writeLabel(quantised, single ? 1 : kept);
+            }
+            if (single && feature.geometryType != GEOMETRY_POINT) {
+                labelFeature = false;
+            }
+        }
+    }
+    if (!drawFeature) {
+        return;
+    }
+    if (kept < (closed ? 3 : 2)) {
+        return;
+    }
+    rings.putVarint((static_cast<uint64_t>(kept) << 1) | (closed ? 1 : 0));
+    for (int i = 0; i < kept; i++) {
+        rings.putZigzag(quantised[i * 2] - lastX);
+        rings.putZigzag(quantised[i * 2 + 1] - lastY);
+        lastX = quantised[i * 2];
+        lastY = quantised[i * 2 + 1];
+    }
+    counters.pointsKept += static_cast<uint32_t>(kept);
+    ringCount++;
+}
+
+void TileConverter::writeLabel(const int32_t* points, int count) {
+    const bool poi = labelKind == static_cast<uint8_t>(LabelKind::Poi);
+    const bool number = labelKind == static_cast<uint8_t>(LabelKind::HouseNumber);
+    if ((!poi && !number && labels.size() >= LABEL_MAX_BYTES) || (poi && poiBytes >= POI_LABEL_MAX_BYTES) ||
+        (number && numberLabels.size() >= NUMBER_LABEL_MAX_BYTES)) {
+        return;
+    }
+    ByteWriter& target = number ? numberLabels : poi ? extraLabels : labels;
+    const size_t before = target.size();
+    target.put(labelKind);
+    target.put(static_cast<uint8_t>(feature.featureClass));
+    target.putVarint(feature.rank >= 0 ? static_cast<uint64_t>(feature.rank) + 1 : 0);
+    target.putVarint(feature.nameLength);
+    if (feature.nameLength > 0) {
+        target.putBytes(feature.name, feature.nameLength);
+    }
+    const bool sameLatin = feature.nameLatin != nullptr && feature.nameLatinLength > 0 &&
+        feature.nameLatinLength == feature.nameLength && memcmp(feature.name, feature.nameLatin, feature.nameLength) == 0;
+    if (feature.nameLatin != nullptr && feature.nameLatinLength > 0 && !sameLatin) {
+        target.putVarint(feature.nameLatinLength);
+        target.putBytes(feature.nameLatin, feature.nameLatinLength);
+    } else {
+        target.putVarint(0);
+    }
+    target.putVarint(static_cast<uint64_t>(count));
+    int32_t x = 0;
+    int32_t y = 0;
+    for (int i = 0; i < count; i++) {
+        target.putZigzag(points[i * 2] - x);
+        target.putZigzag(points[i * 2 + 1] - y);
+        x = points[i * 2];
+        y = points[i * 2 + 1];
+    }
+    if (poi || number) {
+        ByteWriter& records = poi ? poiRecords : numberRecords;
+        records.putU32(static_cast<uint32_t>(before));
+        records.putU32(static_cast<uint32_t>(target.size() - before) | (static_cast<uint32_t>(labelCell(points[0], points[1])) << 24));
+    }
+    if (poi) {
+        poiBytes += target.size() - before;
+    }
+    if (number) {
+        numberCount++;
+    } else {
+        labelCount++;
+    }
+}
+
+void TileConverter::endFeature() {
+    // Features smaller than a pixel at z16 are dropped
+    if (ringCount == 0 || ((maxX - minX) * pixelsPerUnitAt16 < 1.0f && (maxY - minY) * pixelsPerUnitAt16 < 1.0f)) {
+        return;
+    }
+    ByteWriter& out = sections[section];
+    uint8_t flags = feature.geometryType & 3;
+    if (feature.maritime) {
+        flags |= FLAG_MARITIME;
+    }
+    if (feature.ramp) {
+        flags |= FLAG_RAMP;
+    }
+    if (feature.subclass != Value::None) {
+        flags |= FLAG_SUBCLASS;
+    }
+    if (feature.brunnel != Value::None) {
+        flags |= FLAG_BRUNNEL;
+    }
+    if (feature.adminLevel >= 0) {
+        flags |= FLAG_ADMIN;
+    }
+    out.put(flags);
+    out.putVarint(static_cast<uint64_t>(feature.featureClass));
+    if (feature.subclass != Value::None) {
+        out.putVarint(static_cast<uint64_t>(feature.subclass));
+    }
+    if (feature.brunnel != Value::None) {
+        out.putVarint(static_cast<uint64_t>(feature.brunnel));
+    }
+    if (feature.adminLevel >= 0) {
+        out.put(static_cast<uint8_t>(feature.adminLevel));
+    }
+    out.putVarint(ringCount);
+    out.putBytes(rings.bytes(), rings.size());
+    sectionCounts[section]++;
+    counters.featuresKept++;
+}
+
+} // namespace maps

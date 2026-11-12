@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "Input.h"
+
+#include "../platform/Platform.h"
+
+#include <tactility/drivers/keyboard.h>
+#include <tactility/drivers/mouse.h>
+#include <tactility/drivers/touch.h>
+#include <lvgl/devices/keyboard.h>
+
+namespace maps {
+
+namespace {
+
+constexpr uint32_t RESCAN_INTERVAL_MS = 500;
+
+struct Collect {
+    Device** devices;
+    int* count;
+};
+
+bool collectDevice(Device* device, void* context) {
+    auto* collect = static_cast<Collect*>(context);
+    if (*collect->count >= Input::MAX_DEVICES || !device_is_ready(device)) {
+        return true;
+    }
+    for (int i = 0; i < *collect->count; i++) {
+        if (collect->devices[i] == device) {
+            return true;
+        }
+    }
+    if (device_get(device) == ERROR_NONE) {
+        collect->devices[(*collect->count)++] = device;
+    }
+    return true;
+}
+
+} // namespace
+
+Input::~Input() {
+    end();
+}
+
+void Input::begin() {
+    rescan();
+    devicesChanged = false;
+    if (device_get_first_active_by_type(&TOUCH_TYPE, &touch) != ERROR_NONE) {
+        touch = nullptr;
+    }
+    logInfo("Input: %d keyboards, %d mice, %s, %s", keyboardCount, mouseCount, typingKeyboard ? "typing keyboard" : "no typing keyboard",
+        touch != nullptr ? "touch" : "no touch");
+}
+
+void Input::end() {
+    for (int i = 0; i < keyboardCount; i++) {
+        device_put(keyboards[i]);
+    }
+    keyboardCount = 0;
+    for (int i = 0; i < mouseCount; i++) {
+        device_put(mice[i]);
+    }
+    mouseCount = 0;
+    if (touch != nullptr) {
+        device_put(touch);
+        touch = nullptr;
+    }
+}
+
+int Input::dropStopped(Device** devices, int& count) {
+    int dropped = 0;
+    for (int i = 0; i < count;) {
+        if (device_is_ready(devices[i])) {
+            i++;
+            continue;
+        }
+        logInfo("Input: %s stopped", devices[i]->name != nullptr ? devices[i]->name : "a device");
+        device_put(devices[i]);
+        devices[i] = devices[--count];
+        dropped++;
+    }
+    return dropped;
+}
+
+void Input::rescan() {
+    lastScanMs = nowMs();
+    const int keyboardsBefore = keyboardCount;
+    const int miceBefore = mouseCount;
+    const int dropped = dropStopped(keyboards, keyboardCount) + dropStopped(mice, mouseCount);
+    Collect keyboardCollect { keyboards, &keyboardCount };
+    device_for_each_of_type(&KEYBOARD_TYPE, &keyboardCollect, collectDevice);
+    Collect mouseCollect { mice, &mouseCount };
+    device_for_each_of_type(&MOUSE_TYPE, &mouseCollect, collectDevice);
+    // A started keyboard device (the kernel's hardware discovery), and one of them present: buttons
+    // (button-control) say they are not since the software keyboard fix, so they show no key hints
+    const bool typingBefore = typingKeyboard;
+    typingKeyboard = device_has_active_by_type(&KEYBOARD_TYPE) && lvgl_hardware_keyboard_is_available();
+    if (dropped > 0 || keyboardCount != keyboardsBefore || mouseCount != miceBefore || typingKeyboard != typingBefore) {
+        devicesChanged = true;
+        logInfo("Input: %d keyboards, %d mice, %s", keyboardCount, mouseCount, typingKeyboard ? "typing keyboard" : "no typing keyboard");
+    }
+}
+
+void Input::refreshIfDue() {
+    if (nowMs() - lastScanMs > RESCAN_INTERVAL_MS) {
+        rescan();
+    }
+}
+
+bool Input::takeDevicesChanged() {
+    const bool changed = devicesChanged;
+    devicesChanged = false;
+    return changed;
+}
+
+int Input::readKeys(KeyEvent* events, int maxEvents) {
+    if (touchOnly) {
+        return 0;
+    }
+    refreshIfDue();
+    int count = 0;
+    for (int i = 0; i < keyboardCount && count < maxEvents; i++) {
+        if (!device_is_ready(keyboards[i])) {
+            continue;
+        }
+        KeyboardKeyData data;
+        while (count < maxEvents && keyboard_read_key(keyboards[i], &data) == ERROR_NONE && data.key != 0) {
+            events[count++] = { data.key, data.pressed };
+            if (!data.continue_reading) {
+                break;
+            }
+        }
+    }
+    return count;
+}
+
+bool Input::readMouse(int32_t& dx, int32_t& dy) {
+    if (touchOnly) {
+        dx = 0;
+        dy = 0;
+        return false;
+    }
+    refreshIfDue();
+    dx = 0;
+    dy = 0;
+    bool pressed = false;
+    for (int i = 0; i < mouseCount; i++) {
+        if (!device_is_ready(mice[i])) {
+            continue;
+        }
+        int32_t x = 0;
+        int32_t y = 0;
+        if (mouse_read_delta(mice[i], &x, &y) == ERROR_NONE) {
+            dx += x;
+            dy += y;
+        }
+        bool button = false;
+        if (mouse_get_button_count(mice[i]) > 0 && mouse_get_button_pressed(mice[i], 0, &button) == ERROR_NONE && button) {
+            pressed = true;
+        }
+    }
+    return pressed;
+}
+
+bool Input::readTouch(TouchState& state) {
+    state.count = 0;
+    if (touch == nullptr || touch_read_data(touch, 0) != ERROR_NONE) {
+        return false;
+    }
+    uint16_t strength[2];
+    uint8_t count = 0;
+    if (!touch_get_touched_points(touch, state.x, state.y, strength, &count, 2)) {
+        return false;
+    }
+    state.count = count > 2 ? 2 : count;
+    return state.count > 0;
+}
+
+} // namespace maps
