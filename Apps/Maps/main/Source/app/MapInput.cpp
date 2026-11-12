@@ -60,6 +60,10 @@ void MapView::handleKey(uint32_t key) {
         handleCardButton(downloadCard.handleKey(key));
         return;
     }
+    if (searchSheet.isOpen() && !menuOpen && screen == Screen::Map) {
+        handleSearchEvent(searchSheet.handleKey(key));
+        return;
+    }
     if (sheet.isOpen() && !menuOpen && screen == Screen::Map) {
         handleSheetButton(sheet.handleKey(key));
         return;
@@ -211,6 +215,12 @@ void MapView::handleMapKey(uint32_t key) {
                 exitRequested = true;
             }
             break;
+        case '/':
+        case 'f':
+        case 'F':
+            // Search (M6): "/" as in many apps, F for find on keyboards where "/" needs a modifier
+            openSearch();
+            break;
         case 'p':
         case 'P':
             openNewWaypointAtPosition();
@@ -329,7 +339,7 @@ void MapView::click(bool fromPointer) {
                placeOrderCount > 0 && !menuOpen && !downloadCard.isOpen()) {
         // Enter again: the next nearest place
         selectNextPlace();
-    } else if (menuOpen || sheet.isOpen() || downloadCard.isOpen() || workCard.isOpen() || screen != Screen::Map || pickingStart) {
+    } else if (menuOpen || searchSheet.isOpen() || sheet.isOpen() || downloadCard.isOpen() || workCard.isOpen() || screen != Screen::Map || pickingStart) {
         handleKey(keys::ENTER);
     } else if (controls.isVisible() && controls.usesFocus()) {
         pressControl(controls.focused());
@@ -553,6 +563,11 @@ void MapView::handleTap(int x, int y) {
         gestures.consumeTap();
         return;
     }
+    if (searchSheet.isOpen() && !menuOpen && screen == Screen::Map) {
+        handleSearchEvent(searchSheet.handleTap(x, y));
+        gestures.consumeTap();
+        return;
+    }
     if (dialog.isOpen()) {
         if (dialog.handleTap(x, y) == UiAction::Chosen) {
             confirmDialog();
@@ -691,7 +706,7 @@ void MapView::handleLongPress(int x, int y) {
 }
 
 void MapView::handleGesture(const Gesture& gesture) {
-    const bool onMap = !menuOpen && !dialog.isOpen() && !isFullScreen();
+    const bool onMap = !menuOpen && !dialog.isOpen() && !isFullScreen() && !searchSheet.isOpen();
     switch (gesture.type) {
         case GestureType::Tap:
             handleTap(gesture.x, gesture.y);
@@ -713,7 +728,9 @@ void MapView::handleGesture(const Gesture& gesture) {
             handleLongPress(gesture.x, gesture.y);
             break;
         case GestureType::Drag:
-            if (onMap) {
+            if (searchSheet.isOpen() && !menuOpen && !dialog.isOpen()) {
+                handleSearchEvent(searchSheet.handleDrag(gesture.dy));
+            } else if (onMap) {
                 pan(-gesture.dx, -gesture.dy);
             } else if (!dialog.isOpen() && !prompt.isOpen() && std::abs(gesture.dy) >= std::abs(gesture.dx)) {
                 // Lists and the About page scroll with the finger, a row at a time; the highlight stays where it is

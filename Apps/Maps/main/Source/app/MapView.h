@@ -36,6 +36,10 @@
 #include "../ui/MapOverlay.h"
 #include "../ui/PointerAcceleration.h"
 #include "../ui/WaypointSheet.h"
+#include "../ui/SearchSheet.h"
+#include "SearchIndexJob.h"
+#include "SearchTask.h"
+#include "../search/SearchEngine.h"
 #include "../ui/PositionTracker.h"
 #include "../ui/Settings.h"
 #include "../ui/GpxLayer.h"
@@ -51,7 +55,7 @@ namespace maps {
 
 struct AffineScratch;
 
-#define APP_VERSION "0.4.0"
+#define APP_VERSION "0.5.0"
 constexpr const char* APP_ID = "tactility.maps";
 
 /**
@@ -64,14 +68,22 @@ public:
     static constexpr int MAX_POINTS = 2000;
     static constexpr uint32_t STEP_MS = 1000;
     bool load(const char* text, size_t size);
+    /** The accuracy reported (0: 5 m) and correlated noise of noiseM metres added to the points (0.4.1). */
+    void setNoise(float accuracyM, float noiseM, uint32_t seed);
     void clear() { count = 0; }
     bool isActive() const { return count > 0; }
     int size() const { return count; }
+    /** The track point played last, for the log. */
+    int pointIndex() const { return lastIndex; }
     PositionRead read(PositionFix& fix) override;
 
 private:
     double points[MAX_POINTS][2] {};
+    /** Per point: noise north and east in metres. */
+    float noise[MAX_POINTS][2] {};
+    float accuracy = 5.0f;
     int count = 0;
+    int lastIndex = -1;
     int next = 0;
     uint32_t lastStep = 0;
 };
@@ -106,6 +118,7 @@ private:
         Settings,
         About,
         Exit,
+        Search,
         Count
     };
 
@@ -166,7 +179,7 @@ private:
     void followRoute(uint32_t now);
     /** The route line, above the roads and below labels and pins. */
     void drawRoute();
-    void startReplay(const char* name);
+    void startReplay(const char* name, float accuracyM = 0.0f, float noiseM = 0.0f, uint32_t seed = 0);
     /** Remembers the centre and zoom, so the map opens there next time. */
     void saveView();
     void setZoom(int zoom, int anchorX, int anchorY);
@@ -338,6 +351,26 @@ private:
     void openNewWaypointAtPosition();
     /** Opens the sheet of an existing waypoint: Rename, Delete, Close. */
     void openWaypointSheet(int index);
+    // Search (M6, MapSearch.cpp)
+    class CardSearchFile;
+    bool loadSearchIndexes();
+    void releaseSearch();
+    SearchOrigin searchOrigin(bool& fromPosition) const;
+    void openSearch();
+    void closeSearch();
+    void layoutSearch();
+    void showRecentRows();
+    void fillSearchRows(int from, int count, bool more);
+    void runSearch();
+    void moreSearchResults();
+    void searchNearby(int category);
+    void openSearchResult(const char* name, const char* type, int32_t x, int32_t y, const int32_t* box, const char* note);
+    void chooseSearchRow(int index, bool recent);
+    void handleSearchEvent(SearchSheet::Event event);
+    void loadRecentSearches();
+    void saveRecentSearches();
+    /** logInfo, and while a debug script runs also a line in scriptlog.txt (measurements without a serial log). */
+    void scriptLog(const char* format, ...);
     void handleSheetButton(WaypointSheet::Button button);
     /** Saves the new waypoint of the sheet and says so. */
     void saveNewWaypoint();
@@ -492,6 +525,18 @@ private:
     /** The waypoint a rename or delete is asked for, from the sheet or the list. */
     int editingWaypoint = -1;
     WaypointSheet sheet;
+    SearchSheet searchSheet;
+    SearchEngine* searchEngine = nullptr;
+    SearchTask searchTask;
+    SearchResult* searchResults = nullptr;
+    int searchResultCount = 0;
+    CardSearchFile* searchFiles[SEARCH_MAX_INDEXES] {};
+    int searchFileCount = 0;
+    RecentSearches* recentSearches = nullptr;
+    /** The place of the last search result, marked on the map until another sheet opens. */
+    double searchPinLat = 0.0;
+    double searchPinLon = 0.0;
+    bool searchPinShown = false;
     /** The places Enter walks through, nearest the centre first, and the one shown. */
     static constexpr int MAX_PLACE_ORDER = 16;
     int placeOrder[MAX_PLACE_ORDER] {};
@@ -514,6 +559,17 @@ private:
     int gpxFileCount = 0;
     ListView gpxList;
     GpxImport gpxImport;
+    /** The offline search indexes, built in idle time (M6). */
+    SearchIndexJob searchIndexJob;
+    /** A build is due: at start, and after a download or an update ended. */
+    bool searchIndexDue = true;
+    /** No new build before this time after a failed one. */
+    uint32_t searchIndexRetryAt = 0;
+    bool waitingSearchIndex = false;
+    Downloader::State searchIndexDownloadState = Downloader::State::Idle;
+    void pollSearchIndex(uint32_t now);
+    void startSearchIndex(bool force, const char* only = nullptr);
+    void checkFile(const char* name);
     int gpxImporting = -1;
     char gpxFolder[PATH_MAX_LENGTH] = "";
     Dialog dialog;

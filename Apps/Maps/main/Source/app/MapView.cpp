@@ -279,6 +279,21 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
 }
 
 void MapView::end() {
+    // The index build stops first (its scratch files are removed), while the I/O task still runs
+    searchIndexJob.stop();
+    searchIndexJob.acknowledge();
+    releaseSearch();
+    if (searchEngine != nullptr) {
+        searchEngine->~SearchEngine();
+        largeFree(searchEngine);
+        searchEngine = nullptr;
+        largeFree(searchResults);
+        searchResults = nullptr;
+        recentSearches->~RecentSearches();
+        largeFree(recentSearches);
+        recentSearches = nullptr;
+    }
+    searchTask.stop();
     if (viewReady) {
         saveView();
         viewReady = false;
@@ -1239,6 +1254,7 @@ void MapView::updateWork(uint32_t now) {
     set(WorkKind::IdleUpdate, lastStatus.state == Downloader::State::Updating, static_cast<int32_t>(lastStatus.done),
         static_cast<int32_t>(lastStatus.total));
     set(WorkKind::GpxImport, gpxImport.state() == GpxImport::State::Busy, 0, 0);
+    set(WorkKind::AddressIndex, searchIndexJob.state() == SearchIndexJob::State::Busy, searchIndexJob.done(), searchIndexJob.total());
     const int moved = downloader.movedTiles();
     set(WorkKind::MoveBrowsed, lastStatus.state == Downloader::State::Downloading && moved > 0, moved, 0);
     if (work.generation() != before) {
@@ -1260,7 +1276,7 @@ bool MapView::wantsTouchKeyboard() const {
     if (input.hasKeyboard() || !input.hasTouch()) {
         return false;
     }
-    return prompt.isOpen() || (sheet.isOpen() && sheet.mode() == WaypointSheet::Mode::New && sheet.isEditable());
+    return prompt.isOpen() || searchSheet.isOpen() || (sheet.isOpen() && sheet.mode() == WaypointSheet::Mode::New && sheet.isEditable());
 }
 
 void MapView::syncTouchKeyboard() {
@@ -1281,6 +1297,9 @@ void MapView::syncTouchKeyboard() {
     }
     if (sheet.isOpen()) {
         sheet.layout(width, above, sheetFont(), true);
+    }
+    if (searchSheet.isOpen()) {
+        searchSheet.layout(width, above, sheetFont(), true);
     }
 }
 
@@ -1438,11 +1457,24 @@ void MapView::render() {
                 canvas.line(x - 6.0f, y, x + 6.0f, y, 1.5f, theme.text);
                 canvas.line(x, y - 6.0f, x, y + 6.0f, 1.5f, theme.text);
             }
+            if (sheet.isOpen() && searchPinShown) {
+                // The place of the chosen search result
+                double sx;
+                double sy;
+                worldToScreenOffset(lonToWorldX(searchPinLon, zoom) - centerX, latToWorldY(searchPinLat, zoom) - centerY, sx, sy);
+                const auto px = static_cast<float>(sx + width / 2.0);
+                const auto py = static_cast<float>(sy + height / 2.0);
+                canvas.fillCircle(px, py, 7.0f, theme.panel);
+                canvas.fillCircle(px, py, 5.0f, theme.danger);
+            }
             if (sheet.isOpen()) {
                 sheet.draw(canvas, sheetFont(), theme);
             }
             if (routeCard.isOpen()) {
                 routeCard.draw(canvas, sheetFont(), theme);
+            }
+            if (searchSheet.isOpen()) {
+                searchSheet.draw(canvas, sheetFont(), theme);
             }
             if (navigating) {
                 navBar.draw(canvas, sheetFont(), theme, width);
@@ -1705,13 +1737,15 @@ void MapView::run() {
                 downloader.setUpdatesAllowed(true);
             }
         }
-        if (now - lastLocationCheck >= LOCATION_CHECK_MS) {
+        // A replay has no fix event to wake the loop: it is read every second, as a GPS sends fixes
+        if (now - lastLocationCheck >= (replaying ? ReplaySource::STEP_MS : LOCATION_CHECK_MS)) {
             readLocation();
         }
         const uint32_t afterLocation = nowMs();
         probe.phase("downloader");
         pollDownloader(now);
         pollGpxImport();
+        pollSearchIndex(now);
         recorder.flushIfDue(io, now);
         if (recorder.state() == TrackRecorder::State::Recording && now - lastRecordingDraw >= 1000 && screen == Screen::Map) {
             // The elapsed time on the indicator
@@ -1736,7 +1770,10 @@ void MapView::run() {
         if (waitingRoute && navigator.state() != Navigator::State::Searching) {
             waitingRoute = false;
         }
-        if (!waitingIdle && !waitingRoute) {
+        if (waitingSearchIndex && searchIndexJob.state() != SearchIndexJob::State::Busy) {
+            waitingSearchIndex = false;
+        }
+        if (!waitingIdle && !waitingRoute && !waitingSearchIndex) {
             const DebugScript::Step step = script.next(now);
             switch (step.action) {
                 case DebugScript::Action::Key:
@@ -1786,7 +1823,23 @@ void MapView::run() {
                     waitingRoute = true;
                     break;
                 case DebugScript::Action::Replay:
-                    startReplay(step.name);
+                    startReplay(step.name, step.values[0], step.values[1], static_cast<uint32_t>(step.values[2]));
+                    break;
+                case DebugScript::Action::SearchIndex:
+                    startSearchIndex(step.zoom != 0, step.name[0] != '\0' ? step.name : nullptr);
+                    break;
+                case DebugScript::Action::WaitSearchIndex:
+                    waitingSearchIndex = true;
+                    break;
+                case DebugScript::Action::FileCheck:
+                    checkFile(step.name);
+                    break;
+                case DebugScript::Action::OffRoute:
+                    if (setOffRouteTuning(step.name, step.values[0])) {
+                        logInfo("Off route: %s = %g", step.name, static_cast<double>(step.values[0]));
+                    } else {
+                        logError("Off route: no value named %s", step.name);
+                    }
                     break;
                 case DebugScript::Action::TouchOnly:
                     input.setTouchOnly(true);

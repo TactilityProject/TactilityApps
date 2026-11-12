@@ -124,6 +124,8 @@ public:
     static constexpr uint32_t BACKGROUND_PREPARE_MS = 10000;
     /** How long conversions wait after PSRAM had no block large enough for one. */
     static constexpr uint32_t MEMORY_BACKOFF_MS = 30000;
+    /** During a download: the next try to make room for a tile on screen. */
+    static constexpr uint32_t DOWNLOAD_BACKOFF_MS = 3000;
     /** Input arrived: prefetch reads and renders stop at once, and idle work waits. */
     void cancelPrefetch();
     /**

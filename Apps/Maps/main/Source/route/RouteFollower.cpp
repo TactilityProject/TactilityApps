@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace maps {
 
@@ -12,6 +13,8 @@ namespace {
 constexpr float PI_F = 3.14159265f;
 /** Directions at a turn are measured over this many metres before and after it, so a kink in the drawing is no turn. */
 constexpr float BEARING_METRES = 15.0f;
+/** The heading rule compares the course with the route's direction this far before and after the matched point. */
+constexpr float HEADING_METRES = 20.0f;
 
 /** Compass bearing in degrees of the step from a to b (graph y grows southwards). */
 float bearingOf(const RoutePoint& a, const RoutePoint& b) {
@@ -106,6 +109,113 @@ void routeManeuvers(const Route& route, GrowArray<Maneuver>& out) {
     out.push({ route.lengthM, Turn::Arrive, -1 });
 }
 
+OffRouteTuning& offRouteTuning() {
+    static OffRouteTuning tuning;
+    return tuning;
+}
+
+bool setOffRouteTuning(const char* name, float value) {
+    OffRouteTuning& t = offRouteTuning();
+    struct Field {
+        const char* name;
+        float* number;
+        int* whole;
+        uint32_t* ms;
+    };
+    const Field fields[] = {
+        { "accuracyFactor", &t.accuracyFactor, nullptr, nullptr },
+        { "accuracyAddM", &t.accuracyAddM, nullptr, nullptr },
+        { "minOffM", &t.minOffM, nullptr, nullptr },
+        { "maxOffM", &t.maxOffM, nullptr, nullptr },
+        { "noAccuracyM", &t.noAccuracyM, nullptr, nullptr },
+        { "weakAccuracyM", &t.weakAccuracyM, nullptr, nullptr },
+        { "windowMs", nullptr, nullptr, &t.windowMs },
+        { "triggerFixes", nullptr, &t.triggerFixes, nullptr },
+        { "poorFromM", &t.poorFromM, nullptr, nullptr },
+        { "poorFixesPerM", &t.poorFixesPerM, nullptr, nullptr },
+        { "headingSpeed", &t.headingSpeed, nullptr, nullptr },
+        { "headingDegrees", &t.headingDegrees, nullptr, nullptr },
+        { "headingShare", &t.headingShare, nullptr, nullptr },
+        { "edgeRule", nullptr, &t.edgeRule, nullptr },
+        { "edgeShare", &t.edgeShare, nullptr, nullptr },
+        { "edgeMarginM", &t.edgeMarginM, nullptr, nullptr },
+        { "edgeMaxAccuracyM", &t.edgeMaxAccuracyM, nullptr, nullptr },
+        { "recalculateMs", nullptr, nullptr, &t.recalculateMs },
+        { "settleFixes", nullptr, &t.settleFixes, nullptr },
+        { "startGuardM", &t.startGuardM, nullptr, nullptr },
+    };
+    for (const Field& field : fields) {
+        if (strcmp(field.name, name) != 0) {
+            continue;
+        }
+        if (field.number != nullptr) {
+            *field.number = value;
+        } else if (field.whole != nullptr) {
+            *field.whole = static_cast<int>(value);
+        } else {
+            *field.ms = static_cast<uint32_t>(std::max(0.0f, value));
+        }
+        return true;
+    }
+    return false;
+}
+
+float offRouteThreshold(const OffRouteTuning& tuning, float accuracyM) {
+    return std::clamp(tuning.accuracyFactor * accuracyM + tuning.accuracyAddM, tuning.minOffM, tuning.maxOffM);
+}
+
+int offRouteFixes(const OffRouteTuning& tuning, float accuracyM) {
+    const float extra = accuracyM > tuning.poorFromM ? tuning.poorFixesPerM * (accuracyM - tuning.poorFromM) : 0.0f;
+    return tuning.triggerFixes + static_cast<int>(extra + 0.5f);
+}
+
+const char* offRouteRuleName(OffRouteRule rule) {
+    switch (rule) {
+        case OffRouteRule::Distance:
+            return "distance";
+        case OffRouteRule::Heading:
+            return "heading";
+        case OffRouteRule::Edge:
+            return "edge";
+        default:
+            return "none";
+    }
+}
+
+void AccuracyWindow::add(float accuracyM, uint32_t now, const OffRouteTuning& tuning) {
+    const float value = std::isfinite(accuracyM) && accuracyM > 0.0f ? accuracyM : tuning.noAccuracyM;
+    // Fixes older than the window go; the newest is always kept
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        if (now - times[i] < tuning.windowMs) {
+            values[kept] = values[i];
+            times[kept] = times[i];
+            kept++;
+        }
+    }
+    count = kept;
+    if (count == MAX) {
+        for (int i = 1; i < count; i++) {
+            values[i - 1] = values[i];
+            times[i - 1] = times[i];
+        }
+        count--;
+    }
+    values[count] = value;
+    times[count] = now;
+    count++;
+}
+
+float AccuracyWindow::median() const {
+    if (count == 0) {
+        return NAN;
+    }
+    float sorted[MAX];
+    std::copy(values, values + count, sorted);
+    std::sort(sorted, sorted + count);
+    return count % 2 == 1 ? sorted[count / 2] : 0.5f * (sorted[count / 2 - 1] + sorted[count / 2]);
+}
+
 void RouteFollower::begin(const Route& route) {
     routeManeuvers(route, maneuvers);
     current = {};
@@ -115,16 +225,29 @@ void RouteFollower::begin(const Route& route) {
     current.nextTurn = maneuvers.size() > 0 ? maneuvers[0].turn : Turn::Arrive;
     current.toTurnM = maneuvers.size() > 0 ? maneuvers[0].atM : route.lengthM;
     current.nextStep = maneuvers.size() > 0 ? maneuvers[0].step : -1;
+    current.headingDifference = NAN;
+    current.sideM = INFINITY;
     lastSegment = 0;
-    away = false;
-    awaySince = 0;
+    awayFixes = 0;
+    // A new route (also a recalculated one) settles for a few fixes; the accuracy history stays
+    settleLeft = offRouteTuning().settleFixes;
     active = route.points.size() >= 2;
 }
 
-const RouteFollower::Status& RouteFollower::update(const Route& route, double lat, double lon, float accuracyM, uint32_t now) {
+const RouteFollower::Status& RouteFollower::update(const Route& route, double lat, double lon, float accuracyM, uint32_t now, float courseDeg,
+    float speedMps) {
     if (!active || route.points.size() < 2 || current.state == State::Arrived) {
         return current;
     }
+    const OffRouteTuning& tuning = offRouteTuning();
+    accuracy.add(accuracyM, now, tuning);
+    const float acc = accuracy.median();
+    const float off = offRouteThreshold(tuning, acc);
+    const bool weak = acc > tuning.weakAccuracyM;
+    current.accuracyM = acc;
+    current.offM = off;
+    current.weakGps = weak;
+
     const RoutePoint here = routePointFrom(lat, lon);
     const auto metresPerUnit = static_cast<float>(routeMetresPerUnit(here.y));
     const size_t segments = route.points.size() - 1;
@@ -159,28 +282,109 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
     const size_t windowFirst = lastSegment > 20 ? lastSegment - 20 : 0;
     const size_t windowLast = std::min(segments, lastSegment + 400);
     nearest(windowFirst, windowLast, segment, t, distance);
-    const float matchLimit = accuracyM + MATCH_METRES;
+    const float matchLimit = std::max(off, acc + MATCH_METRES);
     if (distance > matchLimit && (windowFirst > 0 || windowLast < segments)) {
         nearest(0, segments, segment, t, distance);
     }
     const float segmentMetres = route.distances[segment + 1] - route.distances[segment];
     const float progress = route.distances[segment] + t * segmentMetres;
     current.distanceFromRouteM = distance;
-    const float offLimit = std::max(OFF_ROUTE_METRES, accuracyM + 25.0f);
-    if (distance <= matchLimit) {
-        away = false;
+
+    // The direction of travel against the route's at the matched segment
+    const RoutePoint& a = route.points[segment];
+    const RoutePoint& b = route.points[segment + 1];
+    current.headingDifference = NAN;
+    if (std::isfinite(courseDeg)) {
+        // The smallest difference to the route's direction within HEADING_METRES along it: near a bend of the route, a
+        // position matched to the segment before it while walking the one after it is no wrong direction
+        const float at = route.distances[segment] + t * segmentMetres;
+        size_t first = segment;
+        while (first > 0 && at - route.distances[first] < HEADING_METRES) {
+            first--;
+        }
+        size_t last = segment;
+        while (last + 1 < segments && route.distances[last + 1] - at < HEADING_METRES) {
+            last++;
+        }
+        float smallest = INFINITY;
+        for (size_t i = first; i <= last; i++) {
+            const RoutePoint& p = route.points[i];
+            const RoutePoint& q = route.points[i + 1];
+            if (p.x == q.x && p.y == q.y) {
+                continue;
+            }
+            float difference = courseDeg - bearingOf(p, q);
+            while (difference > 180.0f) {
+                difference -= 360.0f;
+            }
+            while (difference <= -180.0f) {
+                difference += 360.0f;
+            }
+            smallest = std::min(smallest, std::fabs(difference));
+        }
+        current.headingDifference = std::isfinite(smallest) ? smallest : NAN;
+    }
+    // The nearest other road, for the edge rule
+    current.sideM = INFINITY;
+    if (tuning.edgeRule != 0 && route.sides.size() > 0) {
+        float best = INFINITY;
+        for (const RouteSide& side : route.sides) {
+            const float dx = static_cast<float>(side.b.x - side.a.x);
+            const float dy = static_cast<float>(side.b.y - side.a.y);
+            const float lengthSquared = dx * dx + dy * dy;
+            float u = lengthSquared > 0.0f ? ((here.x - side.a.x) * dx + (here.y - side.a.y) * dy) / lengthSquared : 0.0f;
+            u = std::clamp(u, 0.0f, 1.0f);
+            const float px = side.a.x + u * dx - here.x;
+            const float py = side.a.y + u * dy - here.y;
+            best = std::min(best, px * px + py * py);
+        }
+        current.sideM = std::sqrt(best) * metresPerUnit;
+    }
+
+    // Is this fix away from the route, and by which rule? Weak GPS never triggers.
+    OffRouteRule rule = OffRouteRule::None;
+    if (!weak) {
+        const float edgeMargin = std::max(tuning.edgeMarginM, 0.3f * acc);
+        // Near the start the route was snapped from one position: only the distance counts there
+        const bool pastStart = progress > tuning.startGuardM;
+        if (distance > off) {
+            rule = OffRouteRule::Distance;
+        } else if (pastStart && std::isfinite(current.headingDifference) && std::isfinite(speedMps) && speedMps > tuning.headingSpeed &&
+            current.headingDifference > tuning.headingDegrees && distance > tuning.headingShare * off) {
+            rule = OffRouteRule::Heading;
+        } else if (pastStart && tuning.edgeRule != 0 && acc <= tuning.edgeMaxAccuracyM && distance > tuning.edgeShare * off &&
+            current.sideM + edgeMargin < distance) {
+            rule = OffRouteRule::Edge;
+        }
+    }
+    if (settleLeft > 0) {
+        settleLeft--;
+        rule = OffRouteRule::None;
+    }
+    current.awayRule = rule;
+    if (rule == OffRouteRule::None) {
+        awayFixes = 0;
+        current.firedRule = OffRouteRule::None;
+    } else {
+        awayFixes++;
+    }
+    current.awayFixes = static_cast<uint8_t>(std::min(awayFixes, 255));
+
+    if (rule == OffRouteRule::None && (distance <= matchLimit || weak)) {
+        // On the route, or in weak GPS followed by projection
         lastSegment = segment;
         current.progressM = progress;
-        const RoutePoint& a = route.points[segment];
-        const RoutePoint& b = route.points[segment + 1];
         current.matched = { a.x + static_cast<int32_t>((b.x - a.x) * t), a.y + static_cast<int32_t>((b.y - a.y) * t) };
         current.state = State::OnRoute;
-    } else if (distance > offLimit) {
-        if (!away) {
-            away = true;
-            awaySince = now;
+    } else if (rule != OffRouteRule::None) {
+        if (awayFixes >= offRouteFixes(tuning, acc)) {
+            if (current.state != State::OffRoute) {
+                current.firedRule = rule;
+            }
+            current.state = State::OffRoute;
+        } else if (current.state != State::OffRoute) {
+            current.state = State::Away;
         }
-        current.state = now - awaySince >= OFF_ROUTE_MS ? State::OffRoute : State::Away;
     }
     // Arrival: close to the goal, or the end of the route reached on it
     const RoutePoint& goal = route.points[route.points.size() - 1];

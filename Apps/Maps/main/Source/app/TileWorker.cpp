@@ -29,6 +29,8 @@ constexpr uint32_t IDLE_WAIT_MS = 30;
  * much PSRAM free in all for the original, the features and the labels. */
 constexpr size_t CONVERT_MIN_BLOCK = 336 * 1024;
 constexpr size_t CONVERT_MIN_FREE = 900 * 1024;
+/** While a download runs, a tile on screen is prepared only with this much more PSRAM free, for the download's bodies. */
+constexpr size_t CONVERT_DOWNLOAD_SPARE = 400 * 1024;
 
 bool memoryForConversion() {
     return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= CONVERT_MIN_BLOCK &&
@@ -340,6 +342,20 @@ bool labelReadJob(IoTask& io, void* context) {
     const bool ok = io.readFile(path, *job->buffer, wanted);
     job->yielded = io.yielded();
     return ok;
+}
+
+struct FindJob {
+    const TileStore* store;
+    TileKey tile;
+    TileFile file;
+    bool found;
+};
+
+bool findJob(IoTask& io, void* context) {
+    (void)io;
+    auto* job = static_cast<FindJob*>(context);
+    job->found = job->store->find(job->tile, job->file);
+    return true;
 }
 
 struct ScanJob {
@@ -674,9 +690,31 @@ bool TileWorker::loadLabels(Lane& lane) {
 }
 
 bool TileWorker::convertOne(Lane& lane) {
-    // The compressor needs one 320 KB block of PSRAM, which a download leaves too fragmented to find
-    if (conversionsPaused || routing) {
+    if (routing) {
         return false;
+    }
+    // While a download runs (it leaves PSRAM fragmented), only the tiles on screen are prepared, so their POIs and house
+    // numbers show at once instead of after the download; the others wait until it is over. The download keeps memory
+    // to spare: the tile cache gives up slots that are not on screen for it (they come back after the download).
+    if (conversionsPaused) {
+        lock();
+        const bool onScreen = conversionCount > 0 && conversions[0].urgent;
+        unlock();
+        if (!onScreen) {
+            return false;
+        }
+        const size_t wanted = CONVERT_MIN_FREE + CONVERT_DOWNLOAD_SPARE;
+        if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < wanted || heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < CONVERT_MIN_BLOCK) {
+            const TickType_t now = xTaskGetTickCount();
+            if (static_cast<int32_t>(now - conversionsWaitUntil.load()) < 0) {
+                return false;
+            }
+            relieveMemory(CONVERT_MIN_BLOCK, wanted);
+            if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < wanted || heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < CONVERT_MIN_BLOCK) {
+                conversionsWaitUntil = now + pdMS_TO_TICKS(DOWNLOAD_BACKOFF_MS);
+                return false;
+            }
+        }
     }
     if (lane.trimBuffers.exchange(false)) {
         lane.heldKind = static_cast<uint8_t>(Found::Nothing);
@@ -775,12 +813,20 @@ bool TileWorker::convertOne(Lane& lane) {
     ConvertReadJob read { root, region, job.tile, &lane.fileBuffer, 0, false, 0, false, region[0] == '\0' };
     bool ok = region[0] != '\0' && io->run(IoPriority::Background, convertReadJob, &read);
     if (read.missing) {
-        // The scan finds it again where it is now
-        logInfo("[%d] %d/%d/%d is no longer in %s, not prepared there", lane.index, job.tile.z, job.tile.x, job.tile.y,
-            region[0] != '\0' ? region : "its region");
+        // A download moved it (browsed tiles go into the new region). A tile on screen is queued again where it is
+        // now, still first; the others the scan finds again
+        FindJob findMoved { store, job.tile, {}, false };
+        const bool found = job.urgent && io->run(IoPriority::Background, findJob, &findMoved) && findMoved.found &&
+            findMoved.file.tile == job.tile && findMoved.file.region != job.region;
+        const TileFile& moved = findMoved.file;
+        logInfo("[%d] %d/%d/%d is no longer in %s, %s", lane.index, job.tile.z, job.tile.x, job.tile.y, region[0] != '\0' ? region : "its region",
+            found ? "queued again in its new region" : "not prepared there");
         lane.fileBuffer.trim(KEEP_FILE_BUFFER);
         lock();
         lane.converting = false;
+        if (found) {
+            queueConversion(job.tile, moved.region, true, job.split);
+        }
         unlock();
         return true;
     }
