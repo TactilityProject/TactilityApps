@@ -102,6 +102,9 @@ void MapView::closeScreen() {
 void MapView::goBack() {
     if (menuOpen) {
         handlePopupAction(UiAction::Back);
+    } else if (searchSheet.isOpen() && screen == Screen::Map) {
+        // One level back in the search sheet (a category list to the main list), else closes it
+        handleSearchEvent(searchSheet.handleKey(keys::ESCAPE));
     } else if (screen == Screen::About) {
         closeScreen();
     } else if (activeList() != nullptr) {
@@ -154,6 +157,8 @@ void MapView::openMenu() {
         menu.add("Clear route");
         popupActions[popupActionCount++] = MENU_ROUTE_CLEAR;
     }
+    menu.add("Search");
+    popupActions[popupActionCount++] = static_cast<int>(MenuItem::Search);
     int item = 0;
     for (const char* label : MENU_LABELS) {
         popupActions[popupActionCount++] = item++;
@@ -217,6 +222,10 @@ void MapView::chooseMenu(MenuItem item) {
             break;
         case MenuItem::About:
             openAbout();
+            break;
+        case MenuItem::Search:
+            returnToMenu = false;
+            openSearch();
             break;
         case MenuItem::Exit:
             // The only way out by trackball or touch, LVGL's swipe back does not run while the map has the screen

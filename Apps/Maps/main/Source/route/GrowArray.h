@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <utility>
 
 namespace maps {
 
@@ -72,6 +73,13 @@ public:
         if (length > 0) {
             length--;
         }
+    }
+    /** Exchanges the contents with another array, without copying. */
+    void swap(GrowArray& other) {
+        std::swap(data, other.data);
+        std::swap(capacity, other.capacity);
+        std::swap(length, other.length);
+        std::swap(error, other.error);
     }
     T& operator[](size_t index) { return data[index]; }
     const T& operator[](size_t index) const { return data[index]; }

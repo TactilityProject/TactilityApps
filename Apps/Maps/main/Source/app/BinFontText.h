@@ -42,6 +42,12 @@ public:
     void drawText(Canvas& canvas, int x, int y, const char* text, uint16_t color) override;
 
 private:
+    /**
+     * The text to draw: letters the font has no glyph for (Tactility's UI font covers ASCII and Latin-1, so "Spisska"
+     * would lose its s with caron) become their base letter, keeping upper case. The text itself when nothing is missing.
+     */
+    const char* withFallback(const char* text);
+    char fallbackText[256] {};
     BinFont* font = nullptr;
     /** Borrowed fonts belong to Tactility and are not closed. */
     bool owned = false;

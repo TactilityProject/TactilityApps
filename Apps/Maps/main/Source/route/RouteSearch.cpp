@@ -173,6 +173,7 @@ void Route::clear() {
     distances.clear();
     steps.clear();
     names.clear();
+    sides.clear();
     lengthM = 0.0f;
     seconds = 0.0f;
 }

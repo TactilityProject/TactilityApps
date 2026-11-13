@@ -19,8 +19,6 @@ constexpr uint16_t ROUTE_CASING = 0xFFFF;
 constexpr uint16_t ROUTE_PASSED = 0x9CF3;
 constexpr float ROUTE_WIDTH = 5.0f;
 constexpr float ROUTE_CASING_WIDTH = 8.0f;
-/** At least this long between two recalculations after leaving the route. */
-constexpr uint32_t RECALCULATE_MS = 20000;
 constexpr uint32_t ARRIVED_BAR_MS = 8000;
 constexpr char CAR_NOTE[] = "Car routes follow road types only, without turn restrictions or access rules.";
 
@@ -57,7 +55,31 @@ bool ReplaySource::load(const char* text, size_t size) {
         }
         cursor = close + 1;
     }
+    setNoise(0.0f, 0.0f, 0);
     return count > 1;
+}
+
+void ReplaySource::setNoise(float accuracyM, float noiseM, uint32_t seed) {
+    accuracy = accuracyM > 0.0f ? accuracyM : 5.0f;
+    // Correlated noise as from a GPS: each second keeps 80 % of the last offset (AR(1)), with a standard deviation of noiseM
+    uint32_t state = seed != 0 ? seed : 12345u;
+    auto uniform = [&]() {
+        state = state * 1664525u + 1013904223u;
+        return (static_cast<float>(state >> 8) + 0.5f) / 16777216.0f;
+    };
+    auto gaussian = [&]() { return std::sqrt(-2.0f * std::log(uniform())) * std::cos(6.2831853f * uniform()); };
+    const float keep = 0.8f;
+    const float fresh = std::sqrt(1.0f - keep * keep);
+    float north = noiseM > 0.0f ? noiseM * gaussian() : 0.0f;
+    float east = noiseM > 0.0f ? noiseM * gaussian() : 0.0f;
+    for (int i = 0; i < count; i++) {
+        if (noiseM > 0.0f && i > 0) {
+            north = keep * north + fresh * noiseM * gaussian();
+            east = keep * east + fresh * noiseM * gaussian();
+        }
+        noise[i][0] = north;
+        noise[i][1] = east;
+    }
 }
 
 PositionRead ReplaySource::read(PositionFix& fix) {
@@ -72,10 +94,12 @@ PositionRead ReplaySource::read(PositionFix& fix) {
     }
     const int index = std::min(count - 1, static_cast<int>((now - lastStep) / STEP_MS));
     const int previous = std::max(0, index - 1);
+    lastIndex = index;
     fix = {};
-    fix.latitude = points[index][0];
-    fix.longitude = points[index][1];
-    fix.accuracy = 5.0f;
+    const double cosLat = std::cos(points[index][0] * 3.14159265358979 / 180.0);
+    fix.latitude = points[index][0] + noise[index][0] / 111320.0;
+    fix.longitude = points[index][1] + noise[index][1] / (111320.0 * cosLat);
+    fix.accuracy = accuracy;
     // Course and speed from the step since the last point
     const double dy = (points[index][0] - points[previous][0]) * 111320.0;
     const double dx = (points[index][1] - points[previous][1]) * 111320.0 * std::cos(points[index][0] * 3.14159265358979 / 180.0);
@@ -85,7 +109,7 @@ PositionRead ReplaySource::read(PositionFix& fix) {
     return PositionRead::Fix;
 }
 
-void MapView::startReplay(const char* name) {
+void MapView::startReplay(const char* name, float accuracyM, float noiseM, uint32_t seed) {
     if (strcmp(name, "stop") == 0) {
         replay.clear();
         replaying = false;
@@ -100,8 +124,10 @@ void MapView::startReplay(const char* name) {
         showToast("Replay: no track points in that file");
         return;
     }
+    replay.setNoise(accuracyM, noiseM, seed);
     replaying = true;
-    logInfo("Replay: %d points from %s", replay.size(), path);
+    scriptLog("Replay: %d points from %s, accuracy %.0f m, noise %.0f m", replay.size(), path, static_cast<double>(accuracyM),
+        static_cast<double>(noiseM));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -418,8 +444,8 @@ void MapView::updateNavigation(uint32_t now) {
         recalculating = false;
         dirty = true;
     }
-    // Also without a new position: standing still off the route still counts its 10 s
-    if (navigating && now - lastFollowAt >= 1000) {
+    // No fix for 2 s (a GPS that stopped sending): the last one counts again, so standing still off the route is noticed
+    if (navigating && static_cast<int32_t>(now - lastFollowAt) >= 2000) {
         followRoute(now);
     }
     if (navigating && arrivedAt != 0 && now - arrivedAt >= ARRIVED_BAR_MS) {
@@ -430,6 +456,12 @@ void MapView::updateNavigation(uint32_t now) {
 }
 
 void MapView::followRoute(uint32_t now) {
+    // The position is read on a timer and on location events: a second call for the same fix (fixes come once a
+    // second) must not count as another fix for the off-route rule
+    // Signed: the loop passes the time it started, which can be before the follow a location read just did
+    if (lastFollowAt != 0 && static_cast<int32_t>(now - lastFollowAt) < 500) {
+        return;
+    }
     lastFollowAt = now;
     if (!navigating || !position.hasFix() || arrivedAt != 0) {
         return;
@@ -442,7 +474,16 @@ void MapView::followRoute(uint32_t now) {
         stopNavigation();
         return;
     }
-    const RouteFollower::Status status = follower.update(route, fix.latitude, fix.longitude, fix.accuracy, now);
+    // The 2 s timer shows the last fix again: it updates the bar but never counts as another fix
+    const bool newFix = fix.timeMs != lastFollowFixMs || fix.timeMs == 0;
+    lastFollowFixMs = fix.timeMs;
+    const RouteFollower::Status status = follower.update(route, fix.latitude, fix.longitude, fix.accuracy, now, fix.course, fix.speed, newFix);
+    // One line per fix while navigating, for tuning the off-route rule (0.4.1)
+    scriptLog("Follow: route %.1f m, acc %.1f m (fix %.1f), off %.1f m, heading %.0f, side %.1f m, %.1f m/s, away %u%s%s%s, replay %d",
+        status.distanceFromRouteM, status.accuracyM, fix.accuracy, status.offM, status.headingDifference, status.sideM, fix.speed,
+        static_cast<unsigned>(status.awayFixes), status.awayRule != OffRouteRule::None ? " by " : "",
+        status.awayRule != OffRouteRule::None ? offRouteRuleName(status.awayRule) : "", status.weakGps ? ", weak GPS" : "",
+        replaying ? replay.pointIndex() : -1);
     char instruction[NavigationBar::INSTRUCTION_LENGTH];
     follower.instruction(route, instruction, sizeof(instruction));
     navigator.unlock();
@@ -454,26 +495,29 @@ void MapView::followRoute(uint32_t now) {
             following = false;
             headingUp = false;
             arrivedAt = now;
-            logInfo("Navigation: arrived");
+            scriptLog("Navigation: arrived");
             break;
         case RouteFollower::State::OffRoute:
-            if (!recalculating && (lastRecalculation == 0 || now - lastRecalculation >= RECALCULATE_MS) &&
+            // The first recalculation at once, then at least recalculateMs apart
+            if (!recalculating && (lastRecalculation == 0 || now - lastRecalculation >= offRouteTuning().recalculateMs) &&
                 navigator.state() == Navigator::State::Idle) {
                 lastRecalculation = now;
                 recalculating = navigator.request(fix.latitude, fix.longitude, goalLat, goalLon, routeProfile);
                 routeRequested = recalculating;
-                logInfo("Navigation: off route by %.0f m, recalculating", status.distanceFromRouteM);
+                scriptLog("Navigation: off route by %.0f m (acc %.1f m, off %.1f m, rule %s), recalculating", status.distanceFromRouteM,
+                    status.accuracyM, status.offM, offRouteRuleName(status.firedRule));
             }
             navBar.setMessage("Off route \xE2\x80\x94 recalculating");
             break;
         default:
             if (!recalculating) {
-                navBar.set(status.nextTurn, instruction, remaining);
+                // Weak GPS: the route is followed by projection, off route is not checked
+                navBar.set(status.nextTurn, instruction, status.weakGps ? "Weak GPS" : remaining);
             }
             break;
     }
     // Redrawn when the bar or the state changed, not every second (e-paper)
-    const uint32_t signature = (static_cast<uint32_t>(status.state) << 24) ^ static_cast<uint32_t>(status.toTurnM) ^
+    const uint32_t signature = (static_cast<uint32_t>(status.state) << 24) ^ (status.weakGps ? 0x800000u : 0u) ^ static_cast<uint32_t>(status.toTurnM) ^
         (static_cast<uint32_t>(status.remainingM) << 8) ^ static_cast<uint32_t>(status.progressM * 10.0f);
     if (signature != lastFollowSignature) {
         lastFollowSignature = signature;

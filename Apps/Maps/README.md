@@ -4,7 +4,7 @@ Offline vector maps for [Tactility](https://github.com/TactilityProject/Tactilit
 downloads an area from [OpenFreeMap](https://openfreemap.org/) by itself and draws it fullscreen, with
 anti-aliased roads, water, parks and buildings, from tiles on the SD card.
 
-Version 0.4.0, tested on a LilyGO T-Deck (ESP32-S3, 8 MB PSRAM); it also runs on ESP32-P4. Changes are listed in
+Version 0.5.0, tested on a LilyGO T-Deck (ESP32-S3, 8 MB PSRAM); it also runs on ESP32-P4. Changes are listed in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
@@ -132,8 +132,13 @@ S, Esc).
 - **Start** follows the route: the map turns with your direction (heading up), your position sits low on the screen
   so you see further ahead, and a bar at the top shows the next turn with an arrow and the street, e.g. "In 120 m
   turn left onto Štefánikova", and below it the distance and time left. The X at the right end of the bar (or Esc)
-  stops navigating; the menu button is below the bar. The route ahead is blue, the part you passed grey. More than 40 m off the route for 10 seconds:
-  "Off route — recalculating", and a new route from where you are (at most every 20 s). Within about 25 m of the
+  stops navigating; the menu button is below the bar. The route ahead is blue, the part you passed grey.
+- **Leaving the route** is noticed as soon as the GPS allows: the limit follows the GPS precision of the last
+  10 seconds (about 15 m with a good fix, about 40 m between tall buildings), and three positions in a row beyond
+  it, or going into another street, mean "Off route — recalculating" (with poor GPS a few more positions are
+  needed, so it doesn't happen by mistake). The first new route comes at once, later ones at most every 10 s.
+  When the GPS is very poor (worse than about 50 m) the bar says "Weak GPS" and the app keeps following the route
+  without recalculating. Within about 25 m of the
   destination: "You have arrived"; following stops and the line stays.
 - **Start and destination** snap to the nearest road the mode may use within 200 m (500 m for a car: the last bit is
   on foot), leaving out small pieces of road that lead nowhere for that mode, such as a service road inside a
@@ -147,6 +152,29 @@ S, Esc).
   downloaded at the highest detail (z14) and prepared: right after a download the app first prepares the new
   tiles in idle time (the amber dot). Without a road within 200 m of the start or the destination, or without
   a connection between them in the downloaded map, the app says so.
+
+**Search (0.5.0).** Menu → Search, or / or F on the keyboard, opens the search sheet over the map:
+type a place, a street, an address ("Štefánikova 4", "4 Štefánikova", "Hlavná 12/A") or a kind of place ("cafe",
+"pharmacy"). Results come from 3 letters on, while you type, without a network: the nearest first, each with its type
+in plain words ("Café", "Street", "Address"), the distance and a small arrow pointing to it (from your position, or
+from the map centre, which the sheet says once). Diacritics don't matter ("stefanikova" finds "Štefánikova"), and
+Greek and Cyrillic names are found in Latin letters too ("kyiv"). Nothing found: the sheet shows what the longest
+matching beginning of your text finds ("Showing results for 'stefan'"). With an empty field the sheet offers "Nearby
+by category" (food, café, shops, supermarket, pharmacy, toilets, stops, parking, fuel, bank/ATM, hospital, viewpoint)
+and your last 10 chosen results. Every result names the town or village it is in, and the city district inside a city
+("Street · Holice", "Supermarket · Petržalka, Bratislava"), estimated from the nearest places on the map, a bigger
+place counting from further away. Choosing a result moves the map there with a red mark and opens its sheet with Go,
+Save as waypoint and Close; a street is shown whole. Roll or W/S move through the list, Enter opens, Esc (or
+Backspace on an empty field) closes; on touch boards the on-screen keyboard appears.
+House numbers in the map data carry no street name: the app gives each one the nearest named street within 50 m
+(88 % right in Bratislava against real OSM addresses), or one within 100 m marked "Street estimated from the map". In
+regions where most addresses are "village + number" (much of Slovakia), plain numbers are also found under the
+nearest village ("Village estimated from the map"; 78 % right on Žitný ostrov). Always check the place on the map before you
+go. The search index (about 1.5 MB for a city) is made on the device for each downloaded region, once the map has
+been left alone for 20 s and no download runs; the work dot then says "Building search index". Bratislava (99 tiles)
+takes about 5 minutes on a T-Deck; it is made again when the region's tiles are updated. Regions larger than 15 x 15
+z14 tiles get one index per block of 15 x 15 tiles. Until a region's index is ready, search doesn't find anything in
+it. The PC tool `host/search_build --tiles` makes the same file.
 
 **Menu:** Download map, Downloaded maps, Waypoints, Add waypoint, Record track, GPX files, Location, Settings, About and
 licences, Exit. W/S, trackball or finger to move; Enter, click or tap to choose; Esc, Backspace or tap

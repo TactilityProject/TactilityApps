@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.0
+
+Offline search of places, streets, addresses and kinds of places in the downloaded maps.
+
+- Menu → Search, / or F: results while typing from 3 letters, nearest first, with type, distance and direction;
+  addresses as "street number" in either order; diacritics and Greek/Cyrillic in Latin letters don't matter; a
+  shorter beginning is tried when nothing matches. Nearby by category, the last 10 chosen results.
+- A chosen result is shown on the map with a mark and its sheet with Go and Save as waypoint; streets fit the screen.
+- House numbers get the nearest street within 50 m, up to 100 m marked as estimated; village addresses in regions
+  where most numbers are plain.
+- The search index per region (`maps/<region>/search.idx`, about 1.5 MB for Bratislava) is made on the device in
+  idle time, the region on screen first, and again after the region's tiles are updated; big regions get one index
+  per block of 15 x 15 tiles. Bratislava: about 5 minutes on a T-Deck, the same file the PC tool makes. On the T-Deck
+  a keystroke takes 1-150 ms (Bratislava).
+- House numbers also take named paths and pedestrian ways as their street (88 % right in Bratislava against OSM
+  addresses, 87 % without).
+- Results show the town or village they are in ("Street · Holice"), and the city district inside a city or town
+  ("Address · Ružinov, Bratislava"), so the same street name in two places can be told apart. Estimated from the
+  places in the map data; works with indexes already on the card.
+
+**Fixes**
+- While a region downloads, the tiles on screen get their POIs and house numbers after a second without input,
+  instead of after the whole download (they were not prepared while any download ran). The tile cache makes room
+  for them, and a tile on screen that the download moves into the new region stays first in line.
+- Letters the UI font lacks (such as š in "Spišská Nová Ves") are drawn as their base letter instead of being left
+  out.
+
+## 0.4.1
+
+Leaving the route while navigating is noticed sooner when the GPS is good, and not by mistake when it is poor.
+
+- The off-route limit follows the GPS precision: the median accuracy of the last 10 s of fixes (a single bad fix
+  doesn't count) gives a limit of 1.5 x accuracy + 5 m, between 15 m and 60 m (was 40 m, or accuracy + 25 m).
+- Three positions in a row beyond the limit are off route (was 10 s). With poor GPS a few more are needed (25 m
+  accuracy: 8), because GPS noise of that size alone crosses the limit now and then on a long walk.
+- Going into another street is noticed earlier: moving faster than 1 m/s more than 60 degrees away from the route's
+  direction, or being clearly nearer to a side street than to the route (with good GPS), counts from two thirds of
+  the limit.
+- The first new route is searched at once, later ones at most every 10 s (was 20 s); a new route settles for two
+  positions before it is checked.
+- Worse than 50 m accuracy: "Weak GPS" on the navigation bar, the route is followed without recalculating.
+- Fixes without an accuracy count as 30 m (Tactility gives HDOP x 5 m when the GPS reports HDOP).
+- For testing: the "replay" debug command can add GPS noise and a set accuracy, "offroute" changes the rule's
+  values on the device, and the serial log has one line per position while navigating.
+
 ## 0.4.0
 
 Offline navigation: routes for walking, cycling and driving, found on the device from the downloaded maps, with a

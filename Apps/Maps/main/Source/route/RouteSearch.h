@@ -33,6 +33,12 @@ struct RouteStep {
     uint8_t flags;
 };
 
+/** A road segment near a route that is not part of it, for the follower's edge rule (0.4.1). */
+struct RouteSide {
+    RoutePoint a;
+    RoutePoint b;
+};
+
 /** A found route: its line, the distance from the start at each point, its roads, length and time. */
 struct Route {
     RouteProfile profile = RouteProfile::Walk;
@@ -43,6 +49,8 @@ struct Route {
     GrowArray<float> distances;
     GrowArray<RouteStep> steps;
     GrowArray<char> names;
+    /** Road segments within SIDE_METRES of the route that leave it at an angle (RouteSearch::addSides), not saved. */
+    GrowArray<RouteSide> sides;
     float lengthM = 0.0f;
     float seconds = 0.0f;
 
@@ -107,8 +115,17 @@ public:
 
     RouteResult find(GraphSource& source, double fromLat, double fromLon, double toLat, double toLon, RouteProfile profile, Route& route,
         RouteStats* stats);
+    /**
+     * Fills sides from the graphs of the tiles along a route's points: road segments within SIDE_METRES of it that are
+     * not part of it and not parallel to it (a separately drawn pavement is no other road). Needs no search memory.
+     */
+    bool addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides);
+    static constexpr float SIDE_METRES = 60.0f;
+    static constexpr size_t MAX_SIDES = 8000;
     /** Makes a running find() return Cancelled soon. */
     void cancel() { cancelled = true; }
+    /** For work after a search (addSides): a cancel from before no longer counts. */
+    void resetCancel() { cancelled = false; }
     /** The node states the memory allows, for the log. */
     uint32_t nodeCapacity() const { return maxNodes; }
 

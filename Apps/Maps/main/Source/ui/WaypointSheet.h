@@ -80,7 +80,7 @@ private:
     int focus = 0;
     char value[NAME_LENGTH] = "";
     char coordinateText[48] = "";
-    char typeText[48] = "";
+    char typeText[72] = "";
     bool compactLayout = false;
     char distanceText[64] = "";
     Rect frame {};

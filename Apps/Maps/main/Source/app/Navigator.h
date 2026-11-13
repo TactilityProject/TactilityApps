@@ -55,12 +55,13 @@ public:
     void clearRoute();
 
 private:
-    enum class Job : uint8_t { None, Route, Bench, Quit };
+    enum class Job : uint8_t { None, Route, Bench, Sides, Quit };
 
     static void taskMain(void* context);
     void loop();
     void runRoute();
     void runBench();
+    void runSides();
     bool takeMemory();
     void giveMemory();
     bool saveRoute(const Route& route);
