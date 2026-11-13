@@ -73,6 +73,8 @@ struct FeatureInfo {
     /** The same from "name_en" (or "name:en"), nullptr when absent; the search uses it for places, parks, water, peaks. */
     const char* nameEn = nullptr;
     uint16_t nameEnLength = 0;
+    /** nameEn came from "name_en" (which wins over "name:en" on the same feature). */
+    bool nameEnPreferred = false;
     /** "rank" as an integer, -1 when absent (place, mountain_peak and poi layers). */
     int32_t rank = -1;
     /** The raw "class" and "subclass" strings of any layer, nullptr when absent. Valid during beginFeature(). */

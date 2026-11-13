@@ -161,8 +161,9 @@ bool Navigator::start(IoTask& ioTask, TileStore& tileStore, TileWorker& tileWork
 
 void Navigator::stop() {
     if (task != nullptr) {
-        search.cancel();
+        // Quit first, then cancel: runSides() resets the cancel and then looks for Quit
         job = Job::Quit;
+        search.cancel();
         xSemaphoreGive(wake);
         xSemaphoreTake(stopped, portMAX_DELAY);
         vTaskDeleteWithCaps(task);
@@ -299,12 +300,6 @@ void Navigator::runRoute() {
     Route& next = routes[1 - current];
     const RouteResult found = search.find(source, requestFrom[0], requestFrom[1], requestTo[0], requestTo[1], requestProfile, next, &stats);
     giveMemory();
-    if (found == RouteResult::Found) {
-        // The roads beside the route, for the follower's edge rule
-        const uint32_t sidesStarted = nowMs();
-        search.addSides(source, next.points, next.sides);
-        logInfo("Route: %u side segments in %u ms", static_cast<unsigned>(next.sides.size()), static_cast<unsigned>(nowMs() - sidesStarted));
-    }
     logInfo("Route %s: %s, %.0f m, %.0f s, %u points, %u steps; %u ms (reading %u ms), settled %u, tiles %u (%u missing), peak %u KB%s",
         routeProfileName(requestProfile), routeResultText(found), next.lengthM, next.seconds, static_cast<unsigned>(next.points.size()),
         static_cast<unsigned>(next.steps.size()), stats.totalMs, stats.loadMs, stats.settled, stats.tilesRead, stats.tilesMissing, stats.peakBytes / 1024,
@@ -319,6 +314,8 @@ void Navigator::runRoute() {
         saveRoute(routes[current]);
         routes[1 - current].clear();
         currentState = State::Done;
+        // The roads beside the route, for the follower's edge rule: after the route is shown, not before
+        runSides();
     } else {
         next.clear();
         currentState = State::Failed;
@@ -326,7 +323,11 @@ void Navigator::runRoute() {
 }
 
 void Navigator::runSides() {
-    // The loaded route's side roads: worked out on a copy of its points, then given to the route if it is still the same
+    // The route's side roads: worked out on a copy of its points, then given to the route if it is still the same
+    search.resetCancel();
+    if (job.load() == Job::Quit) {
+        return;
+    }
     GrowArray<RoutePoint> points;
     lock();
     const uint32_t generation = changes.load();
@@ -343,13 +344,15 @@ void Navigator::runSides() {
     CardSource source(*io, *store);
     GrowArray<RouteSide> sides;
     const uint32_t started = nowMs();
-    search.addSides(source, points, sides);
+    const bool complete = search.addSides(source, points, sides);
     lock();
-    if (changes.load() == generation) {
+    if (complete && changes.load() == generation) {
         routes[current].sides.swap(sides);
     }
+    // Counted under the lock: clearRoute() may change the route right after
+    const auto sideCount = static_cast<unsigned>(routes[current].sides.size());
     unlock();
-    logInfo("Route: %u side segments for the loaded route in %u ms", static_cast<unsigned>(routes[current].sides.size()),
+    logInfo("Route: %u side segments in %u ms", sideCount,
         static_cast<unsigned>(nowMs() - started));
 }
 

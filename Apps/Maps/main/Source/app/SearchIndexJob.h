@@ -39,6 +39,7 @@ public:
     bool start(IoTask& io, const char* rootPath, const char* first, bool force = false, const char* only = nullptr);
     /** While paused the build waits between steps with its files closed (a download runs). */
     void pause(bool value) { paused = value; }
+    bool isPaused() const { return paused.load(); }
     /** Stops a running build (its scratch files are removed) and waits for the task. */
     void stop();
     State state() const { return currentState.load(); }

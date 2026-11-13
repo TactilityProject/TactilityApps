@@ -577,6 +577,15 @@ bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent, b
     for (int i = 0; i < conversionCount; i++) {
         if (conversions[i].tile == tile) {
             conversions[i].split = conversions[i].split || split;
+            if (urgent && !conversions[i].urgent) {
+                // Now on screen: first in line (during a download only the first, urgent one is prepared)
+                Conversion entry = conversions[i];
+                entry.urgent = true;
+                for (int j = i; j > 0; j--) {
+                    conversions[j] = conversions[j - 1];
+                }
+                conversions[0] = entry;
+            }
             return true;
         }
     }

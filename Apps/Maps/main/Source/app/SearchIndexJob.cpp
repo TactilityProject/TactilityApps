@@ -431,8 +431,31 @@ bool collectIndexFiles(const char* name, bool isDirectory, void* context) {
     return true;
 }
 
+/** What the builder's hook needs: the job, and the build's files (closed while the build waits for a download). */
+struct HookContext {
+    SearchIndexJob* job;
+    CardScratchFiles* files;
+};
+
 bool keepGoingHook(const StreamProgress& progress, void* context) {
-    return static_cast<SearchIndexJob*>(context)->keepGoing(static_cast<int32_t>(progress.done), static_cast<int32_t>(progress.total));
+    auto* hook = static_cast<HookContext*>(context);
+    if (hook->job->isPaused()) {
+        // The FAT mount allows 4 open files for the whole system: the download needs them
+        hook->files->suspend();
+    }
+    return hook->job->keepGoing(static_cast<int32_t>(progress.done), static_cast<int32_t>(progress.total));
+}
+
+/** The task suspends itself when its work is over: it must not run any more when it is deleted. */
+void waitUntilSuspended(TaskHandle_t task) {
+    TaskStatus_t status {};
+    for (;;) {
+        vTaskGetInfo(task, &status, pdFALSE, eInvalid);
+        if (status.eCurrentState == eSuspended) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
 
 } // namespace
@@ -475,7 +498,8 @@ void SearchIndexJob::stop() {
     while (currentState.load() == State::Busy) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    // The task suspends itself when it is done; delete it from here
+    // The state is set just before the task suspends itself; delete it from here once it has
+    waitUntilSuspended(task);
     vTaskDeleteWithCaps(task);
     task = nullptr;
 }
@@ -483,6 +507,7 @@ void SearchIndexJob::stop() {
 void SearchIndexJob::acknowledge() {
     if (currentState.load() != State::Busy) {
         if (task != nullptr) {
+            waitUntilSuspended(task);
             vTaskDeleteWithCaps(task);
             task = nullptr;
         }
@@ -651,10 +676,11 @@ bool SearchIndexJob::buildRegion(const char* region) {
     }
     auto* builder = new (builderMemory) SearchStreamBuilder();
     CardScratchFiles files(*io);
+    HookContext hook { this, &files };
     StreamBuildOptions options;
     options.sortBufferBytes = SORT_BUFFER;
     options.keepGoing = keepGoingHook;
-    options.context = this;
+    options.context = &hook;
     const char* profile = strcmp(region, "kyiv") == 0 ? "uk" : (strcmp(region, "belgrade") == 0 ? "sr" : "ru");
     options.config.profile = profile[0] == 'u' ? Translit::Ukrainian : (profile[0] == 's' ? Translit::Serbian : Translit::Russian);
     // One block at a time (all tiles when the region is small)

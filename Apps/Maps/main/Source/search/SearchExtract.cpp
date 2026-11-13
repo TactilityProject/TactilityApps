@@ -120,6 +120,7 @@ bool TileExtractor::extract(MvtDecoder& decoder, ByteInput* input, int tileX, in
     out = &tile;
     consumer = featureConsumer;
     consumerOk = true;
+    arrayFailed = false;
     tile.clear();
     tile.tileX = tileX;
     tile.tileY = tileY;
@@ -138,7 +139,7 @@ bool TileExtractor::extract(MvtDecoder& decoder, ByteInput* input, int tileX, in
     const bool ok = decoder.sweep(LAYERS, 7, *this);
     decoder.shrinkPools();
     consumer = nullptr;
-    return ok && consumerOk && !tile.failed();
+    return ok && consumerOk && !arrayFailed && !tile.failed();
 }
 
 bool TileExtractor::beginFeature(const FeatureInfo& info) {
@@ -277,6 +278,10 @@ void TileExtractor::endRing(bool closed) {
         }
         return;
     }
+    if (ring.failed()) {
+        arrayFailed = true;
+        return;
+    }
     if (rings != 1 || ring.size() == 0) {
         return;
     }
@@ -304,6 +309,11 @@ void TileExtractor::endFeature() {
         }
     }
     shape = Shape::None;
+    if (out->failed()) {
+        // Never hand partial arrays on; clear() below resets the flags, so remember it
+        arrayFailed = true;
+        consumerOk = false;
+    }
     if (consumer != nullptr) {
         if (consumerOk && (out->points.size() > 0 || out->lines.size() > 0 || out->houses.size() > 0)) {
             consumerOk = consumer->take(*out);

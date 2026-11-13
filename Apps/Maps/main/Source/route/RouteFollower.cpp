@@ -115,7 +115,11 @@ OffRouteTuning& offRouteTuning() {
 }
 
 bool setOffRouteTuning(const char* name, float value) {
-    OffRouteTuning& t = offRouteTuning();
+    if (!std::isfinite(value)) {
+        return false;
+    }
+    // Set on a copy, kept only when the bounds still make sense (clamp needs min <= max)
+    OffRouteTuning t = offRouteTuning();
     struct Field {
         const char* name;
         float* number;
@@ -155,6 +159,10 @@ bool setOffRouteTuning(const char* name, float value) {
         } else {
             *field.ms = static_cast<uint32_t>(std::max(0.0f, value));
         }
+        if (t.minOffM < 0.0f || t.minOffM > t.maxOffM || t.triggerFixes < 1 || t.settleFixes < 0) {
+            return false;
+        }
+        offRouteTuning() = t;
         return true;
     }
     return false;
@@ -235,12 +243,14 @@ void RouteFollower::begin(const Route& route) {
 }
 
 const RouteFollower::Status& RouteFollower::update(const Route& route, double lat, double lon, float accuracyM, uint32_t now, float courseDeg,
-    float speedMps) {
+    float speedMps, bool newFix) {
     if (!active || route.points.size() < 2 || current.state == State::Arrived) {
         return current;
     }
     const OffRouteTuning& tuning = offRouteTuning();
-    accuracy.add(accuracyM, now, tuning);
+    if (newFix) {
+        accuracy.add(accuracyM, now, tuning);
+    }
     const float acc = accuracy.median();
     const float off = offRouteThreshold(tuning, acc);
     const bool weak = acc > tuning.weakAccuracyM;
@@ -313,11 +323,11 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
             if (p.x == q.x && p.y == q.y) {
                 continue;
             }
-            float difference = courseDeg - bearingOf(p, q);
-            while (difference > 180.0f) {
+            // fmod, not a loop: a broken course of 1e10 degrees must not hang the update (remainderf is not exported)
+            float difference = std::fmod(courseDeg - bearingOf(p, q), 360.0f);
+            if (difference > 180.0f) {
                 difference -= 360.0f;
-            }
-            while (difference <= -180.0f) {
+            } else if (difference <= -180.0f) {
                 difference += 360.0f;
             }
             smallest = std::min(smallest, std::fabs(difference));
@@ -358,20 +368,24 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
         }
     }
     if (settleLeft > 0) {
-        settleLeft--;
+        if (newFix) {
+            settleLeft--;
+        }
         rule = OffRouteRule::None;
     }
     current.awayRule = rule;
     if (rule == OffRouteRule::None) {
         awayFixes = 0;
         current.firedRule = OffRouteRule::None;
-    } else {
+    } else if (newFix) {
         awayFixes++;
     }
     current.awayFixes = static_cast<uint8_t>(std::min(awayFixes, 255));
 
-    if (rule == OffRouteRule::None && (distance <= matchLimit || weak)) {
-        // On the route, or in weak GPS followed by projection
+    // Weak GPS only stops the off-route rule: a fix further than the match limit (accuracy + MATCH_METRES), beyond the
+    // goal say, moves neither the progress nor makes an arrival
+    if (rule == OffRouteRule::None && distance <= matchLimit) {
+        // On the route (in weak GPS too, followed by projection)
         lastSegment = segment;
         current.progressM = progress;
         current.matched = { a.x + static_cast<int32_t>((b.x - a.x) * t), a.y + static_cast<int32_t>((b.y - a.y) * t) };

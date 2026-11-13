@@ -102,6 +102,9 @@ void MapView::closeScreen() {
 void MapView::goBack() {
     if (menuOpen) {
         handlePopupAction(UiAction::Back);
+    } else if (searchSheet.isOpen() && screen == Screen::Map) {
+        // One level back in the search sheet (a category list to the main list), else closes it
+        handleSearchEvent(searchSheet.handleKey(keys::ESCAPE));
     } else if (screen == Screen::About) {
         closeScreen();
     } else if (activeList() != nullptr) {

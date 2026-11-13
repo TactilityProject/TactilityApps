@@ -943,10 +943,11 @@ void MapView::pollDownloader(uint32_t now) {
     }
     lastStatusPoll = now;
     const Downloader::Status status = downloader.status();
-    // Tile cache slots given to a large download come back once nothing downloads
+    // Tile cache slots given to a large download come back once nothing downloads, and not while a search index is
+    // built (its tables grow; it was started with the memory free that it had)
     if (status.state != Downloader::State::Connecting && status.state != Downloader::State::Downloading &&
         status.state != Downloader::State::Updating && !downloader.isBrowsing() && worker.cacheShrunk() && !worker.isPreparing() &&
-        navigator.state() != Navigator::State::Searching) {
+        navigator.state() != Navigator::State::Searching && searchIndexJob.state() != SearchIndexJob::State::Busy) {
         worker.restoreMemory();
     }
     downloader.browseProgress(browseDone, browseTotal);
@@ -1473,9 +1474,6 @@ void MapView::render() {
             if (routeCard.isOpen()) {
                 routeCard.draw(canvas, sheetFont(), theme);
             }
-            if (searchSheet.isOpen()) {
-                searchSheet.draw(canvas, sheetFont(), theme);
-            }
             if (navigating) {
                 navBar.draw(canvas, sheetFont(), theme, width);
             }
@@ -1490,6 +1488,10 @@ void MapView::render() {
         workDotShown = screen == Screen::Map && work.any() && !statusShown && !controls.isVisible() && !sheet.isOpen() && !navigating;
         if (workDotShown) {
             drawWorkDot();
+        }
+        if (screen == Screen::Map && searchSheet.isOpen()) {
+            // Over the navigation bar and the status: the search's field and rows are where those are
+            searchSheet.draw(canvas, sheetFont(), theme);
         }
     }
     if (menuOpen) {

@@ -1017,9 +1017,19 @@ void RecentSearches::add(const SearchResult& result) {
     entries[0] = entry;
 }
 
+namespace {
+
+/** One line of the recent searches file: x TAB y TAB type TAB name. */
+constexpr size_t RECENT_LINE_BYTES = SEARCH_NAME_BYTES + SEARCH_LINE_BYTES + 32;
+
+} // namespace
+
 bool RecentSearches::save(WriteBytes write, void* context) const {
-    char text[CAPACITY * (SEARCH_NAME_BYTES + SEARCH_LINE_BYTES + 32) + 32];
-    size_t length = static_cast<size_t>(snprintf(text, sizeof(text), "recent 1\n"));
+    // Line by line: the map task that calls this has little stack
+    const char header[] = "recent 1\n";
+    if (!write(context, header, sizeof(header) - 1)) {
+        return false;
+    }
     for (int i = 0; i < used; i++) {
         char name[SEARCH_NAME_BYTES];
         char type[SEARCH_LINE_BYTES];
@@ -1032,37 +1042,32 @@ bool RecentSearches::save(WriteBytes write, void* context) const {
                 }
             }
         }
-        int n = snprintf(text + length, sizeof(text) - length, "%ld\t%ld\t%s\t%s\n", static_cast<long>(entries[i].x), static_cast<long>(entries[i].y), type, name);
-        if (n < 0 || length + static_cast<size_t>(n) >= sizeof(text)) {
+        char line[RECENT_LINE_BYTES];
+        int n = snprintf(line, sizeof(line), "%ld\t%ld\t%s\t%s\n", static_cast<long>(entries[i].x), static_cast<long>(entries[i].y), type, name);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(line) || !write(context, line, static_cast<size_t>(n))) {
             return false;
         }
-        length += static_cast<size_t>(n);
     }
-    return write(context, text, length);
+    return true;
 }
 
 bool RecentSearches::load(ReadBytes read, void* context) {
+    // Read in small pieces and parse line by line: the map task that calls this has little stack
     used = 0;
-    char text[CAPACITY * (SEARCH_NAME_BYTES + SEARCH_LINE_BYTES + 32) + 32];
+    bool header = false;
+    bool bad = false;
+    char line[RECENT_LINE_BYTES];
     size_t length = 0;
-    while (length + 1 < sizeof(text)) {
-        size_t got = read(context, text + length, sizeof(text) - 1 - length);
-        if (got == 0) {
-            break;
+    auto takeLine = [&]() {
+        line[length] = 0;
+        length = 0;
+        if (!header) {
+            header = strncmp(line, "recent 1", 8) == 0;
+            bad = !header;
+            return;
         }
-        length += got;
-    }
-    text[length] = 0;
-    char* line = text;
-    char* end = strchr(line, '\n');
-    if (end == nullptr || strncmp(line, "recent 1", 8) != 0) {
-        return false;
-    }
-    line = end + 1;
-    while (*line != 0 && used < CAPACITY) {
-        end = strchr(line, '\n');
-        if (end != nullptr) {
-            *end = 0;
+        if (used >= CAPACITY) {
+            return;
         }
         char* fields[4];
         int n = 0;
@@ -1080,10 +1085,24 @@ bool RecentSearches::load(ReadBytes read, void* context) {
             copyText(entry.name, sizeof(entry.name), fields[3]);
             entries[used++] = entry;
         }
-        if (end == nullptr) {
-            break;
+    };
+    char chunk[64];
+    size_t got;
+    while (!bad && (got = read(context, chunk, sizeof(chunk))) > 0) {
+        for (size_t i = 0; i < got && !bad; i++) {
+            if (chunk[i] == '\n') {
+                takeLine();
+            } else if (length + 1 < sizeof(line)) {
+                line[length++] = chunk[i];
+            }
         }
-        line = end + 1;
+    }
+    if (!bad && length > 0) {
+        takeLine();
+    }
+    if (bad || !header) {
+        used = 0;
+        return false;
     }
     return true;
 }

@@ -153,7 +153,7 @@ int parseQuery(const char* query, QueryReading out[3]) {
     char q2[256]; int j = 0;
     for (int i = 0; q[i]; i++) {
         if (q[i] == '/') {
-            while (i > 0 && std::isspace((unsigned char)q[i - 1])) q2[--j] = 0;
+            while (j > 0 && std::isspace((unsigned char)q2[j - 1])) q2[--j] = 0;
             q2[j++] = '/';
             while (q[i + 1] && std::isspace((unsigned char)q[i + 1])) i++;
         } else {

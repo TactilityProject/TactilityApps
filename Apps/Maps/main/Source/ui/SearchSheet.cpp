@@ -16,8 +16,21 @@ constexpr int ROW_PADDING = 10;
 constexpr const char* PLACEHOLDER = "Search places, streets, addresses";
 constexpr const char* CATEGORY_ENTRY = "Nearby by category";
 
+/** Copies text, cut on a UTF-8 character boundary to fit size. */
 void copyText(char* target, size_t size, const char* source) {
-    snprintf(target, size, "%s", source != nullptr ? source : "");
+    if (size == 0) {
+        return;
+    }
+    const char* text = source != nullptr ? source : "";
+    size_t length = strlen(text);
+    if (length >= size) {
+        length = size - 1;
+        while (length > 0 && (static_cast<unsigned char>(text[length]) & 0xC0) == 0x80) {
+            length--;
+        }
+    }
+    memcpy(target, text, length);
+    target[length] = '\0';
 }
 
 } // namespace

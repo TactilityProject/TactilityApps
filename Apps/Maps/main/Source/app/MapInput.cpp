@@ -309,7 +309,7 @@ void MapView::pointerClick() {
         return;
     }
     cursorMovedAt = nowMs();
-    if (prompt.isOpen() || dialog.isOpen() || menuOpen || sheet.isOpen() || downloadCard.isOpen() || screen != Screen::Map ||
+    if (prompt.isOpen() || dialog.isOpen() || menuOpen || searchSheet.isOpen() || sheet.isOpen() || downloadCard.isOpen() || screen != Screen::Map ||
         (pillRect.width > 0 && pillRect.contains(cursorX, cursorY))) {
         handleTap(cursorX, cursorY);
         return;
@@ -670,6 +670,11 @@ void MapView::handleTap(int x, int y) {
 
 void MapView::handleLongPress(int x, int y) {
     dirty = true;
+    if (searchSheet.isOpen()) {
+        // Holding a result row opens it like a tap; nothing behind the sheet reacts
+        handleTap(x, y);
+        return;
+    }
     // Holding a row opens its actions, like a tap
     if (screen == Screen::Regions && !dialog.isOpen() && !menuOpen) {
         const int row = regionList.rowAt(x, y);

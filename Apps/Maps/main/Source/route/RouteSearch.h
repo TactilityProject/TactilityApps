@@ -124,6 +124,8 @@ public:
     static constexpr size_t MAX_SIDES = 8000;
     /** Makes a running find() return Cancelled soon. */
     void cancel() { cancelled = true; }
+    /** For work after a search (addSides): a cancel from before no longer counts. */
+    void resetCancel() { cancelled = false; }
     /** The node states the memory allows, for the log. */
     uint32_t nodeCapacity() const { return maxNodes; }
 

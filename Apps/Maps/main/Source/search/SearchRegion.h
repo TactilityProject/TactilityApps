@@ -3,6 +3,7 @@
 
 #include "../route/GrowArray.h"
 #include "AddressMatch.h"
+#include "QueryParse.h"
 #include "SearchExtract.h"
 #include "SearchIndex.h"
 #include "TextFold.h"
@@ -37,13 +38,15 @@ public:
     }
     /** Adds a value (the caller has checked it is not there). */
     void insert(uint64_t hash, uint32_t value);
-    bool failed() const { return values.failed() || hashes.failed(); }
+    /** A value could not be added (no memory to grow): the index misses it. */
+    bool failed() const { return full || values.failed() || hashes.failed(); }
 
 private:
     void put(uint64_t hash, uint32_t value);
     GrowArray<uint32_t> values;
     GrowArray<uint64_t> hashes;
     size_t used = 0;
+    bool full = false;
 };
 
 /**
@@ -305,5 +308,17 @@ private:
     KeyMaker keyMaker;
     char categoryScratch[2048] = {};
 };
+
+/** The house number's grammar as the region statistics count it (both builders use it, so their files match). */
+struct HouseNumberStyle {
+    bool parsed;
+    bool plain;
+    bool slash;
+    bool secondSmaller;
+    HouseNumber number;
+};
+HouseNumberStyle houseNumberStyle(const char* text);
+/** The street number a house votes with: the second part of "x/y" when slashSecond, else the first; -1 for none. */
+int32_t houseVoteNumber(const char* text, bool slashSecond);
 
 } // namespace maps

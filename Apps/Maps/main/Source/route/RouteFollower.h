@@ -69,7 +69,7 @@ struct OffRouteTuning {
 
 /** The tuning in use, shared by the follower and the map (the debug script changes it). */
 OffRouteTuning& offRouteTuning();
-/** Sets one tuning value by its name ("minOffM", "triggerFixes", ...). False for an unknown name. */
+/** Sets one tuning value by its name ("minOffM", "triggerFixes", ...). False for an unknown name, a value that is not finite, or one that reverses a bound (minOffM above maxOffM); nothing changes then. */
 bool setOffRouteTuning(const char* name, float value);
 /** The threshold for a median accuracy: clamp(factor * acc + add, min, max). */
 float offRouteThreshold(const OffRouteTuning& tuning, float accuracyM);
@@ -137,11 +137,12 @@ public:
     void end() { active = false; }
     bool isActive() const { return active; }
     /**
-     * A new position at time now: accuracy in metres (NAN: unknown), course in degrees and speed in m/s (NAN: unknown).
-     * Each call counts as one fix for the off-route rule.
+     * A position at time now: accuracy in metres (NAN: unknown), course in degrees and speed in m/s (NAN: unknown).
+     * Each call with newFix counts as one fix for the off-route rule; newFix false (the last fix shown again) updates
+     * the status without counting, so one wrong fix never counts twice.
      */
     const Status& update(const Route& route, double lat, double lon, float accuracyM, uint32_t now, float courseDeg = NAN,
-        float speedMps = NAN);
+        float speedMps = NAN, bool newFix = true);
     const Status& status() const { return current; }
     /** The text of the next instruction, e.g. "In 120 m turn left onto Štefánikova". */
     void instruction(const Route& route, char* out, size_t size) const;

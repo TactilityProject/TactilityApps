@@ -139,6 +139,8 @@ private:
     bool inside = false;
     /** The first ring of a point-like feature (a park's outline is only needed for its middle vertex). */
     GrowArray<TilePoint> ring;
+    /** An array could not grow: the tile's extraction fails. */
+    bool arrayFailed = false;
 };
 
 } // namespace maps

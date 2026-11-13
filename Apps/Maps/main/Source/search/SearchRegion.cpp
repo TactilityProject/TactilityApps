@@ -72,36 +72,6 @@ size_t characterCount(const char* s, size_t bytes) {
     return n;
 }
 
-/** The leading digits of a house number (data.py num_of), -1 for none. */
-int32_t leadingNumber(const char* s) {
-    int32_t value = 0;
-    int digits = 0;
-    while (s[digits] >= '0' && s[digits] <= '9' && digits < 9) {
-        value = value * 10 + (s[digits] - '0');
-        digits++;
-    }
-    return digits > 0 ? value : -1;
-}
-
-struct NumberKind {
-    bool parsed;
-    bool plain;
-    bool slash;
-    bool secondSmaller;
-    HouseNumber number;
-};
-
-NumberKind classifyNumber(const char* s) {
-    NumberKind k = {};
-    k.parsed = parseHouseNumber(s, strlen(s), k.number);
-    if (k.parsed) {
-        k.plain = k.number.aux == 0 && k.number.suffix == 0 && k.number.flags == 0;
-        k.slash = (k.number.flags & HOUSE_SLASH) != 0 && k.number.aux != 0;
-        k.secondSmaller = k.slash && k.number.aux < k.number.number;
-    }
-    return k;
-}
-
 uint32_t tileKey(int x, int y) {
     return static_cast<uint32_t>(x) << 16 | static_cast<uint32_t>(y);
 }
@@ -117,12 +87,14 @@ double metresPerUnitAtTileY(double tileY) {
 // ------------------------------------------------------------------------------------------------ HashIndex
 
 void HashIndex::clear() {
+    full = false;
     values.clear();
     hashes.clear();
     used = 0;
 }
 
 void HashIndex::release() {
+    full = false;
     values.release();
     hashes.release();
     used = 0;
@@ -139,23 +111,28 @@ void HashIndex::put(uint64_t hash, uint32_t value) {
 }
 
 void HashIndex::insert(uint64_t hash, uint32_t value) {
+    if (full) {
+        return;
+    }
     if ((used + 1) * 2 > values.size()) {
+        // Both new arrays first: without memory for both the old table stays as it was (find() keeps working on it)
+        // and the index is full, which failed() reports
         const size_t capacity = values.size() < 1024 ? 1024 : values.size() * 2;
-        GrowArray<uint32_t> oldValues;
-        GrowArray<uint64_t> oldHashes;
-        oldValues.swap(values);
-        oldHashes.swap(hashes);
-        values.resize(capacity);
-        hashes.resize(capacity);
-        if (values.failed() || hashes.failed()) {
+        GrowArray<uint32_t> grownValues;
+        GrowArray<uint64_t> grownHashes;
+        if (!grownValues.resize(capacity) || !grownHashes.resize(capacity)) {
+            full = true;
             return;
         }
         for (size_t i = 0; i < capacity; i++) {
-            values[i] = NONE;
+            grownValues[i] = NONE;
         }
-        for (size_t i = 0; i < oldValues.size(); i++) {
-            if (oldValues[i] != NONE) {
-                put(oldHashes[i], oldValues[i]);
+        grownValues.swap(values);
+        grownHashes.swap(hashes);
+        // The old table is in the grown* arrays now
+        for (size_t i = 0; i < grownValues.size(); i++) {
+            if (grownValues[i] != NONE) {
+                put(grownHashes[i], grownValues[i]);
             }
         }
     }
@@ -187,8 +164,16 @@ uint32_t SearchRegionBuilder::copyText(const char* s) {
     }
     const auto offset = static_cast<uint32_t>(text.size());
     const size_t length = strlen(s);
+    // s may point into text (a settlement's name): grow first, so the pushes below never move it
+    const bool inside = s >= text.begin() && s < text.begin() + text.size();
+    const size_t from = inside ? static_cast<size_t>(s - text.begin()) : 0;
+    if (!text.reserve(text.size() + length + 1)) {
+        text.push(0);   // marks the failure (failed())
+        return offset;
+    }
+    const char* source = inside ? text.begin() + from : s;
     for (size_t i = 0; i <= length; i++) {
-        text.push(s[i]);
+        text.push(source[i]);
     }
     return offset;
 }
@@ -618,21 +603,12 @@ bool SearchRegionBuilder::matchHouses(const RegionConfig& config, double metresP
                 }
             }
         }
-        auto streetNumberOf = [&](const char* number) {
-            const NumberKind kind = classifyNumber(number);
-            if (kind.parsed) {
-                if (kind.slash && slashSecond && config.voteSlashSecond) {
-                    return static_cast<int32_t>(kind.number.aux);
-                }
-                return static_cast<int32_t>(kind.number.number);
-            }
-            return leadingNumber(number);
-        };
+        auto streetNumberOf = [&](const char* number) { return houseVoteNumber(number, slashSecond && config.voteSlashSecond); };
         const uint32_t own = houseStart[t + 1] - houseStart[t];
         for (uint32_t k = houseStart[t]; k < houseStart[t + 1]; k++) {
             Hs& h = houses[houseOrder[k]];
             const char* number = &text[h.text];
-            const bool villageStyle = villageMode && classifyNumber(number).plain;
+            const bool villageStyle = villageMode && houseNumberStyle(number).plain;
             h.villageStyle = villageStyle ? 1 : 0;
             matcher.addHouse(h.x, h.y, streetNumberOf(number), villageStyle);
         }
@@ -1113,7 +1089,7 @@ bool SearchRegionBuilder::buildSearchInput(const RegionConfig& config) {
     st.settlements = static_cast<uint32_t>(settlements.size());
     // The region's number style
     for (const Hs& h : houses) {
-        const NumberKind kind = classifyNumber(&text[h.text]);
+        const HouseNumberStyle kind = houseNumberStyle(&text[h.text]);
         if (!kind.parsed) {
             st.textNumbers++;
         }
@@ -1143,6 +1119,36 @@ bool SearchRegionBuilder::buildSearchInput(const RegionConfig& config) {
         return fail("no memory for the index input");
     }
     return true;
+}
+
+// ------------------------------------------------------------------------------------------------ number helpers
+
+HouseNumberStyle houseNumberStyle(const char* text) {
+    HouseNumberStyle k = {};
+    k.parsed = parseHouseNumber(text, strlen(text), k.number);
+    if (k.parsed) {
+        k.plain = k.number.aux == 0 && k.number.suffix == 0 && k.number.flags == 0;
+        k.slash = (k.number.flags & HOUSE_SLASH) != 0 && k.number.aux != 0;
+        k.secondSmaller = k.slash && k.number.aux < k.number.number;
+    }
+    return k;
+}
+
+int32_t houseVoteNumber(const char* text, bool slashSecond) {
+    const HouseNumberStyle kind = houseNumberStyle(text);
+    if (kind.parsed) {
+        if (kind.slash && slashSecond) {
+            return static_cast<int32_t>(kind.number.aux);
+        }
+        return static_cast<int32_t>(kind.number.number);
+    }
+    int32_t value = 0;
+    int digits = 0;
+    while (text[digits] >= '0' && text[digits] <= '9' && digits < 9) {
+        value = value * 10 + (text[digits] - '0');
+        digits++;
+    }
+    return digits > 0 ? value : -1;
 }
 
 } // namespace maps

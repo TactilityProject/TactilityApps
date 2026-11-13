@@ -582,33 +582,6 @@ int compareKeys(const uint8_t* a, uint32_t, const uint8_t* b, uint32_t, void*) {
 
 // ------------------------------------------------------------------------------------------------ number helpers
 
-HouseNumberStyle houseNumberStyle(const char* text) {
-    HouseNumberStyle k = {};
-    k.parsed = parseHouseNumber(text, strlen(text), k.number);
-    if (k.parsed) {
-        k.plain = k.number.aux == 0 && k.number.suffix == 0 && k.number.flags == 0;
-        k.slash = (k.number.flags & HOUSE_SLASH) != 0 && k.number.aux != 0;
-        k.secondSmaller = k.slash && k.number.aux < k.number.number;
-    }
-    return k;
-}
-
-int32_t houseVoteNumber(const char* text, bool slashSecond) {
-    const HouseNumberStyle kind = houseNumberStyle(text);
-    if (kind.parsed) {
-        if (kind.slash && slashSecond) {
-            return static_cast<int32_t>(kind.number.aux);
-        }
-        return static_cast<int32_t>(kind.number.number);
-    }
-    int32_t value = 0;
-    int digits = 0;
-    while (text[digits] >= '0' && text[digits] <= '9' && digits < 9) {
-        value = value * 10 + (text[digits] - '0');
-        digits++;
-    }
-    return digits > 0 ? value : -1;
-}
 
 // ------------------------------------------------------------------------------------------------ the builder
 
@@ -864,6 +837,10 @@ struct SearchStreamBuilder::Impl {
 
     /** One decoded feature of the current tile: its lines, house number or point. */
     bool takeFeature(const ExtractedTile& feature) {
+        // Out of memory in a table: stop at once (a table that could not grow must not be read further)
+        if (names.failed() || lineName.failed() || lineHash.failed() || settlements.failed()) {
+            return fail("no memory for the tile tables");
+        }
         return addLines(currentTile, feature) && addHouses(currentTile, feature) && addPoints(feature);
     }
 

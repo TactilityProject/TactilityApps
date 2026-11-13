@@ -38,14 +38,21 @@ uint32_t nextCodepoint(const char*& text) {
     if (first < 0x80) {
         return first;
     }
-    if ((first & 0xE0) == 0xC0 && *text != '\0') {
-        return ((first & 0x1Fu) << 6) | (static_cast<uint8_t>(*text++) & 0x3Fu);
+    // 2, 3 or 4 bytes; a broken sequence is skipped and shown as '?'
+    const int extra = (first & 0xE0) == 0xC0 ? 1 : (first & 0xF0) == 0xE0 ? 2 : (first & 0xF8) == 0xF0 ? 3 : 0;
+    uint32_t codepoint = first & (0x3Fu >> extra);
+    int taken = 0;
+    while (taken < extra && (static_cast<uint8_t>(*text) & 0xC0) == 0x80) {
+        codepoint = (codepoint << 6) | (static_cast<uint8_t>(*text++) & 0x3Fu);
+        taken++;
     }
-    // Longer sequences are skipped and shown as '?'
-    while ((static_cast<uint8_t>(*text) & 0xC0) == 0x80) {
-        text++;
+    if (extra == 0 || taken < extra) {
+        while ((static_cast<uint8_t>(*text) & 0xC0) == 0x80) {
+            text++;
+        }
+        return '?';
     }
-    return '?';
+    return codepoint;
 }
 
 } // namespace

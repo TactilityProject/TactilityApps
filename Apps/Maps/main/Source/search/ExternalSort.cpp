@@ -113,6 +113,8 @@ bool ExternalSorter::begin(ScratchFiles* files, const char* prefix, uint32_t buf
         setError(error, sizeof(error), "bad sort setup");
         return false;
     }
+    // The record offsets sit at the buffer's end as uint32_t: keep them aligned
+    bufferBytes &= ~3u;
     void* memory = largeAlloc(sizeof(Impl));
     if (memory == nullptr) {
         setError(error, sizeof(error), "no memory for a sort");

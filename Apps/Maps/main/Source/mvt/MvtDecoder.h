@@ -98,7 +98,9 @@ private:
         int16_t layerKey = -1;
         int16_t nameKey = -1;
         int16_t nameLatinKey = -1;
+        /** "name_en" and "name:en": a layer can have both, on different features; name_en wins on a feature with both. */
         int16_t nameEnKey = -1;
+        int16_t nameEnColonKey = -1;
         int16_t rankKey = -1;
         int16_t houseNumberKey = -1;
         uint32_t valueOffset = 0;

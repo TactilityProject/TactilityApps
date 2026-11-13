@@ -121,6 +121,11 @@ bool RouteSearch::addSides(GraphSource& source, const GrowArray<RoutePoint>& poi
         if (sides.size() >= MAX_SIDES) {
             break;
         }
+        if (cancelled) {
+            // The navigator stops: the side roads are optional
+            sides.clear();
+            return false;
+        }
         if (!source.readGraph(tile, fileBuffer) || !loadTileGraph(fileBuffer.begin(), fileBuffer.size(), inflater, graph)) {
             continue;
         }

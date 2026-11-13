@@ -474,7 +474,10 @@ void MapView::followRoute(uint32_t now) {
         stopNavigation();
         return;
     }
-    const RouteFollower::Status status = follower.update(route, fix.latitude, fix.longitude, fix.accuracy, now, fix.course, fix.speed);
+    // The 2 s timer shows the last fix again: it updates the bar but never counts as another fix
+    const bool newFix = fix.timeMs != lastFollowFixMs || fix.timeMs == 0;
+    lastFollowFixMs = fix.timeMs;
+    const RouteFollower::Status status = follower.update(route, fix.latitude, fix.longitude, fix.accuracy, now, fix.course, fix.speed, newFix);
     // One line per fix while navigating, for tuning the off-route rule (0.4.1)
     scriptLog("Follow: route %.1f m, acc %.1f m (fix %.1f), off %.1f m, heading %.0f, side %.1f m, %.1f m/s, away %u%s%s%s, replay %d",
         status.distanceFromRouteM, status.accuracyM, fix.accuracy, status.offM, status.headingDifference, status.sideM, fix.speed,

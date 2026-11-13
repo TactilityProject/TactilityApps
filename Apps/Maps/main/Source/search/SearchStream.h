@@ -115,16 +115,4 @@ private:
     bool wasCancelled = false;
 };
 
-/** The house number's grammar as the region statistics count it (SearchRegionBuilder uses the same). */
-struct HouseNumberStyle {
-    bool parsed;
-    bool plain;
-    bool slash;
-    bool secondSmaller;
-    HouseNumber number;
-};
-HouseNumberStyle houseNumberStyle(const char* text);
-/** The street number a house votes with: the second part of "x/y" when slashSecond, else the first; -1 for none. */
-int32_t houseVoteNumber(const char* text, bool slashSecond);
-
 } // namespace maps

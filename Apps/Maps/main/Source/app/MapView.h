@@ -472,6 +472,7 @@ private:
     /** A mode was chosen while a search ran: a new search starts once it has stopped. */
     bool restartRoute = false;
     uint32_t lastRecalculation = 0;
+    int64_t lastFollowFixMs = -1;
     uint32_t lastFollowAt = 0;
     uint32_t lastFollowSignature = 0;
     uint32_t arrivedAt = 0;
