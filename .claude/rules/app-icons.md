@@ -21,7 +21,7 @@ Apps with a UI only. Headless apps (`app.N.headless=true` in `manifest.propertie
 
 ## Mono icon (`icon_mono.svg`)
 
-- `width="24" height="24" viewBox="0 0 96 96"`.
+- `width="96" height="96" viewBox="0 0 96 96"`.
 - Pure black (`#000000`) on transparent. No other colours, no opacity, no gradients.
 - No border or frame around the glyph.
 - Glyph fills about 80px of the 96px canvas (83%), centred. Match the Material icons in `Tactility/Data/system/app_icon/*_mono.svg`, which fill roughly 75-85%.
