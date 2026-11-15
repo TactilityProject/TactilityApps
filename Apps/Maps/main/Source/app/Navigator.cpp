@@ -252,18 +252,24 @@ bool Navigator::requestRejoin(double fromLat, double fromLon, double toLat, doub
 }
 
 bool Navigator::runRejoin(GraphSource& source, Route& next) {
-    // Only this task changes the routes, so the current one can be read here without the lock
-    const Route& old = routes[current];
+    // "Clear route" on the main task can empty the current route at any time: what is needed of it is read under the
+    // lock, and the splice is made under the lock only if the route has not changed since
     // Far enough ahead that the way back is no U-turn, near enough that the search is short
     const float ahead = requestProfile == RouteProfile::Walk ? 400.0f : 1200.0f;
     const RoutePoint from = routePointFrom(requestFrom[0], requestFrom[1]);
-    const size_t target = rejoinTarget(old, from, requestProgress, ahead, 1000.0f);
+    lock();
+    const uint32_t generation = changes.load();
+    const Route& current0 = routes[current];
+    const size_t target = current0.isEmpty() ? SIZE_MAX : rejoinTarget(current0, from, requestProgress, ahead, 1000.0f);
+    const RoutePoint join = target != SIZE_MAX ? current0.points[target] : RoutePoint {};
+    const RoutePoint destination = current0.to;
+    unlock();
     if (target == SIZE_MAX) {
         return false;
     }
     double targetLat;
     double targetLon;
-    routePointTo(old.points[target], targetLat, targetLon);
+    routePointTo(join, targetLat, targetLon);
     Route piece;
     RouteStats pieceStats {};
     const RouteResult found = search.find(source, requestFrom[0], requestFrom[1], targetLat, targetLon, requestProfile, piece, &pieceStats);
@@ -273,12 +279,27 @@ bool Navigator::runRejoin(GraphSource& source, Route& next) {
         return false;
     }
     // A way back that is far longer than the straight line is no way back (a river, a motorway in between)
-    const float dx = static_cast<float>(old.points[target].x - from.x);
-    const float dy = static_cast<float>(old.points[target].y - from.y);
+    const float dx = static_cast<float>(join.x - from.x);
+    const float dy = static_cast<float>(join.y - from.y);
     const float straight = std::sqrt(dx * dx + dy * dy) * static_cast<float>(routeMetresPerUnit(from.y));
     // Nor is one that leads away from the destination (the position is already past that part of the old route)
-    if (piece.lengthM > 3.0f * straight + 500.0f || !rejoinLeadsOn(from, old.points[target], old.to, piece.lengthM) ||
-        !spliceRoute(piece, old, target, next)) {
+    bool spliced = false;
+    bool changed = false;
+    if (piece.lengthM <= 3.0f * straight + 500.0f && rejoinLeadsOn(from, join, destination, piece.lengthM)) {
+        lock();
+        changed = changes.load() != generation;
+        spliced = !changed && spliceRoute(piece, routes[current], target, next);
+        rejoinGeneration = generation;
+        unlock();
+    }
+    if (changed) {
+        // The route was cleared or replaced meanwhile: nothing is restored, and no search to the old goal follows
+        logInfo("Route rejoin: the route changed during the search, dropped");
+        next.clear();
+        rejoinCancelled = true;
+        return false;
+    }
+    if (!spliced) {
         logInfo("Route rejoin: %.0f m for %.0f m in a straight line, or away from the destination: searching to the destination",
             piece.lengthM, straight);
         next.clear();
@@ -411,6 +432,14 @@ void Navigator::runRoute() {
     result = found;
     if (found == RouteResult::Found) {
         lock();
+        if (rejoined && changes.load() != rejoinGeneration) {
+            // "Clear route" came between the splice and here: the cleared route is not brought back
+            unlock();
+            next.clear();
+            result = RouteResult::Cancelled;
+            currentState = State::Failed;
+            return;
+        }
         if (rejoined) {
             // The side roads of the old route go on being used: most of the route is the same, and working them out
             // again reads every tile along it (5 to 6 s of card time after each new route, 14 Nov)
@@ -468,9 +497,11 @@ void Navigator::runTrack() {
             fclose(file);
             return fine;
         };
+        bool fed = true;
         read = runOnCard(*io, readChunk, IoPriority::Background);
         while (read && chunk.count > 0 && job.load() != Job::Quit) {
             if (!reader.feed(buffer, chunk.count)) {
+                fed = false;
                 break;
             }
             chunk.offset += static_cast<long>(chunk.count);
@@ -480,8 +511,11 @@ void Navigator::runTrack() {
             read = runOnCard(*io, readChunk, IoPriority::Background);
             vTaskDelay(1);
         }
-        reader.finish();
-        ok = read && builder->finish(next);
+        // A damaged or unfinished file (no closing tags), or the app closing (stop()), gives no route: the old one
+        // stays, and nothing half-read is saved
+        const bool finished = reader.finish();
+        const bool quit = job.load() == Job::Quit;
+        ok = read && fed && finished && !quit && builder->finish(next) && job.load() != Job::Quit;
         logInfo("Route from the GPX file %s: %s, %u points read, %u kept, %.0f m, %u ms", benchPath, ok ? "made" : "none",
             static_cast<unsigned>(builder->pointsRead()), static_cast<unsigned>(next.points.size()), next.lengthM, nowMs() - started);
     }

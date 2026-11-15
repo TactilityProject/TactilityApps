@@ -113,6 +113,8 @@ private:
     float requestProgress = -1.0f;
     bool rejoined = false;
     bool rejoinCancelled = false;
+    /** The route change count the rejoin was spliced against: the splice is installed only if it still holds. */
+    uint32_t rejoinGeneration = 0;
     RouteProfile requestProfile = RouteProfile::Walk;
 };
 

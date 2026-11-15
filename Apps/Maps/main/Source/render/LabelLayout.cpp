@@ -192,14 +192,47 @@ void LabelLayout::clear() {
     placedCount = 0;
 }
 
+void LabelLayout::screenToMap(double sx, double sy, double& mx, double& my) const {
+    if (viewSin == 0.0f && viewCos == 1.0f) {
+        // North up: the screen's corner is the origin (kept exactly as before, so unturned placements do not change)
+        mx = sx + originX;
+        my = sy + originY;
+        return;
+    }
+    const double dx = sx - screenWidth / 2.0;
+    const double dy = sy - screenHeight / 2.0;
+    mx = viewCenterX + viewCos * dx - viewSin * dy;
+    my = viewCenterY + viewSin * dx + viewCos * dy;
+}
+
+void LabelLayout::mapToScreen(double mx, double my, double& sx, double& sy) const {
+    if (viewSin == 0.0f && viewCos == 1.0f) {
+        sx = mx - originX;
+        sy = my - originY;
+        return;
+    }
+    const double dx = mx - viewCenterX;
+    const double dy = my - viewCenterY;
+    sx = screenWidth / 2.0 + viewCos * dx + viewSin * dy;
+    sy = screenHeight / 2.0 - viewSin * dx + viewCos * dy;
+}
+
 void LabelLayout::beginView(int width, int height, int viewZoom, double worldLeft, double worldTop) {
+    beginTurnedView(width, height, viewZoom, worldLeft, worldTop, worldLeft + width / 2.0, worldTop + height / 2.0, 1.0f, 0.0f);
+}
+
+void LabelLayout::beginTurnedView(int width, int height, int viewZoom, double worldLeft, double worldTop, double centerX, double centerY,
+    float cosine, float sine) {
     if (placedCount > 0) {
         // What is on screen now is remembered (by name and map position), so it keeps its place in the next placement
         const double scale = std::ldexp(1.0, WORLD_ZOOM - zoom);
         keptCount = 0;
         for (int i = 0; i < placedCount; i++) {
             const Placed& label = placed[i];
-            kept[keptCount++] = { label.id, (label.x + label.width / 2.0 + originX) * scale, (label.y + label.height / 2.0 + originY) * scale };
+            double mx;
+            double my;
+            screenToMap(label.x + label.width / 2.0, label.y + label.height / 2.0, mx, my);
+            kept[keptCount++] = { label.id, mx * scale, my * scale };
         }
     }
     screenWidth = width;
@@ -207,6 +240,10 @@ void LabelLayout::beginView(int width, int height, int viewZoom, double worldLef
     zoom = viewZoom;
     originX = worldLeft;
     originY = worldTop;
+    viewCenterX = centerX;
+    viewCenterY = centerY;
+    viewCos = cosine;
+    viewSin = sine;
     gridBaseX = std::floor((worldLeft - MARGIN) / CELL);
     gridBaseY = std::floor((worldTop - MARGIN) / CELL);
     pendingCount = 0;
@@ -454,8 +491,11 @@ void LabelLayout::addRecords(const uint8_t* bytes, size_t size, int count, const
             const float anchorY = candidate.line ? linePoints[2 * candidate.firstPoint + 1] : candidate.y;
             // In pixels of WORLD_ZOOM, so the label has the same number at every view zoom
             const double scale = std::ldexp(1.0, WORLD_ZOOM - zoom);
-            const auto worldX = static_cast<int64_t>(std::floor((static_cast<double>(anchorX) + originX) * scale / 16.0 + 0.5));
-            const auto worldY = static_cast<int64_t>(std::floor((static_cast<double>(anchorY) + originY) * scale / 16.0 + 0.5));
+            double mapX;
+            double mapY;
+            screenToMap(anchorX, anchorY, mapX, mapY);
+            const auto worldX = static_cast<int64_t>(std::floor(mapX * scale / 16.0 + 0.5));
+            const auto worldY = static_cast<int64_t>(std::floor(mapY * scale / 16.0 + 0.5));
             hash = (hash ^ static_cast<uint32_t>(worldX)) * 16777619u;
             hash = (hash ^ static_cast<uint32_t>(worldY)) * 16777619u;
             candidate.order = hash;
@@ -798,8 +838,11 @@ int LabelLayout::placeLine(const Candidate& candidate) {
             if (kept[k].id != candidate.order) {
                 continue;
             }
-            const auto nearX = static_cast<float>(kept[k].worldX * scale - originX);
-            const auto nearY = static_cast<float>(kept[k].worldY * scale - originY);
+            double screenX;
+            double screenY;
+            mapToScreen(kept[k].worldX * scale, kept[k].worldY * scale, screenX, screenY);
+            const auto nearX = static_cast<float>(screenX);
+            const auto nearY = static_cast<float>(screenY);
             for (float start = 0.0f; start + needed <= total; start += 16.0f) {
                 if (tryAt(start, &nearX, &nearY)) {
                     placedHere++;

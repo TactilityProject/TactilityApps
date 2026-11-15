@@ -283,6 +283,10 @@ void GraphBuilder::addPart(const Point* points, size_t count) {
     // Half-open ownership: a segment lying on the x = 4096 or y = 4096 side belongs to the neighbour tile
     size_t start = 0;
     for (size_t i = 0; i + 1 <= count; i++) {
+        if (wayPoints.failed() || ways.failed()) {
+            // Out of memory: the build fails (finish() checks), nothing more is added
+            return;
+        }
         const bool last = i + 1 == count;
         const bool onFar = !last && ((points[i].x == GRAPH_EXTENT && points[i + 1].x == GRAPH_EXTENT) ||
             (points[i].y == GRAPH_EXTENT && points[i + 1].y == GRAPH_EXTENT));
@@ -299,7 +303,7 @@ void GraphBuilder::addPart(const Point* points, size_t count) {
                 // on every main road every tile, not only at the junctions of two main roads (a village on one
                 // road through a valley has none for many kilometres)
                 wayPoints.push(points[start]);
-                for (size_t j = start + 1; j < end; j++) {
+                for (size_t j = start + 1; j < end && !wayPoints.failed(); j++) {
                     const Point a = points[j - 1];
                     const Point b = points[j];
                     float crossings[40];
@@ -320,6 +324,7 @@ void GraphBuilder::addPart(const Point* points, size_t count) {
                     for (int k = 0; k < crossingCount; k++) {
                         const float t = crossings[k];
                         const Point at { static_cast<int16_t>(roundUnit(a.x + t * (b.x - a.x))), static_cast<int16_t>(roundUnit(a.y + t * (b.y - a.y))) };
+                        // (never empty here: the loop stops once a push has failed)
                         const Point previous = wayPoints[wayPoints.size() - 1];
                         if ((at.x != previous.x || at.y != previous.y) && (at.x != b.x || at.y != b.y)) {
                             wayPoints.push(at);

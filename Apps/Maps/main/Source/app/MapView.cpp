@@ -1010,6 +1010,10 @@ void MapView::run() {
             metrics::setKeyboard(input.hasKeyboard());
             cursorShown = false;
             pointerAcceleration.reset();
+            // The download card's key hint comes or goes: laid out again so it does not overlap the buttons
+            if (downloadCard.isOpen()) {
+                fillDownloadCard();
+            }
             dirty = true;
         }
         const uint32_t afterKeys = nowMs();
@@ -1193,6 +1197,9 @@ void MapView::run() {
                     cursorShown = false;
                     controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
                     metrics::setKeyboard(input.hasKeyboard());
+                    if (downloadCard.isOpen()) {
+                        fillDownloadCard();
+                    }
                     dirty = true;
                     break;
                 default:

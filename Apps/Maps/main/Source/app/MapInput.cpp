@@ -760,7 +760,9 @@ void MapView::handleGesture(const Gesture& gesture) {
                     dragRowAccumulator -= gesture.dx;
                     const int pageWidth = std::max(1, width / 3);
                     while (std::abs(dragRowAccumulator) >= pageWidth) {
-                        menuGrid.swipe(dragRowAccumulator > 0 ? 1 : -1);
+                        if (menuGrid.swipe(dragRowAccumulator > 0 ? 1 : -1)) {
+                            dirty = true;
+                        }
                         dragRowAccumulator -= (dragRowAccumulator > 0 ? 1 : -1) * pageWidth;
                     }
                 }

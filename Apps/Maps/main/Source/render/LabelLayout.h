@@ -133,6 +133,12 @@ public:
      */
     void beginView(int width, int height, int viewZoom, double worldLeft = 0.0, double worldTop = 0.0);
     /**
+     * The same for a turned map: the screen centre's map position and the bearing's cosine and sine (screen offset =
+     * [cos sin; -sin cos] x map offset, as the label transforms). Labels keep their identity and place across pans.
+     */
+    void beginTurnedView(int width, int height, int viewZoom, double worldLeft, double worldTop, double centerX, double centerY,
+        float cosine, float sine);
+    /**
      * Adds the labels of one source tile's label section. With cells (a split tile's label file) only the POI and house
      * number cells near the screen are read.
      */
@@ -146,6 +152,8 @@ public:
     void draw(Canvas& canvas, int offsetX, int offsetY, bool lineLabels) const;
     int count() const { return placedCount; }
     int candidateTotal() const { return candidateCount; }
+    /** Tests: the identity (name and map position hash) of candidate i of the last view. */
+    uint32_t candidateOrder(int index) const { return candidates[index].order; }
     /** Records read by the addSection() calls since beginView(), for the log. */
     int recordsRead() const { return recordCount; }
     /** Time the last place() spent drawing sprites, set through setClock(). */
@@ -268,6 +276,14 @@ private:
     uint32_t grid[1024] {};
     double originX = 0.0;
     double originY = 0.0;
+    /** The view's turn (cos 1, sin 0 when north is up) and its centre on the map, for screenToMap / mapToScreen. */
+    double viewCenterX = 0.0;
+    double viewCenterY = 0.0;
+    float viewCos = 1.0f;
+    float viewSin = 0.0f;
+    /** Map pixels (of this view's zoom) of a screen point, and back; the same frame for every pan at one bearing. */
+    void screenToMap(double sx, double sy, double& mx, double& my) const;
+    void mapToScreen(double mx, double my, double& sx, double& sy) const;
     double gridBaseX = 0.0;
     double gridBaseY = 0.0;
     /** POIs whose icon has a place, as candidate indexes, until finishPois() draws them. */

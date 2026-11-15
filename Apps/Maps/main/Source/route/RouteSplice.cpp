@@ -135,7 +135,8 @@ bool spliceRoute(const Route& piece, const Route& old, size_t target, Route& out
         }
     }
     auto sameRoad = [&](const RouteStep& a, const RouteStep& b) {
-        return a.roadClass == b.roadClass && a.nameLength == b.nameLength &&
+        // The same coarseness too: a coarse step (main-road layer) keeps its own wider off-route limit
+        return a.roadClass == b.roadClass && (a.flags & ROUTE_STEP_COARSE) == (b.flags & ROUTE_STEP_COARSE) && a.nameLength == b.nameLength &&
             (a.nameLength == 0 || (a.nameOffset + a.nameLength <= piece.names.size() && b.nameOffset + b.nameLength <= old.names.size() &&
                 memcmp(piece.names.begin() + a.nameOffset, old.names.begin() + b.nameOffset, a.nameLength) == 0));
     };

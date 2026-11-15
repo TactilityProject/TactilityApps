@@ -196,11 +196,12 @@ bool writeRegionMeta(const char* path, const RegionMeta& meta) {
     const size_t length = strlen(text);
     const bool ok = fwrite(text, 1, length, file) == length;
     // The old file goes only once the new one is whole (a failed write must not cost the old one)
-    if (fclose(file) != 0 || !ok || !replaceFile(temporary, path)) {
+    if (fclose(file) != 0 || !ok) {
         remove(temporary);
         return false;
     }
-    return true;
+    // A failed replace keeps the temporary file: the old one may be gone already, and recoverFile() needs it
+    return replaceFile(temporary, path);
 }
 
 bool readRegionMeta(const char* path, RegionMeta& meta) {

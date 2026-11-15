@@ -220,11 +220,14 @@ void MapView::pollDownloader(uint32_t now) {
                 retryAt = now + RETRY_AFTER_MS;
                 logInfo("Download of %s failed, trying again in %u s (%d of %d)", status.region, RETRY_AFTER_MS / 1000, retries, MAX_RETRIES);
             }
-        } else if (status.state == Downloader::State::Done && lastStatus.state == Downloader::State::Downloading) {
+        } else if (status.state == Downloader::State::Done && (lastStatus.state == Downloader::State::Downloading ||
+            lastStatus.state == Downloader::State::Connecting)) {
             retries = 0;
         }
         // After a finished download the next unfinished region continues, but not one paused on purpose
-        if (status.state == Downloader::State::Done && lastStatus.state == Downloader::State::Downloading) {
+        // (a short download can go from Connecting straight to Done between two polls)
+        if (status.state == Downloader::State::Done && (lastStatus.state == Downloader::State::Downloading ||
+            lastStatus.state == Downloader::State::Connecting)) {
             resumeChecked = false;
         }
         dirty = true;

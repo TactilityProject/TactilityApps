@@ -179,7 +179,7 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             return strcmp(text, "bike") == 0 ? 1 : (strcmp(text, "car") == 0 ? 2 : (strcmp(text, "all") == 0 ? 3 : 0));
         };
         char word[16] = "";
-        if (strcmp(command, "routebench") == 0 && sscanf(argument, "%31s %15s", step.name, word) >= 1) {
+        if (strcmp(command, "routebench") == 0 && sscanf(argument, "%47s %15s", step.name, word) >= 1) {
             step.action = Action::RouteBench;
             step.zoom = profileOf(word);
             return step;
@@ -193,7 +193,7 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::WaitRoute;
             return step;
         }
-        if (strcmp(command, "replay") == 0 && sscanf(argument, "%31s %f %f %f", step.name, &step.values[0], &step.values[1], &step.values[2]) >= 1) {
+        if (strcmp(command, "replay") == 0 && sscanf(argument, "%47s %f %f %f", step.name, &step.values[0], &step.values[1], &step.values[2]) >= 1) {
             // replay <file> [accuracy m] [noise m] [seed]
             step.action = Action::Replay;
             return step;
@@ -202,7 +202,7 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::SearchIndex;
             step.zoom = strncmp(argument, "force", 5) == 0 ? 1 : 0;
             // "searchindex force <region>": that region only
-            if (step.zoom != 0 && sscanf(argument, "force %31s", step.name) != 1) {
+            if (step.zoom != 0 && sscanf(argument, "force %47s", step.name) != 1) {
                 step.name[0] = '\0';
             }
             return step;
@@ -211,11 +211,11 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::WaitSearchIndex;
             return step;
         }
-        if (strcmp(command, "filecheck") == 0 && sscanf(argument, "%31s", step.name) == 1) {
+        if (strcmp(command, "filecheck") == 0 && sscanf(argument, "%47s", step.name) == 1) {
             step.action = Action::FileCheck;
             return step;
         }
-        if (strcmp(command, "offroute") == 0 && sscanf(argument, "%31s %f", step.name, &step.values[0]) == 2) {
+        if (strcmp(command, "offroute") == 0 && sscanf(argument, "%47s %f", step.name, &step.values[0]) == 2) {
             step.action = Action::OffRoute;
             return step;
         }

@@ -125,7 +125,7 @@ void MapView::placeLabels() {
     double bottom;
     viewBounds(left, top, right, bottom);
     // With the map position of the screen's corner the placement does not depend on where the view was panned to
-    labels.beginView(width, height, zoom, left, top);
+    labels.beginTurnedView(width, height, zoom, left, top, centerX, centerY, bearingCos, bearingSin);
     // House numbers show from z17 (z18 with few labels): only then are they read from the label files
     labelStore.setNumbersWanted(zoom >= 17 + (settings.labels == static_cast<int>(LabelDensity::Few) ? 1 : 0));
     const int tileCount = 1 << zoom;

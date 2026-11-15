@@ -291,7 +291,8 @@ void MapView::openSearch() {
     }
     searchSheet.open();
     searchSheet.setTypingKeyboard(input.hasKeyboard());
-    searchSheet.setTrackball(input.hasKeyboard() || input.hasPointer());
+    // "Roll" only where there is a trackball to roll (a keyboard-only board moves with Tab)
+    searchSheet.setTrackball(input.hasTrackball());
     int count = 0;
     const SearchCategory* categories = SearchEngine::categories(&count);
     const char* names[SearchSheet::MAX_CATEGORIES];

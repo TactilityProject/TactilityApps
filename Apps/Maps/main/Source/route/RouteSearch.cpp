@@ -532,7 +532,7 @@ RoutePoint RouteSearch::globalOf(uint32_t key) const {
     return { (tile.key.x * GRAPH_EXTENT + tile.nodeX[node]) * units, (tile.key.y * GRAPH_EXTENT + tile.nodeY[node]) * units };
 }
 
-bool RouteSearch::linkAcross(GraphSource& source, const RoutePoint& at, int toZoom, uint32_t& linked, bool& limit) {
+bool RouteSearch::linkAcross(GraphSource& source, const RoutePoint& at, uint8_t level, int toZoom, uint32_t& linked, bool& limit) {
     // The tile of the other level that holds the point, and its nearest main-road node within LINK_M
     const int units = 1 << (GRAPH_ZOOM - toZoom);
     const TileKey key { toZoom, at.x / (GRAPH_EXTENT * units), at.y / (GRAPH_EXTENT * units) };
@@ -551,7 +551,7 @@ bool RouteSearch::linkAcross(GraphSource& source, const RoutePoint& at, int toZo
     const float localX = static_cast<float>(at.x) / units - static_cast<float>(key.x) * GRAPH_EXTENT;
     const float localY = static_cast<float>(at.y) / units - static_cast<float>(key.y) * GRAPH_EXTENT;
     for (uint32_t i = 0; i < tile.nodeCount; i++) {
-        if (tile.mainNode[i] == 0) {
+        if (tile.mainNode[i] == 0 || tile.level[i] != level) {
             continue;
         }
         const float dx = (tile.nodeX[i] - localX) * units;
@@ -1102,7 +1102,7 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
                     // layer to the local roads near the goal only (near the start it would only go round in circles)
                     if (tile->mainNode[node] != 0 && (local || nearGoal)) {
                         uint32_t linked = EMPTY;
-                        if (linkAcross(source, here, local ? GRAPH_MAIN_ZOOM : GRAPH_ZOOM, linked, limit)) {
+                        if (linkAcross(source, here, tile->level[node], local ? GRAPH_MAIN_ZOOM : GRAPH_ZOOM, linked, limit)) {
                             // tile may be a neighbour's now for nothing: linkAcross only adds tiles
                             const RoutePoint there = globalOf(linked);
                             const float metres = lengthOf(there.x - here.x, there.y - here.y) * metresPerUnit;

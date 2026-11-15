@@ -168,6 +168,11 @@ void MapView::followGpxFile(const char* path) {
     routeRequested = true;
     restartRoute = false;
     startFromPosition = true;
+    trackLoading = true;
+    trackModePending = false;
+    // A track is shown as Walk until it is read: the mode kept here must say the same, or choosing the mode that was
+    // last used (Bike, say) would look like no change
+    routeProfile = RouteProfile::Walk;
     routeCard.open("", nullptr);
     routeCard.setMode(static_cast<int>(RouteProfile::Walk));
     routeCard.setBusy(true);
@@ -283,8 +288,10 @@ void MapView::fillRouteCard() {
     const RouteProfile profile = route.profile;
     const bool track = route.track;
     if (track) {
-        // Another mode chosen on the card searches a road route to the track's end
+        // Another mode chosen on the card searches a road route to the track's end; without a fix it starts at the
+        // track's start, not at the start of some earlier route
         routePointTo(route.to, goalLat, goalLon);
+        routePointTo(route.points[0], startLat, startLon);
         routeProfile = profile;
     }
     navigator.unlock();
@@ -293,12 +300,26 @@ void MapView::fillRouteCard() {
     routeCard.open(summary, track ? "Follows the track as it is: no turns are announced" : (profile == RouteProfile::Car ? CAR_NOTE : nullptr));
     routeCard.setMode(static_cast<int>(profile));
     routeCard.layout(width, height, sheetFont());
+    // A mode chosen while the track was read: applied now that the track's end is known
+    if (track && trackModePending) {
+        trackModePending = false;
+        if (pendingTrackMode != profile) {
+            chooseRouteMode(pendingTrackMode);
+        }
+    }
 }
 
 void MapView::chooseRouteMode(RouteProfile next) {
     routeProfile = next;
     routeCard.setMode(static_cast<int>(next));
     dirty = true;
+    if (trackLoading) {
+        // The track goes on loading: cancelling it would route to the goal of an earlier route
+        pendingTrackMode = next;
+        trackModePending = true;
+        routeCard.setBusy(true);
+        return;
+    }
     if (navigator.state() == Navigator::State::Searching) {
         // The running search stops; the new one starts when it has (updateNavigation)
         navigator.cancel();
@@ -449,8 +470,12 @@ void MapView::flushNavLog() {
         const bool ok = fwrite(navLog, 1, navLogUsed, file) == navLogUsed;
         return fclose(file) == 0 && ok;
     };
-    runOnCard(io, append, IoPriority::Background);
-    navLogUsed = 0;
+    // The lines are kept when the write failed (a busy or full card) and tried again with the next ones; after a few
+    // failures in a row they are dropped, so a card that never takes them does not make every line a write
+    if (runOnCard(io, append, IoPriority::Background) || ++navLogFailures >= 3) {
+        navLogUsed = 0;
+        navLogFailures = 0;
+    }
     navLogFlushedAt = nowMs();
 }
 
@@ -484,6 +509,12 @@ void MapView::updateNavigation(uint32_t now) {
         const RouteResult result = navigator.takeResult();
         const bool asked = routeRequested;
         routeRequested = false;
+        // A track's result: a mode chosen meanwhile is applied by fillRouteCard (only when the track was found)
+        const bool trackResult = trackLoading;
+        trackLoading = false;
+        if (trackResult && result != RouteResult::Found) {
+            trackModePending = false;
+        }
         if (restartRoute) {
             // Another mode was chosen while it searched
             restartRoute = false;

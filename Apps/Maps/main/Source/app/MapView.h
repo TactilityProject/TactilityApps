@@ -508,12 +508,18 @@ private:
     bool routeRequested = false;
     /** A mode was chosen while a search ran: a new search starts once it has stopped. */
     bool restartRoute = false;
+    /** A GPX track is being read for following; a mode chosen meanwhile waits for it (fillRouteCard applies it). */
+    bool trackLoading = false;
+    bool trackModePending = false;
+    RouteProfile pendingTrackMode = RouteProfile::Walk;
     uint32_t lastRecalculation = 0;
     /** The last recalculation gave no route: the bar says so instead of "recalculating". */
     bool recalculationFailed = false;
     /** Lines of the navigation log (navlog.txt) not yet on the card, and when they were written last. */
     char navLog[3072] = "";
     size_t navLogUsed = 0;
+    /** Failed writes of the log in a row: the lines are kept for a few tries, then dropped. */
+    uint8_t navLogFailures = 0;
     uint32_t navLogFlushedAt = 0;
     void flushNavLog();
     int64_t lastFollowFixMs = -1;

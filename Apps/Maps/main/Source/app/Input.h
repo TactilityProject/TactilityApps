@@ -47,6 +47,8 @@ public:
      * present counts, as for Tactility's software keyboard.
      */
     bool hasKeyboard() const { return typingKeyboard && !touchOnly; }
+    /** A trackball (in either mode): only then do hints say "Roll". */
+    bool hasTrackball() const { return trackball && !touchOnly; }
     bool hasPointer() const { return mouseCount > 0 && !touchOnly; }
     /** Debug scripts ("touchonly"): act as a board with only a touch screen; keyboards and pointers are ignored. */
     void setTouchOnly(bool value) { touchOnly = value; }
@@ -62,6 +64,7 @@ private:
     Device* keyboards[MAX_DEVICES] {};
     bool touchOnly = false;
     bool typingKeyboard = false;
+    bool trackball = false;
     int keyboardCount = 0;
     Device* mice[MAX_DEVICES] {};
     int mouseCount = 0;

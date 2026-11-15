@@ -110,14 +110,18 @@ void WaypointSheet::layout(int width, int height, Font& font, bool compact) {
     // With a keyboard one more muted line lists the shortcuts, unless the on-screen keyboard needs the room
     const int hintHeight = metrics::hasKeyboard() && !compact ? line : 0;
     const int sheetHeight = PADDING + (line + 8) + 4 + (compact ? 0 : textLines() * line) + (compact ? 0 : PADDING) + hintHeight + buttonHeight + PADDING;
-    // On a very low screen the sheet is cut at the top rather than the screen
-    frame = { (width - sheetWidth) / 2, std::max(0, height - sheetHeight - 4), sheetWidth, sheetHeight };
+    // On a very low screen the sheet is cut at the top rather than the screen. Above the on-screen keyboard (compact)
+    // the buttons must stay inside the room given: the gaps shrink to the least that keeps the name field above them.
+    const int tightHeight = PADDING / 2 + 2 + (line + 8) + 2 + buttonHeight + PADDING / 2;
+    const int shownHeight = compact ? std::min(sheetHeight, std::max(tightHeight, height - 4)) : sheetHeight;
+    const int bottomGap = shownHeight < sheetHeight ? PADDING / 2 : PADDING;
+    frame = { (width - sheetWidth) / 2, std::max(0, height - shownHeight - 4), sheetWidth, shownHeight };
     // The < at the left of the name goes back, like in the lists
     back = { frame.x, frame.y, metrics::backWidth(line + 16), metrics::touchTargets() ? std::max(line + 8 + PADDING, metrics::TOUCH_BUTTON_HEIGHT) : line + 8 + PADDING };
     field = { frame.x + back.width, frame.y + PADDING / 2 + 2, sheetWidth - back.width - PADDING, line + 8 };
     const int count = buttonCount();
     const int buttonWidth = (sheetWidth - (count + 1) * PADDING) / count;
-    const int buttonY = frame.y + sheetHeight - PADDING - buttonHeight;
+    const int buttonY = frame.y + frame.height - bottomGap - buttonHeight;
     // Equal buttons; when a label does not fit its button, the room is shared in proportion to the labels
     int needed = 0;
     int labelTotal = 0;

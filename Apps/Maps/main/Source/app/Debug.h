@@ -64,7 +64,7 @@ public:
     struct Step {
         Action action;
         uint32_t key;
-        char name[32];
+        char name[48];
         double lat;
         double lon;
         int zoom;

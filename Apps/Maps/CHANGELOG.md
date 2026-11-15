@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0
+## 0.8.1
 
 **Menu**
 - The main menu is a grid of nine tiles with icons: Search, Download, Maps, Waypoints, Track, GPX, Location,

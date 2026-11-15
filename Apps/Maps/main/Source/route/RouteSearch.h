@@ -179,7 +179,9 @@ private:
     /** The node a tile's node joins across one side; limit when the next tile could not be read. */
     bool joinAcross(GraphSource& source, int slot, uint16_t node, int side, uint32_t& joined, bool& limit);
     /** The main-road node of the other level (toZoom) at a point; limit when its tile could not be read for memory. */
-    bool linkAcross(GraphSource& source, const RoutePoint& at, int toZoom, uint32_t& linked, bool& limit);
+    /** level: the source node's (brunnel and layer); only a node on the same level is linked, so a bridge never joins
+     *  the road under it (z10 and z14 tiles carry the same brunnel / layer values). */
+    bool linkAcross(GraphSource& source, const RoutePoint& at, uint8_t level, int toZoom, uint32_t& linked, bool& limit);
     /**
      * Whether the roads around a snapped point reach fewer than COMPONENT_NODES nodes (the states mark them), driving
      * away from it, or towards it for a goal.
