@@ -14,6 +14,25 @@ namespace {
 constexpr uint32_t EMPTY = 0xFFFFFFFFu;
 constexpr uint32_t NO_PARENT = 0xFFFFFFFEu;
 constexpr int MAX_TILES = 160;
+/** A car route longer than this in a straight line first tries the larger roads only between its ends (find()). */
+constexpr float MAIN_ROADS_FROM_M = 5000.0f;
+/** How far a start or goal may be from a road of the main-road layer when no local road is near (snap()). */
+constexpr float LAYER_SNAP_M = 1500.0f;
+/** Around the start and the goal every road counts, this far. */
+constexpr float MAIN_ROADS_REACH_M = 2000.0f;
+/**
+ * The main-road layer (M5c-5): the graphs of z10 tiles hold the motorways to secondary roads of 16 times the ground
+ * of a z14 tile. A route longer than LAYER_FROM_M in a straight line is searched on two levels: the local roads
+ * (z14 graphs) within LAYER_REACH_M of the start and the goal, the main-road layer everywhere, joined where a
+ * junction of the layer lies on a main road of the local graph (within LINK_M).
+ */
+constexpr float LAYER_FROM_M = 20000.0f;
+constexpr float LAYER_REACH_M = 4000.0f;
+constexpr float LINK_M = 60.0f;
+/** z14 units per unit of a tile of a zoom. */
+int unitsOf(const TileKey& tile) {
+    return 1 << (GRAPH_ZOOM - tile.z);
+}
 /** A road piece of fewer nodes that touches no tile side is an island, never snapped to (see isIsland()). */
 constexpr int ISLAND_NODES = 40;
 /** A start or goal whose roads reach fewer nodes than this, over tile sides too, moves to a road outside them. */
@@ -27,6 +46,8 @@ constexpr double WORLD_UNITS = 16384.0 * GRAPH_EXTENT;
 constexpr uint8_t VIA_BACKWARDS = 1;
 constexpr uint8_t VIA_JOIN = 2;
 constexpr uint8_t VIA_START = 4;
+/** Between a local road's node and the main-road layer's node at the same junction (no edge, a few metres). */
+constexpr uint8_t VIA_LINK = 8;
 
 uint16_t readU16(const uint8_t* bytes) {
     return static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
@@ -164,6 +185,8 @@ const char* routeResultText(RouteResult result) {
             return "Not enough memory for a route now; try again";
         case RouteResult::Cancelled:
             return "Route search stopped";
+        case RouteResult::NoTrack:
+            return "No track or route in this GPX file";
     }
     return "";
 }
@@ -176,6 +199,7 @@ void Route::clear() {
     sides.clear();
     lengthM = 0.0f;
     seconds = 0.0f;
+    track = false;
 }
 
 const char* Route::stepName(const RouteStep& step, char* out, size_t size) const {
@@ -210,6 +234,8 @@ struct RouteSearch::Tile {
     uint8_t* flags;
     uint16_t* border[4];
     uint32_t borderCount[4];
+    /** 1 for nodes on a road of the main classes (motorway to secondary): where the layers meet. */
+    uint8_t* mainNode;
 };
 
 RouteSearch::~RouteSearch() {
@@ -269,7 +295,7 @@ bool RouteSearch::loadTile(GraphSource& source, const TileKey& tile, Tile& out) 
     out.key = tile;
     out.missing = true;
     const uint32_t start = nowMs();
-    const bool read = source.readGraph(tile, fileBuffer);
+    const bool read = readTileFile(source, tile);
     loadMs += nowMs() - start;
     GraphHeader header {};
     if (!read || !readGraphHeader(fileBuffer.begin(), fileBuffer.size(), header) || header.version != GRAPH_FORMAT_VERSION ||
@@ -288,6 +314,7 @@ bool RouteSearch::loadTile(GraphSource& source, const TileKey& tile, Tile& out) 
         // Only nodes and edges are needed: the shapes and names are read again for the route that is found
         const size_t wanted = header.nodeCount * GRAPH_NODE_BYTES + header.edgeCount * GRAPH_EDGE_BYTES;
         if (!bodyBuffer.resize(wanted)) {
+            allocationFailed = true;
             return false;
         }
         MemoryInput input(body, header.storedSize);
@@ -300,12 +327,13 @@ bool RouteSearch::loadTile(GraphSource& source, const TileKey& tile, Tile& out) 
     const uint32_t n = header.nodeCount;
     const uint32_t e = header.edgeCount;
     // One block: x, y, first (u32, aligned first), adjacency, edge fields, levels, classes, flags, borders
-    const size_t bytes = n * 4u + (n + 1) * 4u + e * 4u + e * 6u + n + e * 2u + n * 2u * 2u + 64;
+    const size_t bytes = n * 4u + (n + 1) * 4u + e * 4u + e * 6u + n + e * 2u + n * 2u * 2u + n + 64;
     if (graphBytes + bytes > budget || source.memoryShort()) {
         return false;
     }
     auto* block = static_cast<uint8_t*>(largeAlloc(bytes));
     if (block == nullptr) {
+        allocationFailed = true;
         return false;
     }
     uint8_t* cursor = block;
@@ -324,6 +352,8 @@ bool RouteSearch::loadTile(GraphSource& source, const TileKey& tile, Tile& out) 
     out.level = take(n);
     out.roadClass = take(e);
     out.flags = take(e);
+    out.mainNode = take(n);
+    memset(out.mainNode, 0, n);
     out.block = block;
     out.bytes = bytes;
     out.nodeCount = n;
@@ -354,6 +384,10 @@ bool RouteSearch::loadTile(GraphSource& source, const TileKey& tile, Tile& out) 
         }
         out.first[out.from[i] + 1]++;
         out.first[out.to[i] + 1]++;
+        if (out.roadClass[i] <= static_cast<uint8_t>(RoadClass::Secondary)) {
+            out.mainNode[out.from[i]] = 1;
+            out.mainNode[out.to[i]] = 1;
+        }
     }
     for (uint32_t i = 1; i <= n; i++) {
         out.first[i] += out.first[i - 1];
@@ -405,8 +439,8 @@ int RouteSearch::tileSlot(GraphSource& source, const TileKey& tile) {
     }
     if (!loadTile(source, tile, tiles[tileCount])) {
         // Over the budget: the tile counts as missing (never read again), the search goes on around it. Short of
-        // memory on the device: the search ends
-        if (source.memoryShort()) {
+        // memory on the device, or no memory for the tile: the search ends
+        if (allocationFailed || source.memoryShort()) {
             tilesFull = true;
             return -2;
         }
@@ -494,7 +528,45 @@ bool RouteSearch::pop(QueueItem& out) {
 RoutePoint RouteSearch::globalOf(uint32_t key) const {
     const Tile& tile = tiles[slotOf(key)];
     const uint16_t node = nodeOfKey(key);
-    return { tile.key.x * GRAPH_EXTENT + tile.nodeX[node], tile.key.y * GRAPH_EXTENT + tile.nodeY[node] };
+    const int units = unitsOf(tile.key);
+    return { (tile.key.x * GRAPH_EXTENT + tile.nodeX[node]) * units, (tile.key.y * GRAPH_EXTENT + tile.nodeY[node]) * units };
+}
+
+bool RouteSearch::linkAcross(GraphSource& source, const RoutePoint& at, int toZoom, uint32_t& linked, bool& limit) {
+    // The tile of the other level that holds the point, and its nearest main-road node within LINK_M
+    const int units = 1 << (GRAPH_ZOOM - toZoom);
+    const TileKey key { toZoom, at.x / (GRAPH_EXTENT * units), at.y / (GRAPH_EXTENT * units) };
+    const int slot = tileSlot(source, key);
+    if (slot == -2) {
+        limit = true;
+        return false;
+    }
+    if (slot < 0) {
+        return false;
+    }
+    const Tile& tile = tiles[slot];
+    const float reach = LINK_M / static_cast<float>(routeMetresPerUnit(at.y));
+    float best = reach * reach;
+    int bestNode = -1;
+    const float localX = static_cast<float>(at.x) / units - static_cast<float>(key.x) * GRAPH_EXTENT;
+    const float localY = static_cast<float>(at.y) / units - static_cast<float>(key.y) * GRAPH_EXTENT;
+    for (uint32_t i = 0; i < tile.nodeCount; i++) {
+        if (tile.mainNode[i] == 0) {
+            continue;
+        }
+        const float dx = (tile.nodeX[i] - localX) * units;
+        const float dy = (tile.nodeY[i] - localY) * units;
+        const float squared = dx * dx + dy * dy;
+        if (squared < best) {
+            best = squared;
+            bestNode = static_cast<int>(i);
+        }
+    }
+    if (bestNode < 0) {
+        return false;
+    }
+    linked = keyOf(slot, static_cast<uint32_t>(bestNode));
+    return true;
 }
 
 bool RouteSearch::joinAcross(GraphSource& source, int slot, uint16_t node, int side, uint32_t& joined, bool& limit) {
@@ -507,7 +579,7 @@ bool RouteSearch::joinAcross(GraphSource& source, int slot, uint16_t node, int s
     }
     const uint8_t level = tile->level[node];
     const TileKey here = tile->key;
-    const TileKey next { GRAPH_ZOOM, here.x + (side == 0 ? -1 : (side == 2 ? 1 : 0)), here.y + (side == 1 ? -1 : (side == 3 ? 1 : 0)) };
+    const TileKey next { here.z, here.x + (side == 0 ? -1 : (side == 2 ? 1 : 0)), here.y + (side == 1 ? -1 : (side == 3 ? 1 : 0)) };
     const int nextSlot = tileSlot(source, next);
     if (nextSlot == -2) {
         limit = true;
@@ -667,11 +739,24 @@ bool RouteSearch::isIsland(const Tile& tile, uint16_t edge, RouteProfile islandP
     return true;
 }
 
-bool RouteSearch::snap(GraphSource& source, const RoutePoint& point, RouteProfile snapProfile, Snap& out) {
-    // The tile of the point and the neighbours within reach
+bool RouteSearch::readTileFile(GraphSource& source, const TileKey& tile) {
+    if (fileBufferValid && fileBufferTile == tile) {
+        return true;
+    }
+    fileBufferValid = source.readGraph(tile, fileBuffer);
+    fileBufferTile = tile;
+    return fileBufferValid;
+}
+
+bool RouteSearch::snap(GraphSource& source, const RoutePoint& point, RouteProfile snapProfile, Snap& out, int zoom) {
+    // The tile of the point and the neighbours within reach. `point` and `reach` are in the units of GRAPH_ZOOM;
+    // a tile of the main-road layer is `units` times as large, its own coordinates as many times coarser
+    const int units = 1 << (GRAPH_ZOOM - zoom);
+    const int32_t extent = GRAPH_EXTENT * units;
     const double metresPerUnit = routeMetresPerUnit(point.y);
+    const float metresPerLocal = static_cast<float>(metresPerUnit) * static_cast<float>(units);
     // A car may stop further from a destination off the roads (a park, a forest): the rest is on foot
-    const float radius = snapProfile == RouteProfile::Car ? CAR_SNAP_METRES : SNAP_METRES;
+    const float radius = zoom != GRAPH_ZOOM ? LAYER_SNAP_M : (snapProfile == RouteProfile::Car ? CAR_SNAP_METRES : SNAP_METRES);
     const auto reach = static_cast<int32_t>(radius / metresPerUnit) + 1;
     float best = radius;
     bool found = false;
@@ -680,23 +765,42 @@ bool RouteSearch::snap(GraphSource& source, const RoutePoint& point, RouteProfil
     bool island = false;
     TileGraph graph;
     ShapeBuffer shape;
-    const int left = (point.x - reach) / GRAPH_EXTENT;
-    const int right = (point.x + reach) / GRAPH_EXTENT;
-    const int top = (point.y - reach) / GRAPH_EXTENT;
-    const int bottom = (point.y + reach) / GRAPH_EXTENT;
-    for (int ty = top; ty <= bottom; ty++) {
-        for (int tx = left; tx <= right; tx++) {
-            const TileKey key { GRAPH_ZOOM, tx, ty };
+    const int left = (point.x - reach) / extent;
+    const int right = (point.x + reach) / extent;
+    const int top = (point.y - reach) / extent;
+    const int bottom = (point.y + reach) / extent;
+    // The point's own tile first, then the others: a tile further away than the nearest road found so far is not
+    // read at all (with a road next to the point that is one tile instead of four)
+    const int ownX = point.x / extent;
+    const int ownY = point.y / extent;
+    const int columns = right - left + 1;
+    const int count = columns * (bottom - top + 1);
+    for (int index = -1; index < count; index++) {
+        const int tx = index < 0 ? ownX : left + index % columns;
+        const int ty = index < 0 ? ownY : top + index / columns;
+        if (index >= 0 && tx == ownX && ty == ownY) {
+            continue;
+        }
+        {
+            // The nearest point of the tile's square to the point, in metres
+            const int32_t nearX = std::clamp<int32_t>(point.x, tx * extent, (tx + 1) * extent);
+            const int32_t nearY = std::clamp<int32_t>(point.y, ty * extent, (ty + 1) * extent);
+            const float gapX = static_cast<float>(point.x - nearX);
+            const float gapY = static_cast<float>(point.y - nearY);
+            if (std::sqrt(gapX * gapX + gapY * gapY) * static_cast<float>(metresPerUnit) >= best) {
+                continue;
+            }
+            const TileKey key { zoom, tx, ty };
             const int slot = tileSlot(source, key);
-            if (slot < 0 || !source.readGraph(key, fileBuffer)) {
+            if (slot < 0 || !readTileFile(source, key)) {
                 continue;
             }
             // The full graph with shapes, for this tile only
             if (!loadTileGraph(fileBuffer.begin(), fileBuffer.size(), inflater, graph)) {
                 continue;
             }
-            const int32_t px = point.x - tx * GRAPH_EXTENT;
-            const int32_t py = point.y - ty * GRAPH_EXTENT;
+            const float px = static_cast<float>(point.x - tx * extent) / static_cast<float>(units);
+            const float py = static_cast<float>(point.y - ty * extent) / static_cast<float>(units);
             for (uint32_t e = 0; e < graph.edges.size(); e++) {
                 const GraphEdge& edge = graph.edges[e];
                 if (!routeAllows(snapProfile, edge.roadClass, edge.flags)) {
@@ -713,7 +817,7 @@ bool RouteSearch::snap(GraphSource& source, const RoutePoint& point, RouteProfil
                     t = std::clamp(t, 0.0f, 1.0f);
                     const float qx = ax + t * dx;
                     const float qy = ay + t * dy;
-                    const float distance = std::sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy)) * static_cast<float>(metresPerUnit);
+                    const float distance = std::sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy)) * metresPerLocal;
                     if (distance < best && excludeSeen &&
                         (entry(keyOf(slot, tiles[slot].from[e]), false) != nullptr || entry(keyOf(slot, tiles[slot].to[e]), false) != nullptr)) {
                         // In the small piece of road found before (snapOutside)
@@ -736,7 +840,8 @@ bool RouteSearch::snap(GraphSource& source, const RoutePoint& point, RouteProfil
                         out.along = shape.at[i - 1] + t * (shape.at[i] - shape.at[i - 1]);
                         out.total = shape.total();
                         out.distanceM = distance;
-                        out.point = { tx * GRAPH_EXTENT + static_cast<int32_t>(std::floor(qx + 0.5f)), ty * GRAPH_EXTENT + static_cast<int32_t>(std::floor(qy + 0.5f)) };
+                        out.point = { tx * extent + static_cast<int32_t>(std::floor(qx * static_cast<float>(units) + 0.5f)),
+                            ty * extent + static_cast<int32_t>(std::floor(qy * static_cast<float>(units) + 0.5f)) };
                     }
                 }
             }
@@ -774,6 +879,7 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
     counters.passes = 1;
     loadMs = 0;
     cancelled = false;
+    fileBufferValid = false;
     profile = searchProfile;
     if (table == nullptr) {
         return RouteResult::NoMemory;
@@ -781,6 +887,7 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
     release();
     tilesFull = false;
     budgetHit = false;
+    allocationFailed = false;
     peakGraphBytes = 0;
     resetStates();
     const RoutePoint from = routePointFrom(fromLat, fromLon);
@@ -800,7 +907,8 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
     };
     Snap start {};
     Snap goal {};
-    // Seconds per unit of straight distance at the fastest speed: never more than the real time, so A* stays exact
+    // Seconds per unit of straight distance at the fastest speed. For walking and cycling never more than the real time,
+    // so A* stays exact; for the car it deliberately is not (CAR_ESTIMATE_KMH), see routeMaxKmh()
     const float metresPerUnit = static_cast<float>(std::min(routeMetresPerUnit(from.y), routeMetresPerUnit(to.y))) * 0.995f;
     const float scale = metresPerUnit * 3.6f / routeMaxKmh(profile);
 
@@ -814,34 +922,117 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
     // goal and settles and reads far fewer. The route may be a little longer than the best one (at most RETRY_WEIGHT
     // times, a few percent in practice), which beats "too long" for a city trip. Out of graph memory, the tiles are
     // read again from the start; out of node states, the tiles read stay.
-    for (int pass = 0; pass < 2; pass++) {
-        const float weighted = pass == 0 ? scale : scale * RETRY_WEIGHT;
-        // Out of tile memory (the budget, or the device's free memory, tilesFull): the tiles go and are read again
-        const bool readAgain = pass > 0 && (budgetHit || tilesFull);
-        if (pass > 0) {
+    //
+    // Before both, for a car going further than MAIN_ROADS_FROM_M: a pass that takes only the larger roads
+    // (tertiary and up) where it is further than MAIN_ROADS_REACH_M from both ends, as a driver would. It settles a
+    // fraction of the nodes (the residential and service streets of everything in between stay out), so a route
+    // across a city fits the node states. When it finds no way (a village joined only by small roads) the passes
+    // without that limit follow.
+    //
+    // And for routes longer than LAYER_FROM_M, before all of them, the two-level pass on the main-road layer (see
+    // LAYER_FROM_M); shorter routes take it last, when nothing else found a way (too long for the node states, or
+    // no local roads between two downloaded towns).
+    const float straightM = lengthOf(to.x - from.x, to.y - from.y) * metresPerUnit;
+    counters.straightM = static_cast<uint32_t>(straightM);
+    const bool mainRoads = profile == RouteProfile::Car && straightM > MAIN_ROADS_FROM_M;
+    // LayeredWeighted: the two-level pass again, goal-directed, when the first ran out of node states (a route
+    // across the country)
+    enum class Pass : uint8_t { Layered, LayeredWeighted, MainRoads, Exact, Weighted };
+    Pass plan[6];
+    int passes = 0;
+    const bool layerFirst = straightM > LAYER_FROM_M;
+    // Around a walker or a cyclist far more roads count than around a car (a city's footways within 4 km are more
+    // nodes than the states hold), and they join a main road sooner
+    const float layerReachM = profile == RouteProfile::Car ? LAYER_REACH_M : (profile == RouteProfile::Bike ? 2500.0f : 1500.0f);
+    if (layerFirst) {
+        // Beyond this distance the passes on local roads alone cannot end well: only the goal-directed one is
+        // tried after the layer, which costs the least
+        plan[passes++] = Pass::Layered;
+        plan[passes++] = Pass::LayeredWeighted;
+        // Up to twice that distance the local roads may still do it where the layer's tiles are missing (one large
+        // detailed region). Further never: on the T-Deck that pass read 121 tiles of the start's city for 47 s
+        // before it gave up on a route of 270 km with no main roads on the card (15 Nov)
+        if (straightM <= 2.0f * LAYER_FROM_M) {
+            plan[passes++] = Pass::Weighted;
+        }
+    } else {
+        if (mainRoads) {
+            plan[passes++] = Pass::MainRoads;
+        }
+        plan[passes++] = Pass::Exact;
+        plan[passes++] = Pass::Weighted;
+        if (straightM > 2.0f * layerReachM) {
+            plan[passes++] = Pass::Layered;
+            plan[passes++] = Pass::LayeredWeighted;
+        }
+    }
+    bool anyLimit = false;
+    for (int step = 0; step < passes; step++) {
+        Pass kind = plan[step];
+        bool restricted = kind == Pass::MainRoads;
+        bool layered = kind == Pass::Layered || kind == Pass::LayeredWeighted;
+        float reachUnits = (layered ? layerReachM : MAIN_ROADS_REACH_M) / metresPerUnit;
+        const bool again = step > 0;
+        float weighted = kind == Pass::Weighted || kind == Pass::LayeredWeighted ? scale * RETRY_WEIGHT : scale;
+        // Out of tile memory (the budget, or the device's free memory, tilesFull): the tiles go and are read again.
+        // The layered pass starts with all the memory in any case
+        const bool readAgain = again && (budgetHit || tilesFull || kind == Pass::Layered);
+        if (again) {
+            anyLimit = anyLimit || limit || budgetHit;
             if (readAgain) {
                 release();
                 budgetHit = false;
             }
             resetStates();
             tilesFull = false;
-            counters.passes = 2;
+            allocationFailed = false;
             best = INFINITY;
             last = EMPTY;
             lastSide = 0;
             direct = false;
             limit = false;
         }
-        if (pass == 0 || readAgain) {
+        counters.passes = kind == Pass::Weighted || kind == Pass::LayeredWeighted ? 2 : 1;
+        counters.layered = layered;
+        if (!again || readAgain) {
             // A tile near the start or goal that did not fit in the memory is no missing road
+            // No local road near (no map of the place on the card, between two downloaded towns): the nearest road of
+            // the main-road layer, which is there for the whole downloaded country
             if (!snap(source, from, profile, start)) {
-                return finish(budgetHit || tilesFull ? RouteResult::NoMemory : RouteResult::NoRoadNearStart);
+                if (budgetHit || tilesFull) {
+                    return finish(RouteResult::NoMemory);
+                }
+                if (!snap(source, from, profile, start, GRAPH_MAIN_ZOOM)) {
+                    return finish(budgetHit || tilesFull ? RouteResult::NoMemory : RouteResult::NoRoadNearStart);
+                }
             }
             if (!snap(source, to, profile, goal)) {
-                return finish(budgetHit || tilesFull ? RouteResult::NoMemory : RouteResult::NoRoadNearGoal);
+                if (budgetHit || tilesFull) {
+                    return finish(RouteResult::NoMemory);
+                }
+                if (!snap(source, to, profile, goal, GRAPH_MAIN_ZOOM)) {
+                    return finish(budgetHit || tilesFull ? RouteResult::NoMemory : RouteResult::NoRoadNearGoal);
+                }
             }
-            snapOutside(source, from, profile, false, start);
-            snapOutside(source, to, profile, true, goal);
+            if (tiles[start.slot].key.z == GRAPH_ZOOM) {
+                snapOutside(source, from, profile, false, start);
+            }
+            if (tiles[goal.slot].key.z == GRAPH_ZOOM) {
+                snapOutside(source, to, profile, true, goal);
+            }
+        }
+        if (!layered && (tiles[start.slot].key.z != GRAPH_ZOOM || tiles[goal.slot].key.z != GRAPH_ZOOM)) {
+            // An end on the layer: only the two-level search leads there, so this pass is one, and only its
+            // goal-directed twin follows
+            kind = Pass::Layered;
+            layered = true;
+            restricted = false;
+            reachUnits = layerReachM / metresPerUnit;
+            weighted = scale;
+            counters.passes = 1;
+            counters.layered = true;
+            plan[step + 1] = Pass::LayeredWeighted;
+            passes = step + 2;
         }
         const RoutePoint goalPoint = goal.point;
         const Tile& startTile = tiles[start.slot];
@@ -899,10 +1090,45 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
             const uint16_t node = nodeOfKey(item.key);
             // Copies: loading a neighbour below may not move the tiles, but keeps the code clear of that question
             const Tile* tile = &tiles[slot];
+            bool mainOnly = false;
+            if (restricted || layered) {
+                const RoutePoint here = globalOf(item.key);
+                const bool nearStart = lengthOf(here.x - from.x, here.y - from.y) <= reachUnits;
+                const bool nearGoal = lengthOf(here.x - to.x, here.y - to.y) <= reachUnits;
+                mainOnly = !nearStart && !nearGoal;
+                if (layered) {
+                    const bool local = tile->key.z == GRAPH_ZOOM;
+                    // Up from a main road's junction to the layer anywhere the local roads are searched, down from the
+                    // layer to the local roads near the goal only (near the start it would only go round in circles)
+                    if (tile->mainNode[node] != 0 && (local || nearGoal)) {
+                        uint32_t linked = EMPTY;
+                        if (linkAcross(source, here, local ? GRAPH_MAIN_ZOOM : GRAPH_ZOOM, linked, limit)) {
+                            // tile may be a neighbour's now for nothing: linkAcross only adds tiles
+                            const RoutePoint there = globalOf(linked);
+                            const float metres = lengthOf(there.x - here.x, there.y - here.y) * metresPerUnit;
+                            relax(linked, g + routeSeconds(profile, static_cast<uint8_t>(RoadClass::Secondary), metres), item.key, 0, VIA_LINK,
+                                goalPoint, weighted);
+                        }
+                    }
+                    if (local && mainOnly) {
+                        // Local roads far from both ends are not searched at all: that is the layer's part
+                        if (used >= maxNodes || tilesFull) {
+                            limit = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    // On the layer every road is a main road
+                    mainOnly = false;
+                }
+            }
             for (uint32_t k = tile->first[node]; k < tile->first[node + 1]; k++) {
                 const uint16_t entryValue = tile->adjacent[k];
                 const uint16_t edge = static_cast<uint16_t>(entryValue >> 1);
                 const bool backwards = (entryValue & 1) != 0;
+                if (mainOnly && tile->roadClass[edge] > static_cast<uint8_t>(RoadClass::Tertiary)) {
+                    continue;
+                }
                 if (!routeAllows(profile, tile->roadClass[edge], tile->flags[edge]) || (backwards && !routeAllowsBackwards(profile, tile->flags[edge]))) {
                     continue;
                 }
@@ -922,12 +1148,20 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
                 break;
             }
         }
-        if (best != INFINITY || !(limit || budgetHit)) {
+        if (best != INFINITY) {
             break;
+        }
+        // The exact pass ended without running out of anything: the goal-directed one would find no way either
+        if (!(limit || budgetHit) && step + 1 < passes &&
+            ((kind == Pass::Exact && plan[step + 1] == Pass::Weighted) || (kind == Pass::Layered && plan[step + 1] == Pass::LayeredWeighted))) {
+            step++;
         }
     }
     if (best == INFINITY) {
-        return finish(limit || budgetHit ? RouteResult::TooLong : RouteResult::NoPath);
+        if (allocationFailed) {
+            return finish(RouteResult::NoMemory);
+        }
+        return finish(anyLimit || limit || budgetHit ? RouteResult::TooLong : RouteResult::NoPath);
     }
     route.seconds = best;
     if (!assemble(source, start, goal, last, lastSide, direct, route)) {
@@ -973,14 +1207,15 @@ bool RouteSearch::assemble(GraphSource& source, const Snap& start, const Snap& g
             return true;
         }
         graphTile = { -1, -1, -1 };
-        if (!source.readGraph(tile, fileBuffer) || !loadTileGraph(fileBuffer.begin(), fileBuffer.size(), inflater, graph)) {
+        if (!readTileFile(source, tile) || !loadTileGraph(fileBuffer.begin(), fileBuffer.size(), inflater, graph)) {
             return false;
         }
         graphTile = tile;
         return true;
     };
     auto addPoint = [&](const TileKey& tile, int32_t x, int32_t y) {
-        const RoutePoint point { tile.x * GRAPH_EXTENT + x, tile.y * GRAPH_EXTENT + y };
+        const int units = unitsOf(tile);
+        const RoutePoint point { (tile.x * GRAPH_EXTENT + x) * units, (tile.y * GRAPH_EXTENT + y) * units };
         if (route.points.size() > 0) {
             const RoutePoint& previous = route.points[route.points.size() - 1];
             if (previous.x == point.x && previous.y == point.y) {
@@ -997,6 +1232,7 @@ bool RouteSearch::assemble(GraphSource& source, const Snap& start, const Snap& g
         if (route.steps.size() > 0) {
             const RouteStep& previous = route.steps[route.steps.size() - 1];
             if (previous.roadClass == e.roadClass && previous.nameLength == length &&
+                ((previous.flags & ROUTE_STEP_COARSE) != 0) == (graphTile.z == GRAPH_MAIN_ZOOM) &&
                 (length == 0 || memcmp(route.names.begin() + previous.nameOffset, name, length) == 0)) {
                 return;
             }
@@ -1005,7 +1241,9 @@ bool RouteSearch::assemble(GraphSource& source, const Snap& start, const Snap& g
         for (uint8_t i = 0; i < length && route.names.size() < 65000; i++) {
             route.names.push(name[i]);
         }
-        route.steps.push({ pointIndex, offset, length, e.roadClass, e.flags });
+        // A step on the main-road layer: its line is the z10 tile's, simplified more than the map's roads
+        const uint8_t coarse = graphTile.z == GRAPH_MAIN_ZOOM ? ROUTE_STEP_COARSE : 0;
+        route.steps.push({ pointIndex, offset, length, e.roadClass, static_cast<uint8_t>(e.flags | coarse) });
     };
     // Part of an edge's shape from distance d0 to d1 along it (backwards when d0 > d1)
     auto addPart = [&](const TileKey& slot, uint16_t edge, float d0, float d1) {
@@ -1043,7 +1281,7 @@ bool RouteSearch::assemble(GraphSource& source, const Snap& start, const Snap& g
     } else {
         for (size_t i = 0; i < hops.size(); i++) {
             const Hop& hop = hops[i];
-            if ((hop.via & VIA_JOIN) != 0) {
+            if ((hop.via & (VIA_JOIN | VIA_LINK)) != 0) {
                 continue;
             }
             const bool backwards = (hop.via & VIA_BACKWARDS) != 0;

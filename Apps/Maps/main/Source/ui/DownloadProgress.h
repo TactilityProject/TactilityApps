@@ -68,6 +68,9 @@ public:
     Button handleKey(uint32_t key);
     /** A button, Close for a tap outside the card, None inside it. */
     Button handleTap(int x, int y);
+    /** For tests: the card and its buttons (Pause or Resume, Cancel, Close). */
+    const Rect& bounds() const { return frame; }
+    const Rect& buttonRect(int index) const { return buttons[index]; }
 
 private:
     Button buttonAt(int index) const;

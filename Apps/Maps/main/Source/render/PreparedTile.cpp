@@ -124,6 +124,9 @@ bool readPreparedHeader(const uint8_t* data, size_t size, PreparedHeader& header
     header.sourceSize = readU32(data + 20);
     header.bodySize = readU32(data + 24);
     header.storedSize = readU32(data + 28);
+    if (header.bodySize > PREPARED_MAX_SECTION || header.storedSize > PREPARED_MAX_SECTION) {
+        return false;   // damaged: sums with these sizes must not wrap
+    }
     memcpy(header.sourceVersion, data + 32, PREPARED_VERSION_LENGTH);
     header.sourceVersion[PREPARED_VERSION_LENGTH] = '\0';
     return true;
@@ -134,7 +137,7 @@ bool isPreparedCurrent(const PreparedHeader& header, const TileKey& tile, uint32
 }
 
 uint8_t preparedPartsNeeded(const PreparedHeader* header, const TileKey& tile, uint32_t sourceSize) {
-    const uint8_t graph = tile.z == GRAPH_ZOOM && PREPARED_GRAPH_FORMAT_VERSION != 0 ? PART_GRAPH : 0;
+    const uint8_t graph = tileHasGraph(tile.z) && PREPARED_GRAPH_FORMAT_VERSION != 0 ? PART_GRAPH : 0;
     if (header == nullptr || !(header->tile == tile) || header->sourceSize != sourceSize || header->extent != PREPARED_EXTENT) {
         return PART_GEOMETRY | PART_LABELS | graph;
     }
@@ -167,6 +170,10 @@ bool readPreparedLabelHeader(const uint8_t* data, size_t size, PreparedLabelHead
     header.numberCount = readU32(data + 36);
     header.numberSize = readU32(data + 40);
     header.numberStored = readU32(data + 44);
+    if (header.mainSize > PREPARED_MAX_SECTION || header.mainStored > PREPARED_MAX_SECTION || header.numberSize > PREPARED_MAX_SECTION ||
+        header.numberStored > PREPARED_MAX_SECTION) {
+        return false;   // damaged: sums with these sizes must not wrap
+    }
     memcpy(header.sourceVersion, data + 48, PREPARED_VERSION_LENGTH);
     header.sourceVersion[PREPARED_VERSION_LENGTH] = '\0';
     return true;
@@ -586,7 +593,7 @@ bool TileConverter::writeGeometry(const char* sourceVersion, uint32_t sourceSize
     out.putBytes(MAGIC, 4);
     out.putU16(withLabels ? PREPARED_SPLIT_VERSION - 1 : PREPARED_FORMAT_VERSION);
     // The companion versions this tile was made with (version 5 on)
-    const auto graphVersion = static_cast<uint16_t>(withLabels || tile.z != GRAPH_ZOOM ? 0 : PREPARED_GRAPH_FORMAT_VERSION);
+    const auto graphVersion = static_cast<uint16_t>(withLabels || !tileHasGraph(tile.z) ? 0 : PREPARED_GRAPH_FORMAT_VERSION);
     out.putU16(static_cast<uint16_t>((deflate ? PREPARED_FLAG_DEFLATED : 0) | (graphVersion << 8)));
     out.put(static_cast<uint8_t>(tile.z));
     out.put(withLabels ? 0 : PREPARED_LABEL_FORMAT_VERSION);

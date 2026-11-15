@@ -11,6 +11,8 @@ namespace {
 
 /** Route points per chunk; each chunk has a box, so a test looks only at the few chunks nearby. */
 constexpr size_t CHUNK_POINTS = 16;
+/** Tiles whose side roads are worked out, from the start of the route on. */
+constexpr size_t MAX_SIDE_TILES = 120;
 /** A road segment is cut into pieces of at most this many metres before it is tested. */
 constexpr float PIECE_METRES = 15.0f;
 /** A piece this near the route is part of it. */
@@ -105,7 +107,11 @@ bool RouteSearch::addSides(GraphSource& source, const GrowArray<RoutePoint>& poi
                 return;
             }
         }
-        sideTiles.push(key);
+        // A route across a country passes thousands of tiles, most without local roads (its middle is on the
+        // main-road layer): the side roads are for the part near the start, where the route is followed first
+        if (sideTiles.size() < MAX_SIDE_TILES) {
+            sideTiles.push(key);
+        }
     };
     for (size_t i = 0; i < count; i++) {
         const RoutePoint& p = points[i];

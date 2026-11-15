@@ -31,14 +31,16 @@ public:
     bool hitsAttributionMark(const Canvas& canvas, int x, int y) const;
     /** The top of the scale bar box, buttons above it keep clear of it. */
     int scaleBarTop(const Canvas& canvas) const;
-    void drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette);
+    /** Returns its box. */
+    Rect drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette);
     /**
      * A small rounded message at the top of the screen, for progress. Text too wide for the screen uses the small font
      * and is cut. Returns where the pill is, so a tap on it can open the details.
      */
     Rect drawPill(Canvas& canvas, const char* text, const Palette& palette);
     /** A short message of up to two lines above the bottom edge. */
-    void drawToast(Canvas& canvas, const char* text, const UiTheme& theme);
+    /** Returns its box. */
+    Rect drawToast(Canvas& canvas, const char* text, const UiTheme& theme);
     void drawMarker(Canvas& canvas, int x, int y, bool hasCourse, float courseDegrees, const Palette& palette);
     /** A translucent disc with a thin rim, how far off the position may be. */
     void drawAccuracyCircle(Canvas& canvas, int x, int y, float radius, const Palette& palette);
@@ -49,6 +51,8 @@ public:
     void drawApproximateMarker(Canvas& canvas, int x, int y, float accuracyMetres, const Palette& palette);
 
     static constexpr int MARK_SIZE = 18;
+    /** The © mark box: MARK_SIZE, or the font's line height plus 2 when that is more. */
+    int markSize() const;
     static constexpr int MARGIN = 3;
 
 private:

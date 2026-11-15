@@ -48,7 +48,15 @@ public:
         OffRoute,
         SearchIndex,
         WaitSearchIndex,
-        FileCheck
+        FileCheck,
+        /** "pointer <x> <y>": shows the trackball pointer there, as if rolled to it ("key c" clicks). */
+        Pointer,
+        /** "memory <label>": logs free memory and the stack left of every task of the app. */
+        Memory,
+        /** "restart": restarts the board. */
+        Restart,
+        /** "followgpx <file>": follows the track of a GPX file in the app's folder. */
+        FollowGpx
     };
 
     enum class TouchKind : uint8_t { Tap, Hold, Drag, Pinch, Twist };

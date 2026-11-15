@@ -145,6 +145,30 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::TouchOnly;
             return step;
         }
+        if (strcmp(command, "pointer") == 0) {
+            // "pointer <x> <y>": the trackball pointer is shown there; "key c" then clicks at it
+            step.action = Action::Pointer;
+            step.values[0] = step.values[1] = 0.0f;
+            sscanf(argument, "%f %f", &step.values[0], &step.values[1]);
+            return step;
+        }
+        if (strcmp(command, "followgpx") == 0) {
+            // "followgpx <file>": follows the track of a GPX file in the app's folder, as Menu, GPX, Follow this track
+            step.action = Action::FollowGpx;
+            snprintf(step.name, sizeof(step.name), "%s", argument);
+            return step;
+        }
+        if (strcmp(command, "restart") == 0) {
+            // "restart": the board restarts (a failed app load leaves Tactility with less memory until it does)
+            step.action = Action::Restart;
+            return step;
+        }
+        if (strcmp(command, "memory") == 0) {
+            // "memory <label>": logs the free memory and the stack left of every task of the app
+            step.action = Action::Memory;
+            snprintf(step.name, sizeof(step.name), "%s", argument);
+            return step;
+        }
         if (strcmp(command, "squeeze") == 0) {
             step.action = Action::Squeeze;
             step.zoom = atoi(argument);

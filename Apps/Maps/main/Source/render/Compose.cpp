@@ -78,7 +78,8 @@ void scaleView(const uint16_t* source, uint16_t* target, int width, int height, 
 
 AffineView scaledView(double worldX, double worldY, int zoom, float scale, float anchorX, float anchorY, int width, int height,
     float cosine, float sine) {
-    const float inverse = 1.0f / scale;
+    // Two touch points on one pixel give scale 0: never divide by it
+    const float inverse = 1.0f / (scale > 1e-6f ? scale : 1e-6f);
     // The screen centre lies (width / 2 - anchorX, height / 2 - anchorY) screen pixels from the anchor
     const double offsetX = width / 2.0 - anchorX;
     const double offsetY = height / 2.0 - anchorY;

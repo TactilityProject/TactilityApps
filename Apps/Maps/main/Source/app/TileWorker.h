@@ -110,7 +110,21 @@ public:
      */
     void setConversionsPaused(bool paused);
     /** While a route search runs no tiles are prepared and none around the screen drawn: it needs the card, the memory and the cores. */
-    void setRouting(bool value) { routing = value; }
+    void setRouting(bool value) {
+        routing = value;
+        if (!value) {
+            routeWanted = false;
+        }
+    }
+    /**
+     * The route search needs the graph of a tile that is on the card but not prepared yet (a new region, or the z10
+     * tiles after an update): it is prepared now, before everything else and although a search runs. False when it
+     * cannot be (it failed before). The search waits with isPreparingTile().
+     */
+    bool prepareForRoute(const TileKey& tile, int region);
+    bool isPreparingTile(const TileKey& tile);
+    /** While a search index is built only tiles on screen are prepared and none around the screen drawn: the build has the idle time. */
+    void setIndexing(bool value) { indexing = value; }
     /** Whether rendered tiles are read from and written to the SD card cache. */
     void setSdCache(bool enabled) { sdCache = enabled; }
     /** Idle: no input for a while, so prefetch, conversions and cache tidying may run. */
@@ -293,6 +307,9 @@ private:
     std::atomic<bool> deflatePrepared = true;
     std::atomic<bool> conversionsPaused = false;
     std::atomic<bool> routing = false;
+    /** The running search asked for a tile (prepareForRoute): urgent tiles are prepared although it runs. */
+    std::atomic<bool> routeWanted = false;
+    std::atomic<bool> indexing = false;
     bool magnifiedOutdated = false;
     std::atomic<bool> sdCache = true;
     std::atomic<bool> idle = false;
@@ -304,6 +321,8 @@ private:
     CacheWalker cacheWalker;
     bool walking = false;
     int writesSinceSave = 0;
+    /** A lane is writing the cache index (both fill the same buffer). */
+    std::atomic<bool> indexSaving { false };
     ByteWriter indexBytes;
 };
 

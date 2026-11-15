@@ -65,6 +65,8 @@ private:
     size_t position = 0;
     Format streamFormat = Format::Raw;
     bool finished = false;
+    /** Bytes inflated since begin(), to stop a stream that never ends. */
+    size_t produced = 0;
     bool error = false;
 };
 

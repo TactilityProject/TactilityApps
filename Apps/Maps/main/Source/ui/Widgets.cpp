@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Widgets.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -9,24 +11,31 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
-constexpr int ROW_PADDING = 10;
+using metrics::PADDING;
+using metrics::ROW_PADDING;
 
 } // namespace
 
 void drawButton(Canvas& canvas, Font& font, const UiTheme& theme, const Rect& rect, const char* label, bool focused, bool danger) {
     const uint16_t fill = focused ? (danger ? theme.danger : theme.accent) : theme.panel;
     const uint16_t text = focused ? (danger ? theme.dangerText : theme.accentText) : theme.text;
-    canvas.fillRoundRect(rect.x, rect.y, rect.width, rect.height, 6, focused ? fill : theme.border);
+    canvas.fillRoundRect(rect.x, rect.y, rect.width, rect.height, metrics::BUTTON_RADIUS, focused ? fill : theme.border);
     if (!focused) {
-        canvas.fillRoundRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2, 5, fill);
+        canvas.fillRoundRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2, metrics::BUTTON_RADIUS - 1, fill);
     }
     const int width = font.textWidth(label);
-    font.drawText(canvas, rect.x + (rect.width - width) / 2, rect.y + (rect.height - font.lineHeight()) / 2, label, text);
+    const int y = rect.y + (rect.height - font.lineHeight()) / 2;
+    if (width > rect.width - 4) {
+        // A narrow button: the label is cut instead of running over its edges
+        drawClippedText(canvas, font, rect.x + 2, y, label, rect.width - 4, text);
+        return;
+    }
+    font.drawText(canvas, rect.x + (rect.width - width) / 2, y, label, text);
 }
 
 HeaderLayout headerLayout(int x, int y, int width, int height) {
-    const int button = height + 8;
+    // At least a finger wide on boards without a keyboard
+    const int button = metrics::backWidth(height + 8);
     return { { x, y, width, height }, { x, y, button, height }, { x + width - button, y, button, height } };
 }
 
@@ -34,8 +43,7 @@ void drawHeader(Canvas& canvas, Font& font, const UiTheme& theme, const HeaderLa
     // Drawn as lines, so they need no glyphs in the font
     const auto backX = static_cast<float>(header.back.x + header.back.width / 2);
     const auto centerY = static_cast<float>(header.bar.y + header.bar.height / 2 - 1);
-    canvas.line(backX + 3.0f, centerY - 6.0f, backX - 3.0f, centerY, 2.0f, theme.text);
-    canvas.line(backX - 3.0f, centerY, backX + 3.0f, centerY + 6.0f, 2.0f, theme.text);
+    metrics::drawBackChevron(canvas, backX, centerY, theme.text);
     const int titleX = header.back.x + header.back.width;
     const int titleRight = hasSelect ? header.select.x : header.bar.x + header.bar.width - PADDING;
     drawClippedText(canvas, font, titleX, header.bar.y + (header.bar.height - font.lineHeight()) / 2 - 1, title, titleRight - titleX, theme.text);
@@ -78,6 +86,15 @@ void ListView::setDetail(int index, const char* detail) {
     }
 }
 
+void ListView::setDescriptions(const char* const* texts, int count) {
+    descriptions = texts;
+    descriptionCount = texts != nullptr ? count : 0;
+}
+
+int ListView::descriptionHeight(Font& font) const {
+    return descriptions != nullptr && fullScreen ? font.lineHeight() + 2 : 0;
+}
+
 void ListView::select(int index) {
     selection = std::clamp(index, 0, std::max(0, itemCount - 1));
     keepVisible();
@@ -98,21 +115,23 @@ void ListView::keepVisible() {
 
 void ListView::layoutFullScreen(int width, int height, Font& font) {
     fullScreen = true;
-    rowPixels = font.lineHeight() + ROW_PADDING;
+    rowPixels = metrics::rowHeight(font.lineHeight());
     frame = { 0, 0, width, height };
     // Header on top, hint at the bottom, rows in between
-    listTop = font.lineHeight() + PADDING + 4;
+    listTop = metrics::headerHeight(font.lineHeight(), 10, height) + 2;
     header = headerLayout(0, 0, width, listTop - 2);
-    const int hintHeight = hint[0] != '\0' ? hintLines() * font.lineHeight() + 4 : 0;
+    const int hintHeight = (hint[0] != '\0' ? hintLines() * font.lineHeight() + 4 : 0) + descriptionHeight(font);
     visibleRows = std::max(1, (height - listTop - hintHeight) / rowPixels);
     keepVisible();
 }
 
 void ListView::layoutPopup(int width, int height, Font& font, int popupWidth) {
     fullScreen = false;
-    rowPixels = font.lineHeight() + ROW_PADDING;
-    const int headerHeight = font.lineHeight() + PADDING;
+    rowPixels = metrics::rowHeight(font.lineHeight());
+    const int headerHeight = metrics::headerHeight(font.lineHeight(), PADDING, height);
     const int maxRows = std::max(1, (height - 2 * PADDING - headerHeight) / rowPixels);
+    // Wider with a bigger font, never wider than the screen
+    popupWidth = height > width ? width - 16 : std::min(std::max(popupWidth, popupWidth * font.lineHeight() / 16), width - 16);
     visibleRows = std::min(std::max(1, itemCount), maxRows);
     const int popupHeight = headerHeight + visibleRows * rowPixels + PADDING / 2 + 2;
     frame = { (width - popupWidth) / 2, (height - popupHeight) / 2, popupWidth, popupHeight };
@@ -126,8 +145,8 @@ void ListView::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
         canvas.fillRect(frame.x, frame.y, frame.width, frame.height, theme.panel);
     } else {
         // The map stays visible but dimmed behind a popup
-        canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 90);
-        canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel, theme.panelOpacity);
+        canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
+        canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     }
     drawHeader(canvas, font, theme, header, title, itemCount > 0 && highlighted);
     if (itemCount == 0 && hint[0] != '\0' && fullScreen) {
@@ -152,12 +171,11 @@ void ListView::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
         }
     }
     // A thin bar shows where the visible rows are in a longer list
-    if (itemCount > visibleRows) {
-        const int trackTop = frame.y + listTop;
-        const int trackHeight = visibleRows * rowPixels;
-        const int barHeight = std::max(8, trackHeight * visibleRows / itemCount);
-        const int barTop = trackTop + (trackHeight - barHeight) * firstVisible / std::max(1, itemCount - visibleRows);
-        canvas.fillRect(frame.x + frame.width - 3, barTop, 2, barHeight, theme.muted);
+    metrics::drawScrollbar(canvas, frame.x + frame.width, frame.y + listTop, visibleRows * rowPixels, visibleRows, itemCount, firstVisible, theme.muted);
+    if (fullScreen && highlighted && descriptions != nullptr && selection < descriptionCount) {
+        // What the highlighted row does, right above the hint
+        const int hintHeight = hint[0] != '\0' ? hintLines() * font.lineHeight() + 4 : 0;
+        drawClippedText(canvas, font, PADDING, frame.height - hintHeight - font.lineHeight() - 2, descriptions[selection], frame.width - 2 * PADDING, theme.muted);
     }
     if (fullScreen && hint[0] != '\0') {
         int y = frame.height - hintLines() * font.lineHeight() - 2;
@@ -235,6 +253,14 @@ UiAction ListView::handleKey(uint32_t key) {
     }
 }
 
+bool ListView::rowRect(int index, Rect& rect) const {
+    if (index < firstVisible || index >= firstVisible + visibleRows || index >= itemCount) {
+        return false;
+    }
+    rect = { frame.x + 4, frame.y + listTop + (index - firstVisible) * rowPixels, frame.width - 8, rowPixels - 2 };
+    return true;
+}
+
 int ListView::rowAt(int x, int y) const {
     if (!frame.contains(x, y)) {
         return -1;
@@ -279,9 +305,9 @@ void Dialog::open(const char* message, const char* confirmLabel, bool isDanger) 
 }
 
 void Dialog::layout(int width, int height, Font& font) {
-    const int dialogWidth = std::min(width - 16, 280);
+    const int dialogWidth = metrics::cardWidth(width, height, 16, 280, font.lineHeight());
     lineCount = wrapText(font, text, dialogWidth - 2 * PADDING, &lines[0][0], sizeof(lines[0]), 3);
-    const int buttonHeight = font.lineHeight() + 12;
+    const int buttonHeight = metrics::buttonHeight(font.lineHeight(), 12);
     const int dialogHeight = PADDING + lineCount * font.lineHeight() + PADDING + buttonHeight + PADDING;
     frame = { (width - dialogWidth) / 2, (height - dialogHeight) / 2, dialogWidth, dialogHeight };
     const int buttonWidth = (dialogWidth - 3 * PADDING) / 2;
@@ -291,8 +317,8 @@ void Dialog::layout(int width, int height, Font& font) {
 }
 
 void Dialog::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
-    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 110);
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel);
+    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     for (int i = 0; i < lineCount; i++) {
         font.drawText(canvas, frame.x + PADDING, frame.y + PADDING + i * font.lineHeight(), lines[i], theme.text);
     }
@@ -317,6 +343,7 @@ UiAction Dialog::handleKey(uint32_t key) {
         case 'a':
         case 'A':
         case 'd':
+        case 'D':
         case 'w':
         case 'W':
         case 's':
@@ -362,9 +389,9 @@ void TextPrompt::open(const char* title, const char* text) {
 }
 
 void TextPrompt::layout(int width, int height, Font& font) {
-    const int dialogWidth = std::min(width - 16, 280);
+    const int dialogWidth = metrics::cardWidth(width, height, 16, 280, font.lineHeight());
     const int line = font.lineHeight();
-    const int buttonHeight = line + 12;
+    const int buttonHeight = metrics::buttonHeight(line, 12);
     const int dialogHeight = PADDING + line + PADDING / 2 + line + 8 + PADDING + buttonHeight + PADDING;
     // In the upper part of the screen, an on-screen keyboard may come later below it
     frame = { (width - dialogWidth) / 2, std::max(4, (height - dialogHeight) / 3), dialogWidth, dialogHeight };
@@ -376,11 +403,11 @@ void TextPrompt::layout(int width, int height, Font& font) {
 }
 
 void TextPrompt::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
-    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 110);
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel);
+    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     font.drawText(canvas, frame.x + PADDING, frame.y + PADDING, heading, theme.text);
-    canvas.fillRoundRect(field.x, field.y, field.width, field.height, 4, theme.border);
-    canvas.fillRoundRect(field.x + 1, field.y + 1, field.width - 2, field.height - 2, 3, theme.panel);
+    canvas.fillRoundRect(field.x, field.y, field.width, field.height, metrics::FIELD_RADIUS, theme.border);
+    canvas.fillRoundRect(field.x + 1, field.y + 1, field.width - 2, field.height - 2, metrics::FIELD_RADIUS - 1, theme.panel);
     // The end of a long name stays in view, with the caret after it
     const char* shown = value;
     while (*shown != '\0' && font.textWidth(shown) > field.width - 12) {

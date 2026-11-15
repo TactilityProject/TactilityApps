@@ -127,7 +127,11 @@ public:
     void setPoiLookup(PoiLookup value) { poiLookup = value; }
 
     /** Starts a new placement for a screen of width x height at a view zoom level. */
-    void beginView(int width, int height, int viewZoom);
+    /**
+     * worldLeft and worldTop: the map position of the screen's top left corner in pixels of the view's zoom. With
+     * them the placement is the same wherever the view is panned to; without (0, 0) it is tied to the screen.
+     */
+    void beginView(int width, int height, int viewZoom, double worldLeft = 0.0, double worldTop = 0.0);
     /**
      * Adds the labels of one source tile's label section. With cells (a split tile's label file) only the POI and house
      * number cells near the screen are read.
@@ -180,6 +184,10 @@ private:
         uint8_t poiType;
         uint8_t iconSize;
         const uint8_t* icon;
+        /** Order among candidates of the same priority and rank, from the name and the map position: the label's identity. */
+        uint32_t order;
+        /** It was on screen in the last placement. */
+        bool sticky;
     };
     struct Placed {
         uint32_t textOffset;
@@ -195,6 +203,14 @@ private:
         /** The labelled point on screen when placed (for POIs and house numbers). */
         int16_t anchorX;
         int16_t anchorY;
+        /** The candidate's order number. */
+        uint32_t id;
+    };
+    /** A label of the last placement: its identity and its centre on the map (pixels of zoom 24). */
+    struct Kept {
+        uint32_t id;
+        double worldX;
+        double worldY;
     };
 
     bool wants(const LabelRecord& record, uint8_t& priority, uint8_t& fontSize, uint16_t& color) const;
@@ -209,10 +225,16 @@ private:
     };
     static constexpr int WIDTH_ENTRIES = 1024;
     WidthEntry* widths = nullptr;
+    /** The cells a box covers, cut to the grid; false when it lies outside it. */
+    bool gridRange(float cx, float cy, float halfWidth, float halfHeight, int& left, int& top, int& right, int& bottom) const;
+    /** Whether any part of a box is on the screen. */
+    bool onScreen(float cx, float cy, float halfWidth, float halfHeight) const;
     bool gridFree(float cx, float cy, float halfWidth, float halfHeight, float angle) const;
-    void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle);
+    void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle, bool taken = true);
     bool placePoint(const Candidate& candidate);
-    bool placePoi(const Candidate& candidate);
+    /** Takes the place of a POI's icon; its sprite (with the name where there is room) is drawn by finishPois(). */
+    bool placePoiIcon(const Candidate& candidate);
+    void finishPois();
     int placeLine(const Candidate& candidate);
     /** Draws text turned by angle (radians) around the centre of a new sprite; false when the arena is full. */
     bool drawSprite(const Candidate& candidate, float centerX, float centerY, float angle, int textPixels, bool withText = true);
@@ -222,6 +244,18 @@ private:
     void (*releaseMemory)(void*) = nullptr;
     uint8_t* arena = nullptr;
     size_t arenaUsed = 0;
+    /**
+     * The sprites of POI icons drawn without a name in this pass: every POI of a kind shows the same icon, so its
+     * sprite (mask and halo) is drawn once and shared (at zoom 17 most labels are such icons).
+     */
+    struct IconSprite {
+        const uint8_t* icon;
+        uint32_t offset;
+        int16_t size;
+    };
+    static constexpr int ICON_SPRITES = 48;
+    IconSprite iconSprites[ICON_SPRITES] = {};
+    int iconSpriteCount = 0;
     char* texts = nullptr;
     size_t textsUsed = 0;
     Candidate* candidates = nullptr;
@@ -230,8 +264,19 @@ private:
     int linePointCount = 0;
     Placed placed[MAX_LABELS] {};
     int placedCount = 0;
-    /** One bit per 8 x 8 pixel cell of the screen. */
-    uint32_t grid[128] {};
+    /** One bit per cell of the screen and a margin around it; the cells are fixed to the map (see gridRange). */
+    uint32_t grid[1024] {};
+    double originX = 0.0;
+    double originY = 0.0;
+    double gridBaseX = 0.0;
+    double gridBaseY = 0.0;
+    /** POIs whose icon has a place, as candidate indexes, until finishPois() draws them. */
+    uint16_t pending[MAX_LABELS] {};
+    int pendingCount = 0;
+    Kept kept[MAX_LABELS] {};
+    /** placeLine's distances along the line it is placing. */
+    float lineLengths[LabelReader::MAX_POINTS] {};
+    int keptCount = 0;
     int gridColumns = 0;
     int gridRows = 0;
     int screenWidth = 0;

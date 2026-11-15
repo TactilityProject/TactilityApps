@@ -21,8 +21,25 @@ constexpr int MENU_WIDTH = 220;
 constexpr int ABOUT_LINES = 40;
 constexpr int ABOUT_LINE_LENGTH = 64;
 
-const char* const MENU_LABELS[] = { "Download map", "Downloaded maps", "Waypoints", "Add waypoint", "Record track", "GPX files", "Location", "Settings",
-    "About and licences", "Exit" };
+/** The tiles of the main menu, in grid order (left to right, top to bottom). */
+struct MenuEntry {
+    MenuAction action;
+    MenuIcon icon;
+    const char* label;
+};
+
+const MenuEntry MENU_ENTRIES[] = {
+    { MenuAction::Search, MenuIcon::Search, "Search" },
+    { MenuAction::Download, MenuIcon::Download, "Download" },
+    { MenuAction::Maps, MenuIcon::Maps, "Maps" },
+    { MenuAction::Waypoints, MenuIcon::Waypoints, "Waypoints" },
+    { MenuAction::Track, MenuIcon::Track, "Track" },
+    { MenuAction::Gpx, MenuIcon::Gpx, "GPX" },
+    { MenuAction::Location, MenuIcon::Location, "Location" },
+    { MenuAction::Settings, MenuIcon::Settings, "Settings" },
+    { MenuAction::About, MenuIcon::About, "About" },
+};
+
 const char* const DOWNLOAD_CHOICES[] = { "Choose area", "Choose region" };
 
 const char* const ABOUT_PARAGRAPHS[] = {
@@ -40,12 +57,6 @@ const char* const ABOUT_PARAGRAPHS[] = {
     "",
     "W/S or drag to scroll. Esc, Backspace, < or a swipe to the right go back.",
 };
-
-/** The menu row with the running download's details, before the menu items. */
-constexpr int MENU_DOWNLOAD_DETAILS = 100;
-constexpr int MENU_ROUTE_SHOW = 101;
-constexpr int MENU_ROUTE_STOP = 102;
-constexpr int MENU_ROUTE_CLEAR = 103;
 
 /** What can be done with a region or a waypoint, the rows of their action popups. */
 enum RegionAction : int {
@@ -130,51 +141,86 @@ void MapView::layoutPopup() {
     dirty = true;
 }
 
-void MapView::openMenu() {
-    beginPopup(Popup::Main, "Menu");
+void MapView::readMainMenuState(MainMenuState& state) {
+    state = {};
     // While a download runs or is paused its details come first, so every input reaches Pause and Cancel
     const Downloader::Status status = downloader.status();
     const bool running = status.state == Downloader::State::Downloading || status.state == Downloader::State::Updating ||
         status.state == Downloader::State::Connecting;
     if (running || pausedRegion[0] != '\0') {
-        char detail[16];
-        snprintf(detail, sizeof(detail), "%s", running ? "starting" : "paused");
+        const char* what = status.state == Downloader::State::Updating ? "Update" : "Download";
         if (running && status.total > 0) {
-            snprintf(detail, sizeof(detail), "%d%%", static_cast<int>(status.done * 100 / status.total));
+            snprintf(state.download, sizeof(state.download), "%s %d %%", what, static_cast<int>(status.done * 100 / status.total));
+        } else {
+            snprintf(state.download, sizeof(state.download), "%s %s", what, running ? "starting" : "paused");
         }
-        menu.add(status.state == Downloader::State::Updating ? "Update" : "Download", detail);
-        popupActions[popupActionCount++] = MENU_DOWNLOAD_DETAILS;
     }
     // A route: show it again, stop following it, or clear it (it is kept until then, also across restarts)
     if (navigator.hasRoute()) {
-        if (navigating) {
-            menu.add("Stop navigation");
-            popupActions[popupActionCount++] = MENU_ROUTE_STOP;
-        } else {
-            menu.add("Show route");
-            popupActions[popupActionCount++] = MENU_ROUTE_SHOW;
-        }
-        menu.add("Clear route");
-        popupActions[popupActionCount++] = MENU_ROUTE_CLEAR;
+        state.route = navigating ? 2 : 1;
     }
-    menu.add("Search");
-    popupActions[popupActionCount++] = static_cast<int>(MenuItem::Search);
-    int item = 0;
-    for (const char* label : MENU_LABELS) {
-        popupActions[popupActionCount++] = item++;
-        // The track entry says what it does now
-        if (strcmp(label, "Record track") == 0 && recorder.isActive()) {
-            menu.add(recorder.state() == TrackRecorder::State::Paused ? "Track (paused)" : "Track (recording)");
-        } else if (strcmp(label, "Location") == 0) {
-            menu.add(label, LocationSource::isEnabled() ? "On" : "Off");
-        } else {
-            menu.add(label);
-        }
+    state.locationOn = LocationSource::isEnabled();
+    if (recorder.isActive()) {
+        state.track = recorder.state() == TrackRecorder::State::Paused ? 2 : 1;
     }
-    layoutPopup();
+}
+
+void MapView::buildMainMenu() {
+    const uint16_t focus = menuGrid.focusAction();
+    const bool shown = menuGrid.focusShown();
+    readMainMenuState(menuShown);
+    menuGrid.clear();
+    menuGrid.setTitle("Menu");
+    menuGrid.setGrid(3, 3);
+    menuGrid.setCorner(static_cast<uint16_t>(MenuAction::Exit), "Exit");
+    // Only a board with a typing keyboard has keys to tell about; touch and trackball need no explanation
+    menuGrid.setHint(input.hasKeyboard() ? "WASD: move  Enter: open  Esc: close" : nullptr);
+    for (const MenuEntry& entry : MENU_ENTRIES) {
+        const char* detail = nullptr;
+        if (entry.action == MenuAction::Location) {
+            detail = menuShown.locationOn ? "On" : "Off";
+        } else if (entry.action == MenuAction::Track && menuShown.track != 0) {
+            detail = menuShown.track == 2 ? "Paused" : "Recording";
+        }
+        menuGrid.addTile(static_cast<uint16_t>(entry.action), entry.icon, entry.label, detail);
+    }
+    if (menuShown.download[0] != '\0') {
+        menuGrid.addStatus(static_cast<uint16_t>(MenuAction::DownloadDetails), MenuIcon::Download, menuShown.download);
+    }
+    if (menuShown.route == 2) {
+        menuGrid.addStatus(static_cast<uint16_t>(MenuAction::RouteStop), MenuIcon::Stop, "Stop");
+    } else if (menuShown.route == 1) {
+        menuGrid.addStatus(static_cast<uint16_t>(MenuAction::RouteShow), MenuIcon::Route, "Show route");
+    }
+    if (menuShown.route != 0) {
+        menuGrid.addStatus(static_cast<uint16_t>(MenuAction::RouteClear), MenuIcon::Clear, "Clear route");
+    }
+    menuGrid.layout(width, height, overlay.font(), &overlay.smallFont());
+    menuGrid.setFocusAction(focus, shown);
+}
+
+void MapView::refreshMainMenu() {
+    MainMenuState state;
+    readMainMenuState(state);
+    if (!(state == menuShown)) {
+        buildMainMenu();
+        dirty = true;
+    }
+}
+
+void MapView::openMenu() {
+    buildMainMenu();
+    // It opens where it was left, without a highlight until the first key or trackball step
+    menuGrid.setFocusAction(lastMenuFocus, false);
+    popup = Popup::Main;
+    menuOpen = true;
+    dirty = true;
 }
 
 void MapView::closeMenu() {
+    if (mainMenuOpen()) {
+        lastMenuFocus = menuGrid.focusAction();
+    }
     menuOpen = false;
     dirty = true;
 }
@@ -188,46 +234,75 @@ void MapView::openDownloadChoice() {
     layoutPopup();
 }
 
-void MapView::chooseMenu(MenuItem item) {
-    menuOpen = false;
+void MapView::handleMainMenuEvent(const GridEvent& event) {
     dirty = true;
+    if (event.result == GridResult::Chosen) {
+        chooseMenuAction(static_cast<MenuAction>(event.action));
+    } else if (event.result == GridResult::Back) {
+        closeMenu();
+    }
+}
+
+void MapView::chooseMenuAction(MenuAction action) {
+    dirty = true;
+    if (action == MenuAction::Location) {
+        // The only entry that keeps the menu open, its detail shows the new state
+        toggleLocation();
+        buildMainMenu();
+        return;
+    }
+    // Back from a sub-menu or a screen opens the menu on the entry it was left from
+    lastMenuFocus = static_cast<uint16_t>(action);
+    menuOpen = false;
+    switch (action) {
+        case MenuAction::DownloadDetails:
+            openDownloadCard();
+            return;
+        case MenuAction::RouteShow:
+            fillRouteCard();
+            fitRoute();
+            return;
+        case MenuAction::RouteStop:
+            stopNavigation();
+            showToast("Navigation stopped, the route stays");
+            return;
+        case MenuAction::RouteClear:
+            clearRoute();
+            return;
+        default:
+            break;
+    }
     controls.hide();
     cursorShown = false;
     // Screens opened from here go back to the menu
     returnToMenu = true;
-    switch (item) {
-        case MenuItem::Download:
+    switch (action) {
+        case MenuAction::Download:
             openDownloadChoice();
             break;
-        case MenuItem::Regions:
+        case MenuAction::Maps:
             openRegions();
             break;
-        case MenuItem::Waypoints:
+        case MenuAction::Waypoints:
             openWaypoints();
             break;
-        case MenuItem::AddWaypoint:
-            openNewWaypoint(worldYToLat(centerY, zoom), worldXToLon(centerX, zoom));
-            break;
-        case MenuItem::RecordTrack:
+        case MenuAction::Track:
             openTrackMenu();
             break;
-        case MenuItem::GpxFiles:
+        case MenuAction::Gpx:
             openGpxFiles();
             break;
-        case MenuItem::Location:
-            toggleLocation();
-            break;
-        case MenuItem::Settings:
+        case MenuAction::Settings:
             openSettings();
             break;
-        case MenuItem::About:
+        case MenuAction::About:
             openAbout();
             break;
-        case MenuItem::Search:
+        case MenuAction::Search:
             returnToMenu = false;
             openSearch();
             break;
-        case MenuItem::Exit:
+        case MenuAction::Exit:
             // The only way out by trackball or touch, LVGL's swipe back does not run while the map has the screen
             exitRequested = true;
             break;
@@ -257,23 +332,7 @@ void MapView::handlePopupAction(UiAction action) {
     const int chosen = row >= 0 && row < popupActionCount ? popupActions[row] : row;
     switch (kind) {
         case Popup::Main:
-            if (chosen == MENU_DOWNLOAD_DETAILS) {
-                closeMenu();
-                openDownloadCard();
-            } else if (chosen == MENU_ROUTE_SHOW) {
-                closeMenu();
-                fillRouteCard();
-                fitRoute();
-            } else if (chosen == MENU_ROUTE_STOP) {
-                closeMenu();
-                stopNavigation();
-                showToast("Navigation stopped, the route stays");
-            } else if (chosen == MENU_ROUTE_CLEAR) {
-                closeMenu();
-                clearRoute();
-            } else {
-                chooseMenu(static_cast<MenuItem>(chosen));
-            }
+            // The main menu is the tile grid, it never comes here
             break;
         case Popup::DownloadChoice:
             closeMenu();
@@ -287,6 +346,10 @@ void MapView::handlePopupAction(UiAction action) {
                 setBearing(0.0f, false);
             } else {
                 openCatalog(-1);
+                if (screen != Screen::Catalog) {
+                    // It bailed with a toast, so there is no screen to come back from
+                    returnToMenu = false;
+                }
             }
             break;
         case Popup::Track:
@@ -300,6 +363,10 @@ void MapView::handlePopupAction(UiAction action) {
         case Popup::WaypointActions:
             closeMenu();
             chooseWaypointAction(chosen);
+            break;
+        case Popup::GpxActions:
+            closeMenu();
+            chooseGpxAction(chosen);
             break;
         case Popup::RouteStart:
             closeMenu();
@@ -336,14 +403,18 @@ void MapView::handleListAction(UiAction action) {
             break;
         case Screen::Waypoints:
             if (action == UiAction::Chosen) {
-                openWaypointActions();
+                if (waypointList.selected() == 0) {
+                    addWaypointHere();
+                } else {
+                    openWaypointActions();
+                }
             } else if (action == UiAction::Delete) {
                 askDeleteWaypoint(listedWaypoint());
             }
             break;
         case Screen::GpxFiles:
             if (action == UiAction::Chosen) {
-                toggleGpxFile();
+                openGpxActions();
             }
             break;
         case Screen::Settings:
@@ -388,7 +459,7 @@ void MapView::fillRegionList() {
     regionList.clear();
     regionList.setTitle("Downloaded maps");
     if (regionCount == 0) {
-        regionList.setHint("No maps yet. Menu, Download map.");
+        regionList.setHint("No maps yet. Menu, Download.");
     } else {
         setListHint(regionList, "Enter: actions  R: rename  X: delete", "Tap: actions  Swipe right: back");
     }
@@ -423,6 +494,7 @@ void MapView::openRegionActions() {
     const RegionMeta& meta = regions[regionList.selected()];
     const Downloader::Status status = downloader.status();
     const bool active = downloader.isBusy() && strcmp(status.region, meta.name) == 0;
+    snprintf(actionRegion, sizeof(actionRegion), "%s", meta.name);
     beginPopup(Popup::RegionActions, regionTitle(meta));
     auto add = [&](const char* label, int action) {
         menu.add(label);
@@ -445,10 +517,22 @@ void MapView::openRegionActions() {
 }
 
 void MapView::chooseRegionAction(int action) {
-    if (regionList.selected() >= regionCount) {
+    // The list may have been rebuilt since the popup opened, so the region is found again by its folder name
+    int found = -1;
+    for (int i = 0; i < regionCount; i++) {
+        if (strcmp(regions[i].name, actionRegion) == 0) {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0) {
+        showToast("The list changed");
+        dirty = true;
         return;
     }
-    const RegionMeta& meta = regions[regionList.selected()];
+    // The steps that follow (rename, delete, update) work on the selected row
+    regionList.select(found);
+    const RegionMeta& meta = regions[found];
     switch (action) {
         case REGION_SHOW:
             returnToMenu = false;
@@ -643,11 +727,25 @@ void MapView::fillSettingList() {
     settingList.add("Labels", LABEL_DENSITIES[std::clamp(settings.labels, 0, 2)]);
     settingList.add("Latin names", settings.latinNames ? "On" : "Off");
     settingList.add("Route mode", routeProfileName(static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2))));
+    // In the order of SettingItem; each says what the setting does, shown for the highlighted row
+    static const char* const DESCRIPTIONS[] = {
+        "Also keep drawn tiles on the card",
+        "Packed tiles are smaller, raw ones faster",
+        "The map scales while you pinch",
+        "Fetch missing detail on Wi-Fi as you pan",
+        "How fast the trackball moves the cursor",
+        "How many place names show on the map",
+        "Show the Latin name where a place has one",
+        "The mode a new route starts with",
+    };
+    settingList.setDescriptions(DESCRIPTIONS, static_cast<int>(SettingItem::Count));
     settingList.layoutFullScreen(width, height, overlay.font());
     settingList.select(selected);
 }
 
 void MapView::toggleSetting(SettingItem item) {
+    // Kept so a failed write can be undone: the screen and the card must not disagree
+    const Settings before = settings;
     switch (item) {
         case SettingItem::SdCache:
             settings.sdCache = !settings.sdCache;
@@ -679,6 +777,8 @@ void MapView::toggleSetting(SettingItem item) {
             break;
         case SettingItem::SmoothPinch:
             if (monochrome) {
+                showToast("Not on this display");
+                dirty = true;
                 return;
             }
             settings.smoothPinch = !settings.smoothPinch;
@@ -690,6 +790,12 @@ void MapView::toggleSetting(SettingItem item) {
     snprintf(path, sizeof(path), "%s/settings.txt", rootPath);
     auto write = [&] { return writeSettings(path, settings); };
     if (!runOnCard(io, write)) {
+        // Back to what is on the card, and what the toggle applied in memory with it
+        settings = before;
+        worker.setSdCache(settings.sdCache);
+        worker.setDeflatePrepared(settings.deflatePrepared);
+        pointerAcceleration.setSpeed(settings.pointerSpeed);
+        applyLabelSettings();
         showToast("Could not save the settings");
     }
     fillSettingList();
@@ -701,17 +807,19 @@ void MapView::toggleSetting(SettingItem item) {
 
 void MapView::openAbout() {
     // From the menu it goes back there, from the attribution on the map back to the map
+    // The buffer comes first so that a failure changes nothing on screen
+    if (aboutBuffer == nullptr) {
+        aboutBuffer = static_cast<char*>(largeAlloc(ABOUT_LINES * ABOUT_LINE_LENGTH));
+        if (aboutBuffer == nullptr) {
+            showToast("Not enough memory");
+            return;
+        }
+    }
     returnToMenu = menuOpen || returnToMenu;
     controls.hide();
     cursorShown = false;
     aboutScroll = 0;
     aboutLines = 0;
-    if (aboutBuffer == nullptr) {
-        aboutBuffer = static_cast<char*>(largeAlloc(ABOUT_LINES * ABOUT_LINE_LENGTH));
-        if (aboutBuffer == nullptr) {
-            return;
-        }
-    }
     screen = Screen::About;
     menuOpen = false;
     dirty = true;

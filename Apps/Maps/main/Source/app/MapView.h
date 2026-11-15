@@ -44,18 +44,20 @@
 #include "../ui/Settings.h"
 #include "../ui/GpxLayer.h"
 #include "../ui/Waypoints.h"
+#include "../ui/TileGrid.h"
 #include "../ui/Widgets.h"
 
 #include <app/event.h>
 #include <tactility/device.h>
 
 #include <cstdint>
+#include <cstring>
 
 namespace maps {
 
 struct AffineScratch;
 
-#define APP_VERSION "0.5.0"
+#define APP_VERSION "0.6.0"
 constexpr const char* APP_ID = "tactility.maps";
 
 /**
@@ -88,6 +90,25 @@ private:
     uint32_t lastStep = 0;
 };
 
+/** What a tile, status item or the corner button of the main menu does; the grid hands it back as a number. */
+enum class MenuAction : uint16_t {
+    Search,
+    Download,
+    Maps,
+    Waypoints,
+    Track,
+    Gpx,
+    Location,
+    Settings,
+    About,
+    Exit,
+    /** The status strip: a running download, then the route. */
+    DownloadDetails,
+    RouteShow,
+    RouteStop,
+    RouteClear
+};
+
 class MapView {
 public:
     bool begin(Device* display, const char* root, const char* dataPath);
@@ -107,19 +128,17 @@ private:
         Tracks
     };
 
-    enum class MenuItem : uint8_t {
-        Download,
-        Regions,
-        Waypoints,
-        AddWaypoint,
-        RecordTrack,
-        GpxFiles,
-        Location,
-        Settings,
-        About,
-        Exit,
-        Search,
-        Count
+    /** What the main menu shows apart from the fixed labels, to tell whether it has to be built again. */
+    struct MainMenuState {
+        char download[TileGrid::STATUS_LENGTH];
+        /** 0: no route, 1: Show route, 2: Stop. */
+        uint8_t route;
+        bool locationOn;
+        /** 0: no track, 1: recording, 2: paused. */
+        uint8_t track;
+        bool operator==(const MainMenuState& other) const {
+            return strcmp(download, other.download) == 0 && route == other.route && locationOn == other.locationOn && track == other.track;
+        }
     };
 
     enum class Popup : uint8_t {
@@ -128,6 +147,8 @@ private:
         Track,
         RegionActions,
         WaypointActions,
+        /** A GPX file: show or hide it, follow it. */
+        GpxActions,
         /** Where a route starts when there is no GPS fix (M5c). */
         RouteStart
     };
@@ -281,7 +302,19 @@ private:
     // MapScreens.cpp: menu, Regions, Settings, About, download frame
     void openMenu();
     void closeMenu();
-    void chooseMenu(MenuItem item);
+    /** The main menu is the tile grid, every other popup a ListView in menu. */
+    bool mainMenuOpen() const { return menuOpen && popup == Popup::Main; }
+    /** Fills the grid from the current state (tiles, details, status strip), keeping the focus. */
+    void buildMainMenu();
+    /** While the grid is open: builds it again when what it shows has changed. */
+    void refreshMainMenu();
+    void readMainMenuState(MainMenuState& state);
+    void handleMainMenuEvent(const GridEvent& event);
+    void chooseMenuAction(MenuAction action);
+    /** Adds a waypoint at the map centre, from the first row of the waypoint list. */
+    void addWaypointHere();
+    /** The empty waypoint list says how to add one. */
+    void drawWaypointsEmpty(Canvas& canvas, const UiTheme& theme);
     void handleListAction(UiAction action);
     /** What Enter, a click, a tap or Back did in the popup that is open. */
     void handlePopupAction(UiAction action);
@@ -395,6 +428,10 @@ private:
     void openTracks();
     void openGpxFiles();
     void toggleGpxFile();
+    void openGpxActions();
+    void chooseGpxAction(int action);
+    /** Makes a route from the file's first track or route and shows its card, as for a searched route. */
+    void followGpxFile(const char* path);
     void pollGpxImport();
     void saveShownGpx();
     void loadShownGpx();
@@ -472,6 +509,13 @@ private:
     /** A mode was chosen while a search ran: a new search starts once it has stopped. */
     bool restartRoute = false;
     uint32_t lastRecalculation = 0;
+    /** The last recalculation gave no route: the bar says so instead of "recalculating". */
+    bool recalculationFailed = false;
+    /** Lines of the navigation log (navlog.txt) not yet on the card, and when they were written last. */
+    char navLog[3072] = "";
+    size_t navLogUsed = 0;
+    uint32_t navLogFlushedAt = 0;
+    void flushNavLog();
     int64_t lastFollowFixMs = -1;
     uint32_t lastFollowAt = 0;
     uint32_t lastFollowSignature = 0;
@@ -495,6 +539,11 @@ private:
     bool returnToMenu = false;
     /** The popup over the screen: the menu, its sub-menus, or the actions of a row in a list. */
     ListView menu;
+    /** The main menu: open when menuOpen and popup is Main. */
+    TileGrid menuGrid;
+    /** The action focused when the main menu was left, so it opens there again. */
+    uint16_t lastMenuFocus = TileGrid::NO_ACTION;
+    MainMenuState menuShown {};
     bool menuOpen = false;
     Popup popup = Popup::Main;
     static constexpr int MAX_POPUP_ACTIONS = 16;
@@ -504,6 +553,8 @@ private:
     ListView regionList;
     RegionMeta regions[TileStore::MAX_REGIONS] {};
     int regionCount = 0;
+    /** The folder of the region whose actions popup is open: the list can be rebuilt while it is open. */
+    char actionRegion[REGION_NAME_MAX + 1] {};
     ListView settingList;
     ListView catalogList;
     char catalogPath[PATH_MAX_LENGTH] = "";

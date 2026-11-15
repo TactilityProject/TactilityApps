@@ -15,7 +15,7 @@ for downloading maps. Tested on Tactility 0.8.0-dev (main, November 2026) on a L
 1. Install "Maps" from Tactility's App Hub. Or copy the `.app` file to the SD card, open it in the Files app and
    confirm "Install".
 2. Start "Maps" from the app list. The first time it opens at ESA ESTEC in Noordwijk with no map data yet: move
-   to your area, open the menu (M or ☰) and choose Download map.
+   to your area, open the menu (M or ☰) and choose Download.
 
 ## How it works
 
@@ -51,7 +51,7 @@ circle), the scale bar, and the © mark.
 | Add a waypoint | P | — | Hold ⌖ (your position) or hold the map (that point) |
 | A place or house number | Show the controls, then Enter (nearest the crosshair; Enter again: next) | Click it | Tap it |
 | Menu | M | Long click | ☰ button |
-| Download an area | Shift + D | — | Menu → Download map |
+| Download an area | Shift + D | — | Menu → Download |
 | Leave the download frame | Esc | — | The round < in its top left corner |
 | Type a name (waypoint, rename) | Keyboard | — | On-screen keyboard |
 | Credits | — | Click © | Tap ©, tap again for About and licences |
@@ -176,9 +176,14 @@ takes about 5 minutes on a T-Deck; it is made again when the region's tiles are 
 z14 tiles get one index per block of 15 x 15 tiles. Until a region's index is ready, search doesn't find anything in
 it. The PC tool `host/search_build --tiles` makes the same file.
 
-**Menu:** Download map, Downloaded maps, Waypoints, Add waypoint, Record track, GPX files, Location, Settings, About and
-licences, Exit. W/S, trackball or finger to move; Enter, click or tap to choose; Esc, Backspace or tap
-outside to close.
+**Menu (0.6.0):** a grid of nine tiles: Search, Download (choose an area on the map or a region from the list), Maps (the
+downloaded maps), Waypoints (the list; its first row adds one at the map's centre), Track (record, pause, stop,
+recorded tracks), GPX (files to show), Location (switches on and off in place; the tile says On or Off), Settings,
+About. W A S D, the arrows or the trackball move from tile to tile, Enter or a click opens, a tap opens directly;
+Esc, Backspace, M, a swipe to the right or the arrow at the top left close it. The menu opens on the tile you used
+last. While a download runs or a route exists, a strip above the tiles shows it: the download with its progress
+(opens the download card), Show route or Stop, and Clear route. Exit is the small button at the top right.
+With the controls shown there is also a search button under the menu button (key /).
 
 **Lists and actions.** Enter or a tap on a row opens its actions; lists have a back arrow and a check
 mark in their header; swipe right or the back arrow goes back, and dragging a list scrolls it. Lists open
@@ -227,7 +232,7 @@ not updated.
 Tactility's location service on or off, with a message. If it's off, the ⌖ button is crossed out and
 pressing it says how to enable it in Tactility's settings.
 
-**Waypoints:** P, or holding ⌖, saves a waypoint at your position; Menu → Add waypoint saves one at the
+**Waypoints:** P, or holding ⌖, saves a waypoint at your position; Menu → Waypoints → Add waypoint here saves one at the
 map centre; on touch screens holding the map saves one where you hold. A sheet asks for the name of a
 new waypoint; typing replaces the suggested name. Waypoints are named WP 001, WP 002, …; they show as
 pins at every zoom level, all the same size. Tap a pin for its card: name, coordinates and distance and
@@ -235,7 +240,7 @@ direction from you. Esc closes the card. Menu → Waypoints lists them by distan
 there, R renames (keyboard), Del or hold deletes after asking. They are kept in `waypoints.gpx` (GPX 1.1)
 in the app's folder on the card.
 
-**Track recording:** Menu → Record track → Start recording. A red ● with the time shows top right (with
+**Track recording:** Menu → Track → Start recording. A red ● with the time shows top right (with
 the controls shown also the distance). The same menu entry pauses, resumes and stops. Points are taken
 from the position when you moved more than 5 m (or more than the GPS accuracy), or every 30 s while
 moving; approximate positions (from the network) are skipped. The track is drawn on the map as a red

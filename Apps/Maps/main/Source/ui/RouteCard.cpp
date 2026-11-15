@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "RouteCard.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 #include <cstdio>
 
@@ -8,10 +10,15 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
+using metrics::PADDING;
+
 /** The mode bar: segments of this size, this far below the top of the screen. */
 constexpr int MODE_WIDTH = 52;
 constexpr int MODE_HEIGHT = 30;
+
+int modeHeight() {
+    return metrics::touchTargets() ? metrics::TOUCH_BUTTON_HEIGHT : MODE_HEIGHT;
+}
 constexpr int MODE_TOP = 4;
 
 const char* labelOf(RouteCard::Button button) {
@@ -94,13 +101,26 @@ RouteCard::Button RouteCard::pressed(Button button) const {
 
 void RouteCard::layout(int width, int height, Font& font) {
     const int line = font.lineHeight();
-    const int cardWidth = std::min(width - 8, 300);
+    const int cardWidth = metrics::cardWidth(width, height, 8, 300, line);
     noteLineCount = 0;
     if (noteText[0] != '\0') {
         noteLineCount = wrapText(font, noteText, cardWidth - 2 * PADDING, &noteLines[0][0], NOTE_LINE_LENGTH, NOTE_LINES);
     }
-    const int buttonHeight = line + 10;
-    const int cardHeight = PADDING + line + 4 + noteLineCount * line + (noteLineCount > 0 ? 4 : 0) + buttonHeight + PADDING;
+    const int buttonHeight = metrics::buttonHeight(line);
+    // With a keyboard one more muted line lists the shortcuts
+    const int hintHeight = metrics::hasKeyboard() ? line + 2 : 0;
+    int cardHeight = PADDING + line + 4 + noteLineCount * line + (noteLineCount > 0 ? 4 : 0) + hintHeight + buttonHeight + PADDING;
+    // A low screen: the card must stay under the mode bar, so the hint and then the note lines go
+    const int cardRoom = height - 4 - (MODE_TOP + modeHeight() + 8) - 2;
+    showHint = hintHeight > 0;
+    if (cardHeight > cardRoom && showHint) {
+        cardHeight -= hintHeight;
+        showHint = false;
+    }
+    while (cardHeight > cardRoom && noteLineCount > 0) {
+        noteLineCount--;
+        cardHeight -= line + (noteLineCount == 0 ? 4 : 0);
+    }
     frame = { (width - cardWidth) / 2, height - cardHeight - 4, cardWidth, cardHeight };
     const int buttonWidth = (cardWidth - 3 * PADDING) / 2;
     const int buttonY = frame.y + cardHeight - PADDING - buttonHeight;
@@ -108,20 +128,20 @@ void RouteCard::layout(int width, int height, Font& font) {
         buttons[i] = { frame.x + PADDING + i * (buttonWidth + PADDING), buttonY, buttonWidth, buttonHeight };
     }
     const int barWidth = MODE_COUNT * MODE_WIDTH + (MODE_COUNT + 1) * 4;
-    modeBar = { (width - barWidth) / 2, MODE_TOP, barWidth, MODE_HEIGHT + 8 };
+    modeBar = { (width - barWidth) / 2, MODE_TOP, barWidth, modeHeight() + 8 };
     for (int i = 0; i < MODE_COUNT; i++) {
-        modes[i] = { modeBar.x + 4 + i * (MODE_WIDTH + 4), modeBar.y + 4, MODE_WIDTH, MODE_HEIGHT };
+        modes[i] = { modeBar.x + 4 + i * (MODE_WIDTH + 4), modeBar.y + 4, MODE_WIDTH, modeHeight() };
     }
 }
 
 void RouteCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     // The modes: the chosen one filled, the focused one framed
-    canvas.fillRoundRect(modeBar.x, modeBar.y, modeBar.width, modeBar.height, 8, theme.panel, theme.panelOpacity);
+    canvas.fillRoundRect(modeBar.x, modeBar.y, modeBar.width, modeBar.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     for (int i = 0; i < MODE_COUNT; i++) {
         const Rect& r = modes[i];
         const bool chosen = i == mode;
         if (chosen) {
-            canvas.fillRoundRect(r.x, r.y, r.width, r.height, 6, theme.accent);
+            canvas.fillRoundRect(r.x, r.y, r.width, r.height, metrics::BUTTON_RADIUS, theme.accent);
         }
         if (focus == i) {
             canvas.frameRect(r.x - 1, r.y - 1, r.width + 2, r.height + 2, chosen ? theme.text : theme.accent, 2);
@@ -130,7 +150,7 @@ void RouteCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     }
     const int line = font.lineHeight();
     const int textWidth = frame.width - 2 * PADDING;
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel, theme.panelOpacity);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     int textY = frame.y + PADDING;
     drawClippedText(canvas, font, frame.x + PADDING, textY, busy ? "Finding a route..." : summaryText, textWidth, theme.text);
     textY += line + 4;
@@ -138,14 +158,17 @@ void RouteCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
         drawClippedText(canvas, font, frame.x + PADDING, textY, noteLines[i], textWidth, theme.muted);
         textY += line;
     }
+    if (showHint) {
+        drawClippedText(canvas, font, frame.x + PADDING, textY, "W/B/C: mode  S: start  P: profile", textWidth, theme.muted);
+    }
     for (int i = 0; i < 2; i++) {
         const Button button = buttonAt(FOCUS_START + i);
         // Start without a route to start is drawn muted, framed when it has the focus
         if (button == Button::Start && (busy || !canStart)) {
             const bool focused = focus == FOCUS_START;
-            canvas.fillRoundRect(buttons[i].x, buttons[i].y, buttons[i].width, buttons[i].height, 6, focused ? theme.accent : theme.border);
+            canvas.fillRoundRect(buttons[i].x, buttons[i].y, buttons[i].width, buttons[i].height, metrics::BUTTON_RADIUS, focused ? theme.accent : theme.border);
             canvas.fillRoundRect(buttons[i].x + (focused ? 2 : 1), buttons[i].y + (focused ? 2 : 1), buttons[i].width - (focused ? 4 : 2),
-                buttons[i].height - (focused ? 4 : 2), 5, theme.panel);
+                buttons[i].height - (focused ? 4 : 2), metrics::BUTTON_RADIUS - 1, theme.panel);
             const int labelWidth = font.textWidth(labelOf(button));
             font.drawText(canvas, buttons[i].x + (buttons[i].width - labelWidth) / 2, buttons[i].y + (buttons[i].height - line) / 2, labelOf(button),
                 theme.muted);

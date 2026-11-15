@@ -276,6 +276,9 @@ void GraphBuilder::clipAndAdd() {
     }
 }
 
+/** The sides of the GRAPH_ZOOM tiles inside a tile of the main-road layer, in its units. */
+constexpr int LAYER_GRID = GRAPH_EXTENT >> (GRAPH_ZOOM - GRAPH_MAIN_ZOOM);
+
 void GraphBuilder::addPart(const Point* points, size_t count) {
     // Half-open ownership: a segment lying on the x = 4096 or y = 4096 side belongs to the neighbour tile
     size_t start = 0;
@@ -290,10 +293,46 @@ void GraphBuilder::addPart(const Point* points, size_t count) {
         if (end - start >= 2) {
             Way way = current;
             way.first = static_cast<uint32_t>(wayPoints.size());
-            way.count = static_cast<uint32_t>(end - start);
-            for (size_t j = start; j < end; j++) {
-                wayPoints.push(points[j]);
+            if (tile.z == GRAPH_MAIN_ZOOM) {
+                // The main-road layer gets a point wherever a road crosses a side of a GRAPH_ZOOM tile (makeNodes()
+                // makes it a node): there the local graphs have their border nodes, so the two levels can be joined
+                // on every main road every tile, not only at the junctions of two main roads (a village on one
+                // road through a valley has none for many kilometres)
+                wayPoints.push(points[start]);
+                for (size_t j = start + 1; j < end; j++) {
+                    const Point a = points[j - 1];
+                    const Point b = points[j];
+                    float crossings[40];
+                    int crossingCount = 0;
+                    for (int axis = 0; axis < 2; axis++) {
+                        const int from = axis == 0 ? a.x : a.y;
+                        const int to = axis == 0 ? b.x : b.y;
+                        if (from == to) {
+                            continue;
+                        }
+                        const int low = std::min(from, to);
+                        const int high = std::max(from, to);
+                        for (int line = (low / LAYER_GRID + 1) * LAYER_GRID; line < high && crossingCount < 40; line += LAYER_GRID) {
+                            crossings[crossingCount++] = static_cast<float>(line - from) / static_cast<float>(to - from);
+                        }
+                    }
+                    std::sort(crossings, crossings + crossingCount);
+                    for (int k = 0; k < crossingCount; k++) {
+                        const float t = crossings[k];
+                        const Point at { static_cast<int16_t>(roundUnit(a.x + t * (b.x - a.x))), static_cast<int16_t>(roundUnit(a.y + t * (b.y - a.y))) };
+                        const Point previous = wayPoints[wayPoints.size() - 1];
+                        if ((at.x != previous.x || at.y != previous.y) && (at.x != b.x || at.y != b.y)) {
+                            wayPoints.push(at);
+                        }
+                    }
+                    wayPoints.push(b);
+                }
+            } else {
+                for (size_t j = start; j < end; j++) {
+                    wayPoints.push(points[j]);
+                }
             }
+            way.count = static_cast<uint32_t>(wayPoints.size() - way.first);
             ways.push(way);
             counters.points += way.count;
         }
@@ -583,7 +622,9 @@ bool GraphBuilder::makeNodes() {
             const uint32_t point = way.first + j;
             if (nodeOf[point] != UINT32_MAX) {
                 since = 0;
-            } else if (++since >= MAX_SHAPE_POINTS) {
+            } else if (++since >= MAX_SHAPE_POINTS ||
+                (tile.z == GRAPH_MAIN_ZOOM && (wayPoints[point].x % LAYER_GRID == 0 || wayPoints[point].y % LAYER_GRID == 0))) {
+                // (on the layer also every point on a side of a GRAPH_ZOOM tile, see addPart())
                 const Point p = wayPoints[point];
                 nodeOf[point] = static_cast<uint32_t>(nodes.size());
                 nodes.push({ static_cast<uint16_t>(p.x), static_cast<uint16_t>(p.y), way.level });

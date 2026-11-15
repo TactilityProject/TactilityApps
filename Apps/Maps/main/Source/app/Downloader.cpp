@@ -157,7 +157,8 @@ void* Downloader::createClient(Connection* connection) {
 void Downloader::beginHandshake(Connection& connection) {
     // One handshake at a time: each is 2-3.6 s of CPU on the network core, two at once kept its idle task from the
     // task watchdog
-    xSemaphoreTake(handshakeLock, pdMS_TO_TICKS(HTTP_TIMEOUT_MS));
+    // Not taken in time (another handshake hangs): go on without it, and do not give it back
+    connection.handshakeLocked = xSemaphoreTake(handshakeLock, pdMS_TO_TICKS(HTTP_TIMEOUT_MS)) == pdTRUE;
     connection.handshaking = true;
     handshakes++;
 }
@@ -166,7 +167,10 @@ void Downloader::endHandshake(Connection& connection) {
     if (connection.handshaking) {
         connection.handshaking = false;
         handshakes--;
-        xSemaphoreGive(handshakeLock);
+        if (connection.handshakeLocked) {
+            connection.handshakeLocked = false;
+            xSemaphoreGive(handshakeLock);
+        }
     }
 }
 
@@ -435,6 +439,41 @@ bool removeJob(IoTask& io, void* context) {
     return (job->folder ? rmdir(job->path) : remove(job->path)) == 0;
 }
 
+constexpr int BATCH_SIZE = 16;
+
+/** Removes the files of a folder (not its subfolders), a few at a time so no name list can overflow. */
+bool clearFolderJob(IoTask& io, void* context) {
+    (void)io;
+    const char* folder = static_cast<const RemoveJob*>(context)->path;
+    struct Batch {
+        char names[BATCH_SIZE][24];
+        int count;
+    };
+    Batch batch {};
+    for (;;) {
+        batch.count = 0;
+        listDirectory(folder, [](const char* name, bool isDirectory, void* data) {
+            auto* batch = static_cast<Batch*>(data);
+            if (!isDirectory && strlen(name) < sizeof(batch->names[0])) {
+                snprintf(batch->names[batch->count++], sizeof(batch->names[0]), "%s", name);
+            }
+            return batch->count < BATCH_SIZE;
+        }, &batch);
+        int removed = 0;
+        for (int i = 0; i < batch.count; i++) {
+            char path[PATH_MAX_LENGTH];
+            snprintf(path, sizeof(path), "%s/%s", folder, batch.names[i]);
+            if (remove(path) == 0) {
+                removed++;
+            }
+        }
+        // A full batch may have more behind it; stop when nothing could be removed
+        if (batch.count < BATCH_SIZE || removed == 0) {
+            return true;
+        }
+    }
+}
+
 } // namespace
 
 bool Downloader::start(const char* root, TileStore* tileStore, IoTask* ioTask) {
@@ -559,7 +598,15 @@ bool Downloader::loadOutlineTiles(const RegionMeta& region) {
     CatalogJob job { catalogPath, &file };
     RegionCatalog catalog;
     if (catalogPath[0] == '\0' || !io->run(IoPriority::Background, readCatalogJob, &job) || !catalog.open(file.bytes(), file.size())) {
-        logError("Region catalog %s not readable", catalogPath);
+        // Told apart for the log: the file is there but did not fit into memory (it is read whole, 357 KB), or it is not
+        uint32_t bytes = 0;
+        outlineNoMemory = fileSize(catalogPath, bytes);
+        if (outlineNoMemory) {
+            logError("Region catalog %s: no memory for its %u bytes (largest free block %u)", catalogPath, static_cast<unsigned>(bytes),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+        } else {
+            logError("Region catalog %s not readable", catalogPath);
+        }
         return false;
     }
     int index = -1;
@@ -1087,7 +1134,7 @@ void Downloader::runDownload() {
         return;
     }
     if (!loadOutlineTiles(meta)) {
-        setStatus(State::Failed, "Region outline is missing");
+        setStatus(State::Failed, outlineNoMemory ? "Not enough memory for the region list" : "Region outline is missing");
         return;
     }
     if (!wifiConnected()) {
@@ -1671,7 +1718,7 @@ void Downloader::runUpdate(bool manual) {
     if (!loadOutlineTiles(target)) {
         largeFree(progress.bits);
         giveClient(connection);
-        setStatus(State::Failed, "Region outline is missing");
+        setStatus(State::Failed, outlineNoMemory ? "Not enough memory for the region list" : "Region outline is missing");
         return;
     }
     bool failedTile = false;
@@ -1821,6 +1868,22 @@ void Downloader::runDelete() {
     RemoveJob metaFile {};
     snprintf(metaFile.path, sizeof(metaFile.path), "%s/maps/%s/meta.json", rootPath, target.name);
     io->run(IoPriority::Background, removeJob, &metaFile);
+    // What the search index left in the region: the stamp, the index, the update list, the block and scratch folders.
+    // Otherwise the folder is not empty and stays behind.
+    static const char* const LEFTOVER_FILES[] = { "search.inf", "search.idx", "search.tmp", "stamp.tmp", "update.bin" };
+    for (const char* leftover : LEFTOVER_FILES) {
+        RemoveJob file {};
+        snprintf(file.path, sizeof(file.path), "%s/maps/%s/%s", rootPath, target.name, leftover);
+        io->run(IoPriority::Background, removeJob, &file);
+    }
+    static const char* const LEFTOVER_FOLDERS[] = { "search", "srch" };
+    for (const char* leftover : LEFTOVER_FOLDERS) {
+        RemoveJob inside {};
+        snprintf(inside.path, sizeof(inside.path), "%s/maps/%s/%s", rootPath, target.name, leftover);
+        io->run(IoPriority::Background, clearFolderJob, &inside);
+        inside.folder = true;
+        io->run(IoPriority::Background, removeJob, &inside);
+    }
     RemoveJob folder {};
     snprintf(folder.path, sizeof(folder.path), "%s/maps/%s", rootPath, target.name);
     folder.folder = true;

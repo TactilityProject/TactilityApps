@@ -158,6 +158,8 @@ private:
         bool connected = false;
         /** Whether this connection holds the handshake lock. */
         bool handshaking = false;
+        /** This connection holds the handshake lock (taking it can time out). */
+        bool handshakeLocked = false;
         /** Tiles moved from the browsed region instead of downloaded in this run, and their bytes. */
         int movedTiles = 0;
         uint64_t moved = 0;
@@ -236,6 +238,8 @@ private:
     SemaphoreHandle_t wake = nullptr;
     SemaphoreHandle_t stopped = nullptr;
     TaskHandle_t controlTask = nullptr;
+    /** The last loadOutlineTiles() failed for memory, not for a missing catalog (for the status text). */
+    bool outlineNoMemory = false;
     std::atomic<bool> stopRequested = false;
     std::atomic<bool> cancelRequested = false;
     std::atomic<bool> busy = false;

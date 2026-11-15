@@ -14,6 +14,8 @@ enum class Control : uint8_t {
     ZoomIn,
     ZoomOut,
     Position,
+    /** Opens the search, like the key "/"; sits under the menu button. Last in the enum so the focus order of the others stays. */
+    Search,
     Count,
     None = Count
 };
@@ -35,15 +37,19 @@ struct InputKinds {
 };
 
 /**
- * The hidden control overlay, laid out for the screen: menu top left, zoom in and out in the middle of the
+ * The hidden control overlay, laid out for the screen: menu top left with search under it, zoom in and out in the middle of the
  * right edge, position bottom right above the scale bar. Buttons are about 32 px, at least 6 px from the edge,
  * semi-transparent, never over the screen centre. With a keyboard each button shows its key. On boards with
  * only buttons (no touch, no pointer) one control has the focus, which arrows move and Enter presses.
  */
 class Controls {
 public:
+    /** The size on a 240 px screen and the smallest bigger screens get; bigger screens grow to at most MAX_SIZE. */
     static constexpr int SIZE = 32;
+    static constexpr int MAX_SIZE = 48;
     static constexpr int EDGE = 6;
+    /** The button size for a screen: SIZE up to 320 px, 1/10 of the short side up to MAX_SIZE, less on a low screen. */
+    static int sizeFor(int width, int height);
 
     /** top: the height of a bar along the top edge (navigation), the menu button goes below it. */
     void layout(int width, int height, int scaleBarTop, int top = 0);
@@ -76,6 +82,7 @@ public:
 private:
     void drawIcon(Canvas& canvas, Control control, const Rect& rect, uint16_t color, PositionButton position, const UiTheme& theme);
 
+    int size = SIZE;
     Rect rects[static_cast<int>(Control::Count)] {};
     InputKinds inputs { true, true, false };
     bool visible = false;

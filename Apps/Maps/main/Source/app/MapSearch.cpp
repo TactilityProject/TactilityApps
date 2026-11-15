@@ -2,6 +2,7 @@
 // Offline search on the map (M6): the search sheet, the region indexes on the card, opening a result.
 #include "MapView.h"
 
+#include "SearchIndexJob.h"
 #include "../platform/Platform.h"
 #include "../route/RouteSearch.h"
 
@@ -180,9 +181,9 @@ bool MapView::loadSearchIndexes() {
             return;
         }
         auto* file = new (memory) CardSearchFile(io, path);
-        // The profile and the x/y rule come from the index header (the engine reads it)
+        // The x/y rule comes from the index header (the engine reads it); the profile is the one the index was built with
         int slot = -1;
-        auto add = [&]() { slot = searchEngine->addIndex(file, region, Translit::Russian, true); };
+        auto add = [&]() { slot = searchEngine->addIndex(file, region, translitForRegion(region), true); };
         onSearchTask(searchTask, add);
         if (slot < 0) {
             logError("Search: %s does not open", path);
@@ -290,6 +291,7 @@ void MapView::openSearch() {
     }
     searchSheet.open();
     searchSheet.setTypingKeyboard(input.hasKeyboard());
+    searchSheet.setTrackball(input.hasKeyboard() || input.hasPointer());
     int count = 0;
     const SearchCategory* categories = SearchEngine::categories(&count);
     const char* names[SearchSheet::MAX_CATEGORIES];
@@ -313,7 +315,7 @@ void MapView::closeSearch() {
 void MapView::layoutSearch() {
     syncTouchKeyboard();
     if (touchKeyboard.isOpen()) {
-        searchSheet.layout(width, height - TouchKeyboard::heightFor(width), sheetFont(), true);
+        searchSheet.layout(width, height - TouchKeyboard::heightFor(width, height, sheetFont().lineHeight()), sheetFont(), true);
     } else {
         searchSheet.layout(width, height, sheetFont());
     }
@@ -421,6 +423,18 @@ void MapView::scriptLog(const char* format, ...) {
     va_end(arguments);
     logInfo("%s", line);
     if (!script.isActive()) {
+        // While navigating the lines go to navlog.txt, a few at a time: what the follower saw on a real trip can be
+        // read afterwards (a rerouting loop on a bus, 14 Nov, left nothing to look at)
+        if (navigating) {
+            const size_t room = sizeof(navLog) - navLogUsed;
+            const int written = snprintf(navLog + navLogUsed, room, "%u %s\n", static_cast<unsigned>(nowMs()), line);
+            if (written > 0 && static_cast<size_t>(written) < room) {
+                navLogUsed += static_cast<size_t>(written);
+            }
+            if (navLogUsed > sizeof(navLog) - 320) {
+                flushNavLog();
+            }
+        }
         return;
     }
     // Debug scripts also get the lines in scriptlog.txt with the time: measurements without a serial log

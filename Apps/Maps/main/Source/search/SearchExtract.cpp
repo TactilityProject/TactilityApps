@@ -166,7 +166,8 @@ bool TileExtractor::beginFeature(const FeatureInfo& info) {
         shape = Shape::House;
         return true;
     }
-    // The display name is name, else name:latin, else name_en (data.py nm_of, without name_int)
+    // The display name is name, else name:latin, else name_en; a street with none of them takes name_int (0.6.0:
+    // Athens has 893 of 9,542 street lines with only that one)
     const char* shown = nullptr;
     size_t shownLength = 0;
     if (info.name != nullptr && info.nameLength > 0) {
@@ -180,6 +181,10 @@ bool TileExtractor::beginFeature(const FeatureInfo& info) {
         shownLength = info.nameEnLength;
     }
     if (info.layer == Layer::TransportationName) {
+        if (shown == nullptr && info.nameInt != nullptr && info.nameIntLength > 0) {
+            shown = info.nameInt;
+            shownLength = info.nameIntLength;
+        }
         if (shown == nullptr) {
             out->refOnlyLines++;
             return false;

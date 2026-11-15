@@ -55,6 +55,8 @@ constexpr uint8_t PREPARED_LABEL_SECTION = 10;
 constexpr int PREPARED_EXTENT = 2048;
 constexpr size_t PREPARED_HEADER_SIZE = 64;
 constexpr size_t PREPARED_VERSION_LENGTH = 32;
+/** No section of a prepared file is larger (inflated or stored): a header with more is damaged. */
+constexpr uint32_t PREPARED_MAX_SECTION = 16u * 1024u * 1024u;
 constexpr uint16_t PREPARED_FLAG_DEFLATED = 1;
 
 /**
@@ -72,6 +74,14 @@ constexpr size_t PREPARED_LABEL_HEADER_SIZE = 80;
 constexpr uint8_t PREPARED_GRAPH_FORMAT_VERSION = 1;
 /** Only tiles of this zoom have a routing graph. */
 constexpr int GRAPH_ZOOM = 14;
+/**
+ * Tiles of this zoom get a routing graph as well (0.6.0, M5c-5): they hold only the main roads (motorway to
+ * secondary), 16 times the ground per tile, for the part of a long route between its two ends.
+ */
+constexpr int GRAPH_MAIN_ZOOM = 10;
+inline bool tileHasGraph(int zoom) {
+    return zoom == GRAPH_ZOOM || zoom == GRAPH_MAIN_ZOOM;
+}
 
 struct PreparedLabelHeader {
     uint16_t version;

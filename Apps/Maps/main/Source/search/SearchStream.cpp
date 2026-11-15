@@ -1409,7 +1409,9 @@ struct SearchStreamBuilder::Impl {
         }
         // Union-find over the lines: the same cell, or touching cells (8 neighbours), of the same name join
         GrowArray<uint32_t>& parent = lineCluster;
-        parent.resize(lineTotal);
+        if (!parent.resize(lineTotal)) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t i = 0; i < lineTotal; i++) {
             parent[i] = i;
         }
@@ -1477,12 +1479,16 @@ struct SearchStreamBuilder::Impl {
         current.release();
         // Components: one per root, numbered in line order
         GrowArray<uint32_t> compOfRoot;
-        compOfRoot.resize(lineTotal);
+        if (!compOfRoot.resize(lineTotal)) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t i = 0; i < lineTotal; i++) {
             compOfRoot[i] = NONE;
         }
         GrowArray<uint32_t> compOfLine;
-        compOfLine.resize(lineTotal);
+        if (!compOfLine.resize(lineTotal)) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t i = 0; i < lineTotal; i++) {
             const uint32_t root = find(i);
             if (compOfRoot[root] == NONE) {
@@ -1606,7 +1612,9 @@ struct SearchStreamBuilder::Impl {
             }
         }
         // Lines point at the sorted clusters (the order array becomes the inverse map)
-        compOfRoot.resize(comps.size());
+        if (!compOfRoot.resize(comps.size())) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t k = 0; k < order.size(); k++) {
             compOfRoot[order[k]] = k;
         }
@@ -2872,7 +2880,13 @@ bool SearchStreamBuilder::build(ScratchFiles& files, const char* scratchDir, con
     b.regionMpu = b.config.metresPerUnit > 0 ? b.config.metresPerUnit : metresPerUnitAtTileY((minY + maxY + 1) / 2.0);
     b.progress.total = 2 * tileCount + 7;
     bool ok = !b.tiles.failed() && !b.tileIndex.failed();
-    ok = ok && b.readTiles() && b.dedupPoints() && b.filterHouses() && b.makeClusters() && b.matchHouses() && b.makeAddresses();
+    // The step, for the memory log of the caller's hook
+    auto at = [&b](uint8_t phase) {
+        b.progress.phase = phase;
+        return true;
+    };
+    ok = ok && b.readTiles() && at(1) && b.dedupPoints() && at(2) && b.filterHouses() && at(3) && b.makeClusters() && at(4) && b.matchHouses() &&
+        at(5) && b.makeAddresses();
     uint32_t pts = 4;
     if (ok) {
         const int64_t span = std::max<int64_t>(static_cast<int64_t>(b.maxX) - b.minX, static_cast<int64_t>(b.maxY) - b.minY);
@@ -2881,7 +2895,7 @@ bool SearchStreamBuilder::build(ScratchFiles& files, const char* scratchDir, con
             b.minX = b.minY = 0;
         }
     }
-    ok = ok && b.writeAddressRecords(pts) && b.pointGroups() && b.writeGroups(pts) && b.writeKeys() &&
+    ok = ok && at(6) && b.writeAddressRecords(pts) && at(7) && b.pointGroups() && at(8) && b.writeGroups(pts) && at(9) && b.writeKeys() && at(10) &&
         b.writeFile(outPath, temporaryPath, pts);
     b.noteTables();
     b.removeScratch();

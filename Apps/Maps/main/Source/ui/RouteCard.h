@@ -59,6 +59,9 @@ public:
     bool contains(int x, int y) const { return frame.contains(x, y) || modeBar.contains(x, y); }
     const Rect& bounds() const { return frame; }
     const Rect& modeBounds() const { return modeBar; }
+    /** For tests: a mode's segment, and the Start (0) and Close (1) buttons. */
+    const Rect& modeRect(int index) const { return modes[index]; }
+    const Rect& buttonRect(int index) const { return buttons[index]; }
 
     /**
      * Tab and arrows move the focus over the modes and the buttons, Enter presses the focused one, W, B, C (or 1, 2, 3)
@@ -83,6 +86,7 @@ private:
     int mode = 0;
     int focus = FOCUS_START;
     int noteLineCount = 0;
+    bool showHint = true;
     char summaryText[SUMMARY_LENGTH] = "";
     char noteText[NOTE_LENGTH] = "";
     char noteLines[NOTE_LINES][NOTE_LINE_LENGTH] {};

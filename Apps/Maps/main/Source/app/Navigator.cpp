@@ -4,6 +4,8 @@
 #include "TileWorker.h"
 
 #include "../platform/Platform.h"
+#include "../route/RouteSplice.h"
+#include "../route/RouteTrack.h"
 #include "../tiles/TileStore.h"
 
 #include <esp_heap_caps.h>
@@ -35,6 +37,9 @@ struct GraphReadJob {
     int* lastRegion;
     uint32_t findMs;
     uint32_t readMs;
+    /** The original is on the card, in this region, but no graph was made from it yet. */
+    bool noGraph = false;
+    int region = -1;
 };
 
 bool graphReadJob(IoTask& io, void* context) {
@@ -67,6 +72,8 @@ bool graphReadJob(IoTask& io, void* context) {
             return ok;
         }
     }
+    job->noGraph = true;
+    job->region = file.region;
     return false;
 }
 
@@ -91,7 +98,7 @@ uint32_t readU32(const uint8_t* bytes) {
 /** Reads graph files through the I/O task from the region that holds the tile. */
 class Navigator::CardSource final : public GraphSource {
 public:
-    CardSource(IoTask& io, TileStore& store) : io(io), store(store) {}
+    CardSource(IoTask& io, TileStore& store, TileWorker& worker) : io(io), store(store), worker(worker) {}
     ~CardSource() override = default;
     bool readGraph(const TileKey& tile, GrowArray<uint8_t>& file) override {
         GraphReadJob job { &store, tile, &buffer, false, false, &lastRegion, 0, 0 };
@@ -106,6 +113,22 @@ public:
         for (int attempt = 0; !ok && job.yielded && attempt < 20; attempt++) {
             job.yielded = false;
             ok = io.run(IoPriority::Visible, graphReadJob, &job);
+        }
+        if (!ok && job.noGraph && prepareLeftMs > 0 && worker.prepareForRoute(tile, job.region)) {
+            // On the card, but its graph is not made yet (a region just downloaded, or the z10 tiles of the
+            // main-road layer after an update): made now, and the search waits for it. Not without end: a route
+            // through a whole new region would wait minutes, so after PREPARE_MS in all the tiles count as missing
+            // (the idle time prepares them, and a later search has them)
+            const uint32_t waitStart = nowMs();
+            while (worker.isPreparingTile(tile) && nowMs() - waitStart < std::min<uint32_t>(prepareLeftMs, PREPARE_TILE_MS)) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            const uint32_t waited = nowMs() - waitStart;
+            prepareLeftMs = waited < prepareLeftMs ? prepareLeftMs - waited : 0;
+            prepared++;
+            job.noGraph = false;
+            ok = io.run(IoPriority::Visible, graphReadJob, &job);
+            logInfo("Route: graph of %d/%d/%d made for the search in %u ms%s", tile.z, tile.x, tile.y, static_cast<unsigned>(waited), ok ? "" : ", not there");
         }
         if (!ok || !file.resize(buffer.size())) {
             readFailures++;
@@ -123,10 +146,17 @@ public:
         return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < 256 * 1024 || heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 768 * 1024;
     }
     int readFailures = 0;
+    /** Graphs made because the search asked for them. */
+    int prepared = 0;
 
 private:
+    /** The longest a search waits for graphs to be made, in all and for one tile. */
+    static constexpr uint32_t PREPARE_MS = 60000;
+    static constexpr uint32_t PREPARE_TILE_MS = 10000;
+    uint32_t prepareLeftMs = PREPARE_MS;
     IoTask& io;
     TileStore& store;
+    TileWorker& worker;
     FileBuffer buffer;
     int lastRegion = -1;
 };
@@ -198,9 +228,65 @@ bool Navigator::request(double fromLat, double fromLon, double toLat, double toL
     requestTo[0] = toLat;
     requestTo[1] = toLon;
     requestProfile = profile;
+    requestProgress = -1.0f;
     currentState = State::Searching;
     job = Job::Route;
     xSemaphoreGive(wake);
+    return true;
+}
+
+bool Navigator::requestRejoin(double fromLat, double fromLon, double toLat, double toLon, RouteProfile profile, float progressM) {
+    if (task == nullptr || currentState == State::Searching) {
+        return false;
+    }
+    requestFrom[0] = fromLat;
+    requestFrom[1] = fromLon;
+    requestTo[0] = toLat;
+    requestTo[1] = toLon;
+    requestProfile = profile;
+    requestProgress = progressM;
+    currentState = State::Searching;
+    job = Job::Route;
+    xSemaphoreGive(wake);
+    return true;
+}
+
+bool Navigator::runRejoin(GraphSource& source, Route& next) {
+    // Only this task changes the routes, so the current one can be read here without the lock
+    const Route& old = routes[current];
+    // Far enough ahead that the way back is no U-turn, near enough that the search is short
+    const float ahead = requestProfile == RouteProfile::Walk ? 400.0f : 1200.0f;
+    const RoutePoint from = routePointFrom(requestFrom[0], requestFrom[1]);
+    const size_t target = rejoinTarget(old, from, requestProgress, ahead, 1000.0f);
+    if (target == SIZE_MAX) {
+        return false;
+    }
+    double targetLat;
+    double targetLon;
+    routePointTo(old.points[target], targetLat, targetLon);
+    Route piece;
+    RouteStats pieceStats {};
+    const RouteResult found = search.find(source, requestFrom[0], requestFrom[1], targetLat, targetLon, requestProfile, piece, &pieceStats);
+    if (found != RouteResult::Found) {
+        rejoinCancelled = found == RouteResult::Cancelled;
+        logInfo("Route rejoin: %s in %u ms%s", routeResultText(found), pieceStats.totalMs, rejoinCancelled ? "" : ", searching to the destination");
+        return false;
+    }
+    // A way back that is far longer than the straight line is no way back (a river, a motorway in between)
+    const float dx = static_cast<float>(old.points[target].x - from.x);
+    const float dy = static_cast<float>(old.points[target].y - from.y);
+    const float straight = std::sqrt(dx * dx + dy * dy) * static_cast<float>(routeMetresPerUnit(from.y));
+    // Nor is one that leads away from the destination (the position is already past that part of the old route)
+    if (piece.lengthM > 3.0f * straight + 500.0f || !rejoinLeadsOn(from, old.points[target], old.to, piece.lengthM) ||
+        !spliceRoute(piece, old, target, next)) {
+        logInfo("Route rejoin: %.0f m for %.0f m in a straight line, or away from the destination: searching to the destination",
+            piece.lengthM, straight);
+        next.clear();
+        return false;
+    }
+    stats = pieceStats;
+    logInfo("Route rejoin: %.0f m back to the route, %.0f m in all, %u ms (settled %u, tiles %u)", piece.lengthM, next.lengthM, pieceStats.totalMs,
+        pieceStats.settled, pieceStats.tilesRead);
     return true;
 }
 
@@ -212,6 +298,17 @@ bool Navigator::bench(const char* pairsPath, RouteProfile profile) {
     requestProfile = profile;
     currentState = State::Searching;
     job = Job::Bench;
+    xSemaphoreGive(wake);
+    return true;
+}
+
+bool Navigator::requestTrack(const char* gpxPath) {
+    if (task == nullptr || currentState == State::Searching) {
+        return false;
+    }
+    snprintf(benchPath, sizeof(benchPath), "%s", gpxPath);
+    currentState = State::Searching;
+    job = Job::Track;
     xSemaphoreGive(wake);
     return true;
 }
@@ -254,6 +351,8 @@ void Navigator::loop() {
             runSides();
         } else if (next == Job::Bench) {
             runBench();
+        } else if (next == Job::Track) {
+            runTrack();
         }
     }
     xSemaphoreGive(stopped);
@@ -286,7 +385,7 @@ void Navigator::giveMemory() {
 }
 
 void Navigator::runRoute() {
-    CardSource source(*io, *store);
+    CardSource source(*io, *store, *worker);
     // Memory may be short during a download: waits up to 10 s for it
     bool memory = false;
     for (int attempt = 0; attempt < 10 && !(memory = takeMemory()); attempt++) {
@@ -298,7 +397,12 @@ void Navigator::runRoute() {
         return;
     }
     Route& next = routes[1 - current];
-    const RouteResult found = search.find(source, requestFrom[0], requestFrom[1], requestTo[0], requestTo[1], requestProfile, next, &stats);
+    rejoinCancelled = false;
+    rejoined = requestProgress >= 0.0f && runRejoin(source, next);
+    // A stopped search (the app closes, another mode was chosen) is not followed by the long one
+    const RouteResult found = rejoined ? RouteResult::Found
+        : (rejoinCancelled ? RouteResult::Cancelled
+            : search.find(source, requestFrom[0], requestFrom[1], requestTo[0], requestTo[1], requestProfile, next, &stats));
     giveMemory();
     logInfo("Route %s: %s, %.0f m, %.0f s, %u points, %u steps; %u ms (reading %u ms), settled %u, tiles %u (%u missing), peak %u KB%s",
         routeProfileName(requestProfile), routeResultText(found), next.lengthM, next.seconds, static_cast<unsigned>(next.points.size()),
@@ -307,6 +411,11 @@ void Navigator::runRoute() {
     result = found;
     if (found == RouteResult::Found) {
         lock();
+        if (rejoined) {
+            // The side roads of the old route go on being used: most of the route is the same, and working them out
+            // again reads every tile along it (5 to 6 s of card time after each new route, 14 Nov)
+            next.sides.swap(routes[current].sides);
+        }
         current = 1 - current;
         routeReady = true;
         changes++;
@@ -315,9 +424,85 @@ void Navigator::runRoute() {
         routes[1 - current].clear();
         currentState = State::Done;
         // The roads beside the route, for the follower's edge rule: after the route is shown, not before
-        runSides();
+        if (!rejoined) {
+            runSides();
+        }
     } else {
         next.clear();
+        currentState = State::Failed;
+    }
+}
+
+void Navigator::runTrack() {
+    // The file is read in chunks, with the card free for the map in between, and never held whole
+    constexpr size_t CHUNK = 8192;
+    struct Chunk {
+        const char* path;
+        long offset;
+        char* buffer;
+        size_t count;
+        long fileSize;
+    };
+    auto* buffer = static_cast<char*>(largeAlloc(CHUNK));
+    void* memory = largeAlloc(sizeof(TrackRouteBuilder));
+    auto* builder = memory != nullptr ? new (memory) TrackRouteBuilder() : nullptr;
+    Route& next = routes[1 - current];
+    bool ok = buffer != nullptr && builder != nullptr;
+    bool read = false;
+    const uint32_t started = nowMs();
+    if (ok) {
+        GpxReader reader(*builder);
+        Chunk chunk { benchPath, 0, buffer, 0, -1 };
+        auto readChunk = [&]() {
+            FILE* file = fopen(chunk.path, "rb");
+            if (file == nullptr) {
+                return false;
+            }
+            bool fine = true;
+            if (chunk.fileSize < 0) {
+                fine = fseek(file, 0, SEEK_END) == 0;
+                chunk.fileSize = fine ? ftell(file) : -1;
+            }
+            fine = fine && fseek(file, chunk.offset, SEEK_SET) == 0;
+            chunk.count = fine ? fread(chunk.buffer, 1, CHUNK, file) : 0;
+            fclose(file);
+            return fine;
+        };
+        read = runOnCard(*io, readChunk, IoPriority::Background);
+        while (read && chunk.count > 0 && job.load() != Job::Quit) {
+            if (!reader.feed(buffer, chunk.count)) {
+                break;
+            }
+            chunk.offset += static_cast<long>(chunk.count);
+            if (chunk.offset >= chunk.fileSize) {
+                break;
+            }
+            read = runOnCard(*io, readChunk, IoPriority::Background);
+            vTaskDelay(1);
+        }
+        reader.finish();
+        ok = read && builder->finish(next);
+        logInfo("Route from the GPX file %s: %s, %u points read, %u kept, %.0f m, %u ms", benchPath, ok ? "made" : "none",
+            static_cast<unsigned>(builder->pointsRead()), static_cast<unsigned>(next.points.size()), next.lengthM, nowMs() - started);
+    }
+    if (builder != nullptr) {
+        builder->~TrackRouteBuilder();
+    }
+    largeFree(memory);
+    largeFree(buffer);
+    if (ok) {
+        result = RouteResult::Found;
+        lock();
+        current = 1 - current;
+        routeReady = true;
+        changes++;
+        unlock();
+        saveRoute(routes[current]);
+        routes[1 - current].clear();
+        currentState = State::Done;
+    } else {
+        next.clear();
+        result = buffer == nullptr || builder == nullptr ? RouteResult::NoMemory : RouteResult::NoTrack;
         currentState = State::Failed;
     }
 }
@@ -341,7 +526,7 @@ void Navigator::runSides() {
     if (points.size() < 2) {
         return;
     }
-    CardSource source(*io, *store);
+    CardSource source(*io, *store, *worker);
     GrowArray<RouteSide> sides;
     const uint32_t started = nowMs();
     const bool complete = search.addSides(source, points, sides);
@@ -370,7 +555,7 @@ void Navigator::runBench() {
         currentState = State::Failed;
         return;
     }
-    CardSource source(*io, *store);
+    CardSource source(*io, *store, *worker);
     Route& scratch = routes[1 - current];
     const int firstProfile = requestProfile == RouteProfile::Count ? 0 : static_cast<int>(requestProfile);
     const int lastProfile = requestProfile == RouteProfile::Count ? 2 : firstProfile;
@@ -437,7 +622,8 @@ bool Navigator::saveRoute(const Route& route) {
         out.push(static_cast<uint8_t>(c));
     }
     putU16(out, ROUTE_FILE_VERSION);
-    putU16(out, static_cast<uint16_t>(route.profile));
+    // The top bit: a route made from a GPX track
+    putU16(out, static_cast<uint16_t>(static_cast<uint16_t>(route.profile) | (route.track ? 0x8000u : 0u)));
     putU32(out, static_cast<uint32_t>(route.from.x));
     putU32(out, static_cast<uint32_t>(route.from.y));
     putU32(out, static_cast<uint32_t>(route.to.x));
@@ -482,6 +668,7 @@ bool Navigator::loadRoute() {
     Route& route = routes[current];
     route.clear();
     route.profile = static_cast<RouteProfile>(std::min<int>(data[6], static_cast<int>(RouteProfile::Car)));
+    route.track = (data[7] & 0x80) != 0;
     route.from = { static_cast<int32_t>(readU32(data + 8)), static_cast<int32_t>(readU32(data + 12)) };
     route.to = { static_cast<int32_t>(readU32(data + 16)), static_cast<int32_t>(readU32(data + 20)) };
     route.seconds = static_cast<float>(readU32(data + 24));

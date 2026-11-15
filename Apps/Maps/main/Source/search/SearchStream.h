@@ -10,7 +10,7 @@
 #include "ScratchFiles.h"
 #include "SearchExtract.h"
 #include "SearchIndex.h"
-#include "SearchRegion.h"
+#include "SearchCommon.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +37,9 @@ public:
 struct StreamProgress {
     uint32_t done;
     uint32_t total;
+    /** The step the build is in: 0 tiles, 1 points, 2 houses, 3 clusters, 4 matching, 5 addresses, 6 address records, 7 groups,
+     *  8 group records, 9 keys, 10 file. */
+    uint8_t phase;
 };
 
 struct StreamBuildOptions {

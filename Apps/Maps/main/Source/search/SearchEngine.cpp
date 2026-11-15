@@ -180,6 +180,57 @@ ResultGroup describeLabel(const char* label, char* type, size_t typeSize) {
     return ResultGroup::Natural;
 }
 
+/**
+ * How important a kind of point is when several exact-name results share a name: 1 settlements, 2 transport hubs and big
+ * public places, 3 everything else (also streets and unknown labels), 4 street furniture and stops. Without it a bus
+ * stop named like the main station, or a map board named like a mall, came first because it stood nearer. The label is
+ * a class table label ("poi/class/subclass", "place/city", "park/park"); a subclass entry wins over a class entry.
+ */
+uint8_t importanceOfLabel(const char* label) {
+    static const char* const BIG[] = {
+        "station", "halt", "subway", "aerodrome", "bus_station", "ferry_terminal", "hospital", "university", "college", "stadium", "mall",
+        "town_hall", "castle", "museum", "theatre", "cinema", "library", "zoo", "park", "attraction",
+    };
+    static const char* const MINOR[] = {
+        "bus_stop", "tram_stop", "platform", "information", "board", "map", "guidepost", "route_marker", "terminal", "bench", "waste_basket",
+        "post_box", "toilets", "atm", "parking", "bicycle_parking", "playground", "playground_equipment",
+    };
+    if (strncmp(label, "place/", 6) == 0) {
+        const char* classText = label + 6;
+        const bool minor = strcmp(classText, "isolated_dwelling") == 0 || strcmp(classText, "locality") == 0;
+        return minor ? 3 : 1;
+    }
+    if (strncmp(label, "aerodrome/", 10) == 0 || strncmp(label, "park/", 5) == 0) {
+        return 2;
+    }
+    if (strncmp(label, "poi/", 4) != 0) {
+        return 3;
+    }
+    const char* classText = label + 4;
+    const char* slash = strchr(classText, '/');
+    const size_t classLength = slash != nullptr ? static_cast<size_t>(slash - classText) : strlen(classText);
+    const char* sub = slash != nullptr ? slash + 1 : "";
+    const size_t subLength = strlen(sub);
+    for (int pass = 0; pass < 2; pass++) {
+        const char* text = pass == 0 ? sub : classText;
+        const size_t length = pass == 0 ? subLength : classLength;
+        if (length == 0) {
+            continue;
+        }
+        for (const char* entry : MINOR) {
+            if (strlen(entry) == length && strncmp(entry, text, length) == 0) {
+                return 4;
+            }
+        }
+        for (const char* entry : BIG) {
+            if (strlen(entry) == length && strncmp(entry, text, length) == 0) {
+                return 2;
+            }
+        }
+    }
+    return 3;
+}
+
 /** Whether the folded text of a name equals one of the keys (also its transliteration in the region's profile). */
 bool isExactName(const char* name, const char* const* keys, int keyCount, Translit profile) {
     char latin[KEY_BYTES * 2];
@@ -669,6 +720,10 @@ bool SearchEngine::collectAddresses(const Query& query, SearchOrigin) {
             if ((number.flags & HOUSE_SLASH) != 0 && number.aux != 0 && slot.slashSecond) {
                 wanted = number.aux;
             }
+            // 0xFFFF is what the index stores for a house number written as text, so it never means a real number
+            if (wanted >= 0xFFFF) {
+                continue;
+            }
             int suffix = number.suffix != 0 ? number.suffix : -1;
             for (int k = 0; k < keyCount; k++) {
                 GrowArray<SearchAddressHit> hits;
@@ -784,6 +839,10 @@ void SearchEngine::collectNames(const char* const* keys, int keyCount, SearchOri
                     c.result.group = exact ? ResultGroup::ExactName : kind;
                     c.result.slot = static_cast<uint8_t>(slotIndex);
                     c.priority = static_cast<uint8_t>(p);
+                    if (exact) {
+                        // the ranking compares rank before distance: importance first inside the exact names
+                        c.rank = importanceOfLabel(label);
+                    }
                     setGeo(c.result, c.distanceSq);
                     ranked.push(c);
                 }
@@ -808,6 +867,9 @@ void SearchEngine::collectNames(const char* const* keys, int keyCount, SearchOri
                     c.result.group = exact ? ResultGroup::ExactName : ResultGroup::Street;
                     c.result.slot = static_cast<uint8_t>(slotIndex);
                     c.priority = static_cast<uint8_t>(p);
+                    if (exact) {
+                        c.rank = 3;
+                    }
                     setGeo(c.result, c.distanceSq);
                     streets.push(c);
                 }

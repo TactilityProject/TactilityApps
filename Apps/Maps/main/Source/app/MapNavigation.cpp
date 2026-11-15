@@ -35,8 +35,15 @@ double worldOfUnits(int32_t units, int zoom) {
 bool ReplaySource::load(const char* text, size_t size) {
     count = 0;
     next = 0;
-    const char* cursor = text;
-    const char* end = text + size;
+    // strstr and strtod need an end: the file's bytes have none, so the text is copied with one
+    char* copy = static_cast<char*>(largeAlloc(size + 1));
+    if (copy == nullptr) {
+        return false;
+    }
+    memcpy(copy, text, size);
+    copy[size] = '\0';
+    const char* cursor = copy;
+    const char* end = copy + size;
     while (cursor < end && count < MAX_POINTS) {
         const char* at = strstr(cursor, "<trkpt");
         if (at == nullptr || at >= end) {
@@ -55,6 +62,7 @@ bool ReplaySource::load(const char* text, size_t size) {
         }
         cursor = close + 1;
     }
+    largeFree(copy);
     setNoise(0.0f, 0.0f, 0);
     return count > 1;
 }
@@ -144,6 +152,27 @@ void MapView::navigateTo(double lat, double lon, RouteProfile profile, bool ask)
     } else {
         openRouteStartChoice();
     }
+}
+
+void MapView::followGpxFile(const char* path) {
+    if (!navigator.requestTrack(path)) {
+        showToast("A route is being searched already");
+        return;
+    }
+    // Back on the map: the card of the route comes when the file is read, as for a searched route
+    stopNavigation();
+    screen = Screen::Map;
+    returnToMenu = false;
+    sheet.close();
+    recalculating = false;
+    routeRequested = true;
+    restartRoute = false;
+    startFromPosition = true;
+    routeCard.open("", nullptr);
+    routeCard.setMode(static_cast<int>(RouteProfile::Walk));
+    routeCard.setBusy(true);
+    routeCard.layout(width, height, sheetFont());
+    dirty = true;
 }
 
 void MapView::requestRoute(double fromLat, double fromLon, bool fromPosition, const char* toast) {
@@ -252,10 +281,16 @@ void MapView::fillRouteCard() {
     formatDistance(route.lengthM, distance, sizeof(distance));
     formatDuration(route.seconds, time, sizeof(time));
     const RouteProfile profile = route.profile;
+    const bool track = route.track;
+    if (track) {
+        // Another mode chosen on the card searches a road route to the track's end
+        routePointTo(route.to, goalLat, goalLon);
+        routeProfile = profile;
+    }
     navigator.unlock();
     char summary[64];
-    snprintf(summary, sizeof(summary), "%s \xC2\xB7 %s \xC2\xB7 %s", distance, time, routeProfileName(profile));
-    routeCard.open(summary, profile == RouteProfile::Car ? CAR_NOTE : nullptr);
+    snprintf(summary, sizeof(summary), "%s \xC2\xB7 %s \xC2\xB7 %s", distance, time, track ? "GPX track" : routeProfileName(profile));
+    routeCard.open(summary, track ? "Follows the track as it is: no turns are announced" : (profile == RouteProfile::Car ? CAR_NOTE : nullptr));
     routeCard.setMode(static_cast<int>(profile));
     routeCard.layout(width, height, sheetFont());
 }
@@ -362,6 +397,14 @@ void MapView::startNavigation() {
     navigating = true;
     arrivedAt = 0;
     lastRecalculation = 0;
+    recalculationFailed = false;
+    {
+        navigator.lock();
+        const Route& started = navigator.route();
+        scriptLog("Navigation: started, %s, %.0f m, %u points%s", routeProfileName(started.profile), started.lengthM,
+            static_cast<unsigned>(started.points.size()), started.track ? ", GPX track" : "");
+        navigator.unlock();
+    }
     navBar.showStop(true);
     layoutControls();
     char instruction[NavigationBar::INSTRUCTION_LENGTH];
@@ -384,7 +427,38 @@ void MapView::startNavigation() {
     dirty = true;
 }
 
+void MapView::flushNavLog() {
+    if (navLogUsed == 0) {
+        return;
+    }
+    char path[PATH_MAX_LENGTH];
+    char older[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/navlog.txt", rootPath);
+    snprintf(older, sizeof(older), "%s/navlog.old", rootPath);
+    auto append = [&]() {
+        // Two files of at most 512 KB: the trip before stays readable, the card never fills
+        uint32_t size = 0;
+        if (fileSize(path, size) && size > 512 * 1024) {
+            remove(older);
+            rename(path, older);
+        }
+        FILE* file = fopen(path, "a");
+        if (file == nullptr) {
+            return false;
+        }
+        const bool ok = fwrite(navLog, 1, navLogUsed, file) == navLogUsed;
+        return fclose(file) == 0 && ok;
+    };
+    runOnCard(io, append, IoPriority::Background);
+    navLogUsed = 0;
+    navLogFlushedAt = nowMs();
+}
+
 void MapView::stopNavigation() {
+    if (navigating) {
+        scriptLog("Navigation: stopped");
+        flushNavLog();
+    }
     navigating = false;
     follower.end();
     headingUp = false;
@@ -420,7 +494,11 @@ void MapView::updateNavigation(uint32_t now) {
             if (recalculating && navigating) {
                 navigator.lock();
                 follower.begin(navigator.route());
+                const float newLength = navigator.route().lengthM;
                 navigator.unlock();
+                recalculationFailed = false;
+                scriptLog("Navigation: new route, %.0f m%s, %u ms", newLength, navigator.lastWasRejoin() ? " (back to the old route)" : "",
+                    navigator.lastStats().totalMs);
                 navBar.setMessage("New route");
             } else {
                 fillRouteCard();
@@ -428,13 +506,17 @@ void MapView::updateNavigation(uint32_t now) {
             }
         } else {
             if (recalculating && navigating) {
+                recalculationFailed = true;
+                scriptLog("Navigation: no new route: %s", routeResultText(result));
                 navBar.setMessage(routeResultText(result));
             } else {
                 // The card stays with the reason, so another mode can be tried
                 routeCard.setBusy(false);
                 routeCard.setCanStart(false);
                 routeCard.setSummary(routeResultText(result));
-                routeCard.setNote(nullptr);
+                // Between two towns the way is over the main roads of the zoomed-out map, which must be on the card
+                const bool far = (result == RouteResult::NoPath || result == RouteResult::TooLong) && navigator.lastStats().straightM > 15000;
+                routeCard.setNote(far ? "For the way between two towns, download the area between them once, zoomed out." : nullptr);
                 routeCard.layout(width, height, sheetFont());
                 if (!routeCard.isOpen()) {
                     showToast(routeResultText(result));
@@ -443,6 +525,9 @@ void MapView::updateNavigation(uint32_t now) {
         }
         recalculating = false;
         dirty = true;
+    }
+    if (navigating && navLogUsed > 0 && now - navLogFlushedAt >= 30000) {
+        flushNavLog();
     }
     // No fix for 2 s (a GPS that stopped sending): the last one counts again, so standing still off the route is noticed
     if (navigating && static_cast<int32_t>(now - lastFollowAt) >= 2000) {
@@ -479,14 +564,21 @@ void MapView::followRoute(uint32_t now) {
     lastFollowFixMs = fix.timeMs;
     const RouteFollower::Status status = follower.update(route, fix.latitude, fix.longitude, fix.accuracy, now, fix.course, fix.speed, newFix);
     // One line per fix while navigating, for tuning the off-route rule (0.4.1)
-    scriptLog("Follow: route %.1f m, acc %.1f m (fix %.1f), off %.1f m, heading %.0f, side %.1f m, %.1f m/s, away %u%s%s%s, replay %d",
+    // Formatted here, written after the unlock: the log is an SD write and the route lock must not wait for it
+    char logLine[224];
+    snprintf(logLine, sizeof(logLine), "Follow: route %.1f m, acc %.1f m (fix %.1f), off %.1f m, heading %.0f, side %.1f m, %.1f m/s, away %u%s%s%s, replay %d",
         status.distanceFromRouteM, status.accuracyM, fix.accuracy, status.offM, status.headingDifference, status.sideM, fix.speed,
         static_cast<unsigned>(status.awayFixes), status.awayRule != OffRouteRule::None ? " by " : "",
         status.awayRule != OffRouteRule::None ? offRouteRuleName(status.awayRule) : "", status.weakGps ? ", weak GPS" : "",
         replaying ? replay.pointIndex() : -1);
     char instruction[NavigationBar::INSTRUCTION_LENGTH];
     follower.instruction(route, instruction, sizeof(instruction));
+    const bool track = route.track;
+    if (track) {
+        snprintf(instruction, sizeof(instruction), "Follow the track");
+    }
     navigator.unlock();
+    scriptLog("%s", logLine);
     char remaining[NavigationBar::REMAINING_LENGTH];
     follower.remaining(remaining, sizeof(remaining));
     switch (status.state) {
@@ -498,16 +590,39 @@ void MapView::followRoute(uint32_t now) {
             scriptLog("Navigation: arrived");
             break;
         case RouteFollower::State::OffRoute:
-            // The first recalculation at once, then at least recalculateMs apart
-            if (!recalculating && (lastRecalculation == 0 || now - lastRecalculation >= offRouteTuning().recalculateMs) &&
-                navigator.state() == Navigator::State::Idle) {
+            if (track) {
+                // A track is followed as it is: no other way to it is searched, the bar says how far it is
+                char away[NavigationBar::INSTRUCTION_LENGTH];
+                char distance[16];
+                formatDistance(status.distanceFromRouteM, distance, sizeof(distance));
+                snprintf(away, sizeof(away), "Off the track \xC2\xB7 %s", distance);
+                navBar.set(status.nextTurn, away, remaining);
+                break;
+            }
+            // A new route at once, every time the route is left, and always from the position itself (decided
+            // 14 Nov: no waiting between new routes, no start ahead of the position). What keeps this from running
+            // in circles is that the search is short: back to the old route ahead (Navigator::requestRejoin).
+            // Only a search that found no way is not repeated before 5 s: it would fail the same way every second
+            // and keep the card and the tile cache's memory busy
+            if (!recalculating && navigator.state() == Navigator::State::Idle &&
+                (!recalculationFailed || now - lastRecalculation >= 5000)) {
                 lastRecalculation = now;
-                recalculating = navigator.request(fix.latitude, fix.longitude, goalLat, goalLon, routeProfile);
+                recalculating = navigator.requestRejoin(fix.latitude, fix.longitude, goalLat, goalLon, routeProfile, status.progressM);
                 routeRequested = recalculating;
                 scriptLog("Navigation: off route by %.0f m (acc %.1f m, off %.1f m, rule %s), recalculating", status.distanceFromRouteM,
                     status.accuracyM, status.offM, offRouteRuleName(status.firedRule));
             }
-            navBar.setMessage("Off route \xE2\x80\x94 recalculating");
+            if (recalculating) {
+                navBar.setMessage("Off route \xE2\x80\x94 recalculating");
+            } else {
+                // Not searching (the navigator is busy with something else, or the last search found no way): the bar
+                // says what is true, how far the route is
+                char away[NavigationBar::INSTRUCTION_LENGTH];
+                char distance[16];
+                formatDistance(status.distanceFromRouteM, distance, sizeof(distance));
+                snprintf(away, sizeof(away), recalculationFailed ? "Off route \xC2\xB7 %s \xC2\xB7 no new route yet" : "Off route \xC2\xB7 %s", distance);
+                navBar.set(status.nextTurn, away, remaining);
+            }
             break;
         default:
             if (!recalculating) {

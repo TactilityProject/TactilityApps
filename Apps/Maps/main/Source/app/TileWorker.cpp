@@ -698,14 +698,44 @@ bool TileWorker::loadLabels(Lane& lane) {
     return true;
 }
 
+bool TileWorker::prepareForRoute(const TileKey& tile, int region) {
+    lock();
+    bool failed = false;
+    for (int i = 0; i < failedConversionCount; i++) {
+        failed = failed || failedConversions[i] == tile;
+    }
+    const bool queued = !failed && queueConversion(tile, region, true);
+    if (queued) {
+        routeWanted = true;
+    }
+    unlock();
+    return queued;
+}
+
+bool TileWorker::isPreparingTile(const TileKey& tile) {
+    lock();
+    bool preparing = false;
+    for (int i = 0; i < conversionCount; i++) {
+        preparing = preparing || conversions[i].tile == tile;
+    }
+    for (int i = 0; i < laneCount; i++) {
+        preparing = preparing || (lanes[i].converting && lanes[i].convertingTile == tile);
+    }
+    unlock();
+    return preparing;
+}
+
 bool TileWorker::convertOne(Lane& lane) {
-    if (routing) {
+    // A route search has the card, the memory and the cores, except for a tile it waits for itself
+    if (routing && !routeWanted) {
         return false;
     }
     // While a download runs (it leaves PSRAM fragmented), only the tiles on screen are prepared, so their POIs and house
     // numbers show at once instead of after the download; the others wait until it is over. The download keeps memory
     // to spare: the tile cache gives up slots that are not on screen for it (they come back after the download).
-    if (conversionsPaused) {
+    // The same while a search index is built: both are idle work, and the build's peak with a conversion's buffers
+    // (and the labels and tiles around the screen) on top left 67 KB less PSRAM free (657 KB, 13 Nov)
+    if (conversionsPaused || indexing) {
         lock();
         const bool onScreen = conversionCount > 0 && conversions[0].urgent;
         unlock();
@@ -736,7 +766,7 @@ bool TileWorker::convertOne(Lane& lane) {
         return false;
     }
     // Tiles not on screen wait until the map was left alone for a while: they are queued now, prepared later
-    const bool settled = now - idleSince.load() >= pdMS_TO_TICKS(BACKGROUND_PREPARE_MS);
+    const bool settled = !routing && now - idleSince.load() >= pdMS_TO_TICKS(BACKGROUND_PREPARE_MS);
     lock();
     Conversion job {};
     bool found = false;
@@ -1010,6 +1040,10 @@ void TileWorker::unlockIndex(void* context) {
 }
 
 void TileWorker::saveCacheIndex() {
+    // One save at a time: both lanes fill the same indexBytes, and the card job reads it outside the lock
+    if (indexSaving.exchange(true)) {
+        return;   // the index stays dirty where it changed since; the next save writes it
+    }
     lock();
     const bool dirty = cacheIndex.isDirty();
     if (dirty) {
@@ -1022,6 +1056,7 @@ void TileWorker::saveCacheIndex() {
         IndexFileJob job { root, styleId, nullptr, &indexBytes };
         io->run(IoPriority::Background, writeIndexJob, &job);
     }
+    indexSaving = false;
 }
 
 bool TileWorker::tidyCache() {
@@ -1144,6 +1179,8 @@ bool TileWorker::writeOne(Lane& lane) {
             pendingWrites[pendingWriteCount++] = tile;
         }
         unlock();
+        // A card that fails every write (full, removed) must not keep the lane and the I/O task spinning
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
     return true;
 }
@@ -1406,7 +1443,7 @@ void TileWorker::loop(Lane& lane) {
             visible = false;
             // Around the screen and other idle work only after a while without input
             // Not during a route search: the user waits for it, and the cache has lent it most of its slots
-            if (!idle || routing || !claimNext(lane, false, tile, pixels)) {
+            if (!idle || routing || indexing || !claimNext(lane, false, tile, pixels)) {
                 if (!idle || (!convertOne(lane) && !tidyCache())) {
                     vTaskDelay(pdMS_TO_TICKS(IDLE_WAIT_MS));
                 }

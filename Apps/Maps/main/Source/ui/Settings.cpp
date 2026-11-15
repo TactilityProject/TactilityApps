@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Settings.h"
 
+#include "../platform/SafeFile.h"
+
 #include "../tiles/TileMath.h"
 
 #include <cstdio>
@@ -52,9 +54,8 @@ bool writeTextFile(const char* path, const char* text) {
     }
     const size_t length = strlen(text);
     const bool ok = fwrite(text, 1, length, file) == length;
-    fclose(file);
-    remove(path);
-    if (!ok || rename(temporary, path) != 0) {
+    // The old file goes only once the new one is whole (a failed write must not cost the old one)
+    if (fclose(file) != 0 || !ok || !replaceFile(temporary, path)) {
         remove(temporary);
         return false;
     }
@@ -62,6 +63,7 @@ bool writeTextFile(const char* path, const char* text) {
 }
 
 bool readTextFile(const char* path, char* text, size_t size) {
+    recoverFile(path);
     FILE* file = fopen(path, "r");
     if (file == nullptr) {
         return false;

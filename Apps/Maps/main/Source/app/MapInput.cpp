@@ -88,6 +88,12 @@ void MapView::handleKey(uint32_t key) {
             closeMenu();
             return;
         }
+        if (mainMenuOpen()) {
+            // The tile grid knows Enter and Esc, the board's yes and no keys are the same
+            const uint32_t gridKey = key == keys::YES ? keys::ENTER : (key == keys::NO ? keys::ESCAPE : key);
+            handleMainMenuEvent(menuGrid.handleKey(gridKey));
+            return;
+        }
         handleListAction(menu.handleKey(key));
         return;
     }
@@ -135,6 +141,9 @@ void MapView::pressControl(Control control) {
             break;
         case Control::Position:
             startFollowing();
+            break;
+        case Control::Search:
+            openSearch();
             break;
         default:
             break;
@@ -407,7 +416,8 @@ void MapView::handleMouse(uint32_t now) {
         const int fromY = cursorY;
         moveCursor(dx, dy, now, overflowX, overflowY);
         dirty = true;
-        ListView* list = menuOpen ? &menu : activeList();
+        // The main menu is a tile grid, not a list
+        ListView* list = menuOpen ? (mainMenuOpen() ? nullptr : &menu) : activeList();
         const bool onMap = !menuOpen && !dialog.isOpen() && !prompt.isOpen() && (screen == Screen::Map || screen == Screen::Download);
         if (mouseHeld && onMap && !mouseLong) {
             // Rolling with the button held drags the map under the pointer, which stays where it is
@@ -421,6 +431,9 @@ void MapView::handleMouse(uint32_t now) {
         } else if (onMap && (overflowX != 0 || overflowY != 0)) {
             // Pushing against a screen edge moves the map that way
             pan(overflowX, overflowY);
+        } else if (mainMenuOpen() && !dialog.isOpen() && !prompt.isOpen()) {
+            // The tile under the pointer gets the focus
+            menuGrid.hover(cursorX, cursorY);
         } else if (list != nullptr && !dialog.isOpen() && !prompt.isOpen()) {
             // The row under the pointer is the highlighted one; pushing against the top or bottom scrolls the list
             const int row = list->rowAt(cursorX, cursorY);
@@ -576,7 +589,11 @@ void MapView::handleTap(int x, int y) {
         return;
     }
     if (menuOpen) {
-        handleListAction(menu.handleTap(x, y));
+        if (mainMenuOpen()) {
+            handleMainMenuEvent(menuGrid.handleTap(x, y));
+        } else {
+            handleListAction(menu.handleTap(x, y));
+        }
         gestures.consumeTap();
         return;
     }
@@ -737,6 +754,16 @@ void MapView::handleGesture(const Gesture& gesture) {
                 handleSearchEvent(searchSheet.handleDrag(gesture.dy));
             } else if (onMap) {
                 pan(-gesture.dx, -gesture.dy);
+            } else if (mainMenuOpen()) {
+                // A horizontal drag turns the pages of the tile grid, which has one page as long as the menu is this size
+                if (!dialog.isOpen() && !prompt.isOpen() && std::abs(gesture.dx) > std::abs(gesture.dy)) {
+                    dragRowAccumulator -= gesture.dx;
+                    const int pageWidth = std::max(1, width / 3);
+                    while (std::abs(dragRowAccumulator) >= pageWidth) {
+                        menuGrid.swipe(dragRowAccumulator > 0 ? 1 : -1);
+                        dragRowAccumulator -= (dragRowAccumulator > 0 ? 1 : -1) * pageWidth;
+                    }
+                }
             } else if (!dialog.isOpen() && !prompt.isOpen() && std::abs(gesture.dy) >= std::abs(gesture.dx)) {
                 // Lists and the About page scroll with the finger, a row at a time; the highlight stays where it is
                 ListView* list = menuOpen ? &menu : activeList();

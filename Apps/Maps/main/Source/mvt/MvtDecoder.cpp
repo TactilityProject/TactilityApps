@@ -117,6 +117,11 @@ bool MvtDecoder::readVarint(uint64_t& value) {
     return false;
 }
 
+bool MvtDecoder::readLength(uint64_t& length) {
+    // No tile is this large: a length that would wrap a 32-bit position is a damaged file
+    return readVarint(length) && length <= MAX_FIELD_LENGTH;
+}
+
 bool MvtDecoder::skipField(uint32_t wireType) {
     uint64_t value;
     switch (wireType) {
@@ -125,7 +130,7 @@ bool MvtDecoder::skipField(uint32_t wireType) {
         case WIRE_64BIT:
             return reader.skip(8);
         case WIRE_LENGTH:
-            return readVarint(value) && reader.skip(static_cast<size_t>(value));
+            return readLength(value) && reader.skip(static_cast<size_t>(value));
         case WIRE_32BIT:
             return reader.skip(4);
         default:
@@ -149,7 +154,7 @@ bool MvtDecoder::readLayerName(size_t layerEnd, Layer& layer) {
         }
         if ((key >> 3) == 1 && (key & 7) == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             char name[24];
@@ -188,7 +193,7 @@ bool MvtDecoder::scanValue(size_t valueEnd, ValueEntry& entry) {
         uint64_t number;
         if (field == 1 && wire == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             char text[256];
@@ -267,7 +272,7 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
         const uint32_t wire = static_cast<uint32_t>(key & 7);
         if (field == 3 && wire == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             char name[16];
@@ -301,6 +306,8 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.nameEnKey = index;
                 } else if (strcmp(name, "name:en") == 0) {
                     table.nameEnColonKey = index;
+                } else if (strcmp(name, "name_int") == 0) {
+                    table.nameIntKey = index;
                 } else if (strcmp(name, "rank") == 0) {
                     table.rankKey = index;
                 } else if (strcmp(name, "housenumber") == 0) {
@@ -312,7 +319,7 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
             keyIndex++;
         } else if (field == 4 && wire == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             ValueEntry entry;
@@ -327,6 +334,9 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
             uint64_t extent;
             if (!readVarint(extent)) {
                 return false;
+            }
+            if (extent == 0 || extent > MAX_EXTENT) {
+                return false;   // the scales divide by it
             }
             table.extent = static_cast<int32_t>(extent);
         } else if (!skipField(wire)) {
@@ -358,7 +368,7 @@ bool MvtDecoder::scan(ByteInput* source, bool withPoiLayers) {
         }
         if ((key >> 3) == 3 && (key & 7) == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             const size_t layerEnd = reader.tell() + static_cast<size_t>(length);
@@ -434,6 +444,9 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
     } else if (keyIndex == table.nameEnColonKey && entry->hasText != 0 && !info.nameEnPreferred) {
         info.nameEn = namePool + entry->textOffset;
         info.nameEnLength = entry->textLength;
+    } else if (keyIndex == table.nameIntKey && entry->hasText != 0) {
+        info.nameInt = namePool + entry->textOffset;
+        info.nameIntLength = entry->textLength;
     } else if (keyIndex == table.rankKey && isInteger) {
         info.rank = entry->rank;
     } else if (keyIndex == table.houseNumberKey && entry->hasText != 0) {
@@ -461,8 +474,12 @@ bool MvtDecoder::decodeGeometry(size_t geometryEnd, GeometrySink& sink) {
                 if (!readVarint(dx) || !readVarint(dy)) {
                     return false;
                 }
-                x += zigzag(static_cast<uint32_t>(dx));
-                y += zigzag(static_cast<uint32_t>(dy));
+                // Unsigned: a damaged file must not overflow a signed sum
+                x = static_cast<int32_t>(static_cast<uint32_t>(x) + static_cast<uint32_t>(zigzag(static_cast<uint32_t>(dx))));
+                y = static_cast<int32_t>(static_cast<uint32_t>(y) + static_cast<uint32_t>(zigzag(static_cast<uint32_t>(dy))));
+                if (command == COMMAND_LINE_TO && !ringOpen) {
+                    return false;   // a line before any MOVE_TO: its points would belong to no ring
+                }
                 if (command == COMMAND_MOVE_TO) {
                     if (ringOpen) {
                         sink.points(chunk, count);
@@ -509,7 +526,7 @@ bool MvtDecoder::decodeFeature(size_t featureEnd, Layer layer, GeometrySink& sin
         const uint32_t wire = static_cast<uint32_t>(key & 7);
         if (field == 2 && wire == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             const size_t tagsEnd = reader.tell() + static_cast<size_t>(length);
@@ -529,7 +546,7 @@ bool MvtDecoder::decodeFeature(size_t featureEnd, Layer layer, GeometrySink& sin
             info.geometryType = static_cast<uint8_t>(type);
         } else if (field == 4 && wire == WIRE_LENGTH) {
             uint64_t length;
-            if (!readVarint(length)) {
+            if (!readLength(length)) {
                 return false;
             }
             const size_t geometryEnd = reader.tell() + static_cast<size_t>(length);
@@ -587,7 +604,7 @@ bool MvtDecoder::sweep(const Layer* layers, int count, GeometrySink& sink) {
             continue;
         }
         uint64_t length;
-        if (!readVarint(length)) {
+        if (!readLength(length)) {
             return false;
         }
         const size_t layerEnd = reader.tell() + static_cast<size_t>(length);

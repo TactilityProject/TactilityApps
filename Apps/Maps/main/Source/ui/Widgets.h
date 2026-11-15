@@ -3,6 +3,7 @@
 
 #include "Canvas.h"
 
+#include <algorithm>
 #include <cstdint>
 
 namespace maps {
@@ -75,6 +76,11 @@ public:
     /** Adds a row with a label and an optional detail on the right. Returns its index, -1 when full. */
     int add(const char* label, const char* detail = "");
     void setDetail(int index, const char* detail);
+    /**
+     * One sentence per row, in row order, shown above the hint while a row is highlighted (nothing for touch, which
+     * never highlights). The texts must outlive the list; the line is reserved in the layout whenever they are set.
+     */
+    void setDescriptions(const char* const* texts, int count);
     int count() const { return itemCount; }
     int selected() const { return selection; }
     /** Moves the selection without showing the highlight. */
@@ -106,10 +112,17 @@ public:
     int rowAt(int x, int y) const;
     const Rect& bounds() const { return frame; }
     int rowHeight() const { return rowPixels; }
+    /** For tests: the rectangle of a visible row (the highlight's size), false when the row is not visible. */
+    bool rowRect(int index, Rect& rect) const;
+    /** For tests: the rows that show at once, and the header's back and select areas. */
+    int visibleRowCount() const { return std::min(visibleRows, itemCount); }
+    const Rect& backRect() const { return header.back; }
+    const Rect& selectRect() const { return header.select; }
 
 private:
     void keepVisible();
     int hintLines() const;
+    int descriptionHeight(Font& font) const;
 
     struct Item {
         char label[TEXT_LENGTH];
@@ -126,6 +139,8 @@ private:
     char hint[TEXT_LENGTH * 2] = "";
     Rect frame {};
     HeaderLayout header {};
+    const char* const* descriptions = nullptr;
+    int descriptionCount = 0;
     int rowPixels = 24;
     int listTop = 0;
     bool fullScreen = true;
@@ -147,6 +162,11 @@ public:
     UiAction handleTap(int x, int y);
     /** Returns Chosen when the confirm button is focused. */
     UiAction press();
+
+    /** For tests: the dialog, its buttons. */
+    const Rect& bounds() const { return frame; }
+    const Rect& confirmRect() const { return confirmButton; }
+    const Rect& cancelRect() const { return cancelButton; }
 
 private:
     bool visible = false;
@@ -179,6 +199,12 @@ public:
     /** Chosen: OK, Back: cancelled, Moved: the text changed. */
     UiAction handleKey(uint32_t key);
     UiAction handleTap(int x, int y);
+
+    /** For tests: the dialog, its text field and buttons. */
+    const Rect& bounds() const { return frame; }
+    const Rect& fieldRect() const { return field; }
+    const Rect& okRect() const { return okButton; }
+    const Rect& cancelRect() const { return cancelButton; }
 
 private:
     void append(uint32_t codepoint);

@@ -2,6 +2,8 @@
 // Waypoints, track recording and GPX files on the map.
 #include "MapView.h"
 
+#include "../platform/SafeFile.h"
+
 #include "../gpx/Track.h"
 #include "../render/PoiTypes.h"
 #include "../ui/Pins.h"
@@ -85,7 +87,10 @@ void MapView::loadWaypoints() {
     char path[PATH_MAX_LENGTH];
     snprintf(path, sizeof(path), "%s/waypoints.gpx", rootPath);
     FileBuffer file;
-    auto read = [&] { return file.load(path); };
+    auto read = [&] {
+        recoverFile(path);
+        return file.load(path);
+    };
     if (runOnCard(io, read, IoPriority::Background) &&
         !waypoints.load(reinterpret_cast<const char*>(file.bytes()), file.size())) {
         logError("waypoints.gpx is damaged, %d waypoints read", waypoints.count());
@@ -321,10 +326,6 @@ int MapView::waypointAt(int x, int y) const {
 }
 
 void MapView::openWaypoints() {
-    if (waypoints.count() == 0) {
-        showToast(input.hasTouch() ? "No waypoints yet: hold the map, or Menu, Add waypoint" : "No waypoints yet: P, or Menu, Add waypoint");
-        return;
-    }
     fillWaypointList();
     waypointList.select(0);
     waypointList.setHighlighted(false);
@@ -332,13 +333,40 @@ void MapView::openWaypoints() {
     dirty = true;
 }
 
+void MapView::addWaypointHere() {
+    // The sheet belongs to the map, so the list closes once it is open (not when the limit stopped it)
+    openNewWaypoint(worldYToLat(centerY, zoom), worldXToLon(centerX, zoom));
+    if (sheet.isOpen()) {
+        returnToMenu = false;
+        closeScreen();
+    }
+}
+
+void MapView::drawWaypointsEmpty(Canvas& canvas, const UiTheme& theme) {
+    // Under the "Add waypoint here" row, which is the first row of the list
+    int rowTop = 0;
+    while (rowTop < height && waypointList.rowAt(width / 2, rowTop) != 0) {
+        rowTop++;
+    }
+    const char* text = "No waypoints yet. Hold the map to add one.";
+    Font* font = &overlay.font();
+    if (font->textWidth(text) > width - 16) {
+        font = &overlay.smallFont();
+    }
+    const int x = (width - font->textWidth(text)) / 2;
+    font->drawText(canvas, std::max(8, x), rowTop + waypointList.rowHeight() + 12, text, theme.muted);
+}
+
 void MapView::fillWaypointList() {
     waypointList.clear();
     waypointList.setTitle("Waypoints");
     const double lat = position.hasFix() ? position.fix().latitude : worldYToLat(centerY, zoom);
     const double lon = position.hasFix() ? position.fix().longitude : worldXToLon(centerX, zoom);
-    const int count = waypoints.sortedByDistance(lat, lon, waypointRows, ListView::MAX_ITEMS);
-    for (int row = 0; row < count; row++) {
+    // Row 0 adds a waypoint, so the waypoints start at row 1 (waypointRows[0] stays -1)
+    waypointList.add("Add waypoint here");
+    waypointRows[0] = -1;
+    const int count = waypoints.sortedByDistance(lat, lon, waypointRows + 1, ListView::MAX_ITEMS - 1);
+    for (int row = 1; row <= count; row++) {
         const Waypoint& waypoint = waypoints.at(waypointRows[row]);
         char detail[ListView::TEXT_LENGTH];
         describeDistance(waypoint.lat, waypoint.lon, detail, sizeof(detail));
@@ -354,6 +382,9 @@ void MapView::goToWaypoint() {
         return;
     }
     const int index = waypointRows[row];
+    if (index < 0) {
+        return;
+    }
     following = false;
     centerOn(waypoints.at(index).lat, waypoints.at(index).lon, std::max(zoom, 14));
     returnToMenu = false;
@@ -369,7 +400,7 @@ int MapView::listedWaypoint() const {
 
 void MapView::openWaypointActions() {
     const int row = waypointList.selected();
-    if (row < 0 || row >= waypointList.count()) {
+    if (row < 1 || row >= waypointList.count()) {
         return;
     }
     beginPopup(Popup::WaypointActions, waypoints.at(waypointRows[row]).name);
@@ -425,10 +456,7 @@ void MapView::deleteWaypoint() {
     if (screen != Screen::Waypoints) {
         return;
     }
-    if (waypoints.count() == 0) {
-        closeScreen();
-        return;
-    }
+    // The list stays, also when it was the last waypoint: its first row adds one
     const int row = waypointList.selected();
     fillWaypointList();
     waypointList.select(std::min(row, waypointList.count() - 1));
@@ -644,6 +672,10 @@ void MapView::chooseTrackMenu(int action) {
         case 4:
             returnToMenu = true;
             openTracks();
+            if (screen != Screen::Tracks) {
+                // It bailed with a toast, so there is no screen to come back from
+                returnToMenu = false;
+            }
             break;
         default:
             break;
@@ -658,28 +690,51 @@ void MapView::openTracks() {
     trackList.setTitle(title);
     char folder[PATH_MAX_LENGTH];
     snprintf(folder, sizeof(folder), "%s/tracks", rootPath);
+    // Directory order is arbitrary and the list is capped, so the newest names are kept: YYYYMMDD-HHMM.gpx sorts by date
+    constexpr int NAME_LENGTH = 32;
     struct Context {
-        ListView* list;
-        const char* folder;
-    } context { &trackList, folder };
+        char (*names)[NAME_LENGTH];
+        int count;
+    } context { new (std::nothrow) char[ListView::MAX_ITEMS][NAME_LENGTH], 0 };
+    if (context.names == nullptr) {
+        showToast("Not enough memory");
+        return;
+    }
     auto list = [&] {
         listDirectory(folder, [](const char* fileName, bool isDirectory, void* data) {
             auto* context = static_cast<Context*>(data);
             const size_t length = strlen(fileName);
-            if (isDirectory || length < 5 || strcmp(fileName + length - 4, ".gpx") != 0 || context->list->count() >= ListView::MAX_ITEMS) {
+            if (isDirectory || length < 5 || length >= NAME_LENGTH || strcmp(fileName + length - 4, ".gpx") != 0) {
                 return true;
             }
+            // Insert into the list sorted newest first
+            int at = context->count;
+            while (at > 0 && strcmp(context->names[at - 1], fileName) < 0) {
+                at--;
+            }
+            if (at >= ListView::MAX_ITEMS) {
+                return true;
+            }
+            const int last = std::min(context->count, ListView::MAX_ITEMS - 1);
+            for (int i = last; i > at; i--) {
+                memcpy(context->names[i], context->names[i - 1], NAME_LENGTH);
+            }
+            memcpy(context->names[at], fileName, length + 1);
+            context->count = std::min(context->count + 1, ListView::MAX_ITEMS);
+            return true;
+        }, &context);
+        for (int i = 0; i < context.count; i++) {
             char path[PATH_MAX_LENGTH];
-            snprintf(path, sizeof(path), "%s/%s", context->folder, fileName);
+            snprintf(path, sizeof(path), "%s/%s", folder, context.names[i]);
             struct stat info {};
             char detail[ListView::TEXT_LENGTH];
             snprintf(detail, sizeof(detail), "%.1f KB", stat(path, &info) == 0 ? info.st_size / 1024.0 : 0.0);
-            context->list->add(fileName, detail);
-            return true;
-        }, &context);
+            trackList.add(context.names[i], detail);
+        }
         return true;
     };
     runOnCard(io, list, IoPriority::Background);
+    delete[] context.names;
     if (trackList.count() == 0) {
         showToast("No tracks yet");
         return;
@@ -749,6 +804,34 @@ void MapView::openGpxFiles() {
     gpxList.setHighlighted(false);
     screen = Screen::GpxFiles;
     dirty = true;
+}
+
+void MapView::openGpxActions() {
+    const int index = gpxList.selected();
+    if (index < 0 || index >= gpxFileCount) {
+        return;
+    }
+    beginPopup(Popup::GpxActions, gpxFiles[index].name);
+    // 0 show or hide, 1 follow
+    menu.add(gpxFiles[index].shown ? "Hide on the map" : "Show on the map");
+    popupActions[popupActionCount++] = 0;
+    menu.add("Follow this track");
+    popupActions[popupActionCount++] = 1;
+    layoutPopup();
+}
+
+void MapView::chooseGpxAction(int action) {
+    const int index = gpxList.selected();
+    if (index < 0 || index >= gpxFileCount) {
+        return;
+    }
+    if (action == 0) {
+        toggleGpxFile();
+        return;
+    }
+    char path[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/%s", gpxFolder, gpxFiles[index].name);
+    followGpxFile(path);
 }
 
 void MapView::toggleGpxFile() {

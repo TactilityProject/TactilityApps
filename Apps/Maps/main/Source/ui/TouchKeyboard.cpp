@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TouchKeyboard.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -59,8 +60,16 @@ void encode(uint32_t code, char* out) {
 
 } // namespace
 
-int TouchKeyboard::heightFor(int /*width*/) {
-    return GAP + ROWS * KEY_HEIGHT + (ROWS - 1) * GAP;
+int TouchKeyboard::keyHeightFor(int height, int lineHeight) {
+    // Wanted: a key a finger can hit, growing with the font and the screen but never beyond 3 lines of text
+    const int wanted = std::min(std::max({ KEY_HEIGHT, lineHeight * 7 / 4, height / 10 }), std::max(KEY_HEIGHT, lineHeight * 3));
+    // Room: the keyboard takes at most 8/15 of the screen, which is 128 of 240 px
+    const int room = (height * 8 / 15 - GAP - (ROWS - 1) * GAP) / ROWS;
+    return std::max(14, std::min(wanted, room));
+}
+
+int TouchKeyboard::heightFor(int /*width*/, int height, int lineHeight) {
+    return GAP + ROWS * keyHeightFor(height, lineHeight) + (ROWS - 1) * GAP;
 }
 
 void TouchKeyboard::open() {
@@ -70,15 +79,16 @@ void TouchKeyboard::open() {
     build();
 }
 
-void TouchKeyboard::layout(int width, int height, Font& /*font*/) {
+void TouchKeyboard::layout(int width, int height, Font& font) {
     screenWidth = width;
-    const int keyboardHeight = heightFor(width);
+    keyHeight = keyHeightFor(height, font.lineHeight());
+    const int keyboardHeight = heightFor(width, height, font.lineHeight());
     area = { 0, height - keyboardHeight, width, keyboardHeight };
     build();
 }
 
 void TouchKeyboard::beginRow(int row, int offsetUnits) {
-    rowY = area.y + GAP + row * (KEY_HEIGHT + GAP);
+    rowY = area.y + GAP + row * (keyHeight + GAP);
     rowCursor = offsetUnits;
 }
 
@@ -91,7 +101,7 @@ void TouchKeyboard::add(Kind kind, uint32_t code, const char* label, int units) 
     const int left = GAP + rowCursor * span / ROW_UNITS;
     const int right = GAP + (rowCursor + units) * span / ROW_UNITS - GAP;
     Key& key = keys_[keyCount++];
-    key.rect = { left, rowY, right - left, KEY_HEIGHT };
+    key.rect = { left, rowY, right - left, keyHeight };
     key.kind = kind;
     key.code = code;
     snprintf(key.label, sizeof(key.label), "%s", label);

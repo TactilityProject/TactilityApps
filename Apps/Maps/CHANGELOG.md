@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.6.0
+
+**Menu**
+- The main menu is a grid of nine tiles with icons: Search, Download, Maps, Waypoints, Track, GPX, Location,
+  Settings, About. W A S D or the arrows move in both directions, Enter opens, Esc closes; the trackball moves tile by
+  tile or points; tap a tile. The menu opens on the tile used last.
+- A strip above the tiles shows what is running, only while it runs: the download with its progress, and Show route
+  or Stop and Clear route while there is a route.
+- Location switches on and off in place and shows its state on the tile. Exit is a small button at the top right.
+- Waypoints always opens the list; its first row is "Add waypoint here" (P and a long press on the map still add one).
+
+**Following a GPX track**
+- Menu, GPX, a file, "Follow this track": the first track or route of the file becomes the route (its card shows
+  the length and walking time; Start follows it with the bar, the remaining distance and the arrival). No turns are
+  announced, and away from the track the bar says "Off the track" with the distance instead of searching another
+  way. Tracks of any length (long ones are thinned to 6,000 points). Choosing a file now asks: show or hide it on
+  the map, or follow it.
+
+**Off the route**
+- A new route comes much faster on a long route: the app looks for the way back to the route a little ahead and
+  keeps the rest of it, instead of searching all the way to the destination again (which took seconds, by which
+  time a bike or a bus was somewhere else, so the new route was left at once and the bar never stopped
+  "recalculating").
+- A new route is asked for at once every time the route is left, from the position itself (the 10 seconds between
+  two new routes are gone). Only after a search that found no way does the next one wait 5 seconds; the bar then
+  shows how far the route is and that there is no new route yet.
+- Long car routes first look along the larger roads between their two ends, as a driver would: more routes
+  across a city are found (49 of 50 test pairs on the T-Deck, 48 before) and they come a little faster.
+- While navigating, what the app saw (positions, distance from the route, new routes) is written to `navlog.txt`
+  in the app's folder, to find out afterwards what happened on a trip.
+
+**Faster**
+- Names and icons appear sooner after the map stops moving: placing them takes a quarter to almost half less
+  time on the T-Deck.
+
+**Long routes**
+- Routes between towns and across a country: near the start and the destination the app uses the streets of the
+  detailed map, between them the main roads of the zoomed-out map (zoom 10). The detailed map is only needed around
+  both ends; for the way between, download the wider area once while zoomed out. On the T-Deck a 27 km route
+  between two towns with no detailed map between them is found in 2 to 8 seconds.
+- A new route in the middle of such a drive starts on the main road you are on, also where no detailed map is
+  on the card.
+- On the main roads the line is the zoomed-out map's, a little coarser than the road on screen; the app allows
+  for that before it says you left the route.
+- A map that was just downloaded can be routed on at once: the search prepares the tiles it needs itself
+  (before, the route was "not found" until the app had prepared them in idle time).
+
+**Search**
+- Exact names are ordered by what they are before how near they are: a town or village first, then stations,
+  airports, hospitals, malls, museums and the like, then other places, and bus stops, information boards and such
+  last (a bus stop named like the station no longer comes before the station).
+- Streets that only have an international name in the map data are found (Athens: 893 of 9,542 street lines).
+  The search indexes on the card are made again in idle time for this.
+
+**Controls and screens**
+- A search button among the map's controls, under the menu button (key /).
+- Settings: one line under the list says what the highlighted setting does.
+- With a keyboard, the waypoint sheet, the route card and the download card show their keys in one small line.
+- On boards without a keyboard, list rows and buttons are at least 36 px high.
+- The same margins, corner radii and dimming on every sheet, card and dialog; Backspace in the search field always
+  deletes a letter and only closes when the field is empty.
+
+**Labels and POIs**
+- Labels no longer jump when the map is moved: their places are fixed to the map, a label at the screen's edge is cut
+  instead of dropped, the same view always gives the same labels, and small labels (streets, POIs, house numbers) that
+  are on screen stay while the map moves or zooms.
+- More POIs: each takes only the room of its icon (the box around it was more than twice as wide as the icon), and
+  all icons are placed before any name. A POI's name shows from zoom 17 where there is room next to its icon; select
+  the icon to read it otherwise. Bratislava centre at zoom 17: 61 POIs on screen (11 before), all of them at zoom 19.
+- Zoomed out, cities show by importance: the capitals and largest cities first, more with every zoom level, the same
+  rule everywhere (Krakow no longer shows where Wien and Budapest do not). Country names are smaller from zoom 5 so
+  capitals fit between them; a city or country name moves a little above, below or beside its point when its place
+  is taken; regions (Burgenland) come after cities.
+
+**Fixes**
+- Recorded tracks: a write that the card cut short no longer leaves a broken point followed by the same points
+  again; closing an unfinished track after a crash never leaves the card without the track.
+- Region information, settings, the last view and the waypoints are replaced safely: a failed write keeps the old
+  file, and a power cut between the two steps is repaired at the next start.
+- Deleting a region also removes its search index (the folder used to stay behind).
+- Damaged map files end with an error instead of hanging or overrunning memory: tiles whose compressed data never
+  ends, wrong sizes in prepared tiles and label files, broken geometry commands, label points far outside the tile.
+- The search index build and the preparation of tiles in the background no longer run at the same time (the two
+  together left 67 KB less memory free).
+- Navigation: a weak GPS signal far from the route ends the "off route" state instead of asking for a new route
+  again and again; running out of memory during a route search says so instead of "no route".
+- Downloaded maps: an action chosen while the list changes (a download finishing) acts on the region that was chosen.
+- Recorded tracks are listed newest first; a failed settings write puts the setting back; "No tracks yet" and a
+  catalog that cannot be read no longer change where About returns to.
+- GPX: names keep whole letters when cut, control characters are left out, empty names are not written with every
+  track point, "inf" and "nan" are not read as elevations.
+- Search: a house number of 65535 no longer matches addresses without a number; a very long word is one word.
+- The Enter walk over POIs takes the nearest ones first when more than 16 are on screen.
+
 ## 0.5.0
 
 Offline search of places, streets, addresses and kinds of places in the downloaded maps.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DownloadProgress.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -9,7 +11,7 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
+using metrics::PADDING;
 constexpr int BUTTON_COUNT = 3;
 
 int characterLength(unsigned char leading) {
@@ -182,10 +184,12 @@ void DownloadCard::set(const char* titleText, const char* const* detailLines, in
 }
 
 void DownloadCard::layout(int width, int height, Font& font) {
-    const int cardWidth = std::min(width - 16, 300);
     const int line = font.lineHeight();
-    const int buttonHeight = line + 12;
-    const int cardHeight = PADDING + (1 + lineCount) * line + PADDING + buttonHeight + PADDING;
+    const int cardWidth = metrics::cardWidth(width, height, 16, 300, line);
+    const int buttonHeight = metrics::buttonHeight(line, 12);
+    // With a keyboard one more muted line lists the keys
+    const int hintHeight = metrics::hasKeyboard() ? line : 0;
+    const int cardHeight = PADDING + (1 + lineCount) * line + hintHeight + PADDING + buttonHeight + PADDING;
     frame = { (width - cardWidth) / 2, (height - cardHeight) / 2, cardWidth, cardHeight };
     const int buttonWidth = (cardWidth - (BUTTON_COUNT + 1) * PADDING) / BUTTON_COUNT;
     const int buttonY = frame.y + cardHeight - PADDING - buttonHeight;
@@ -195,8 +199,8 @@ void DownloadCard::layout(int width, int height, Font& font) {
 }
 
 void DownloadCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
-    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 110);
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel);
+    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     const int left = frame.x + PADDING;
     const int textWidth = frame.width - 2 * PADDING;
     int y = frame.y + PADDING;
@@ -205,6 +209,9 @@ void DownloadCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     for (int i = 0; i < lineCount; i++) {
         drawClippedText(canvas, font, left, y, lines[i], textWidth, theme.muted);
         y += font.lineHeight();
+    }
+    if (metrics::hasKeyboard()) {
+        drawClippedText(canvas, font, left, y, closeOnly ? "Enter or Esc: close" : "A/D: choose  Enter: press", textWidth, theme.muted);
     }
     if (!closeOnly) {
         drawButton(canvas, font, theme, buttons[0], paused ? "Resume" : "Pause", focus == 0);

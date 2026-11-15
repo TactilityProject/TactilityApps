@@ -87,9 +87,12 @@ void addPointBody(TextBuilder& builder, const GpxPoint& point, const char* tag) 
         formatGpxTime(point.time, time, sizeof(time));
         builder.addf("<time>%s</time>", time);
     }
-    char name[256];
-    escapeXml(point.name, name, sizeof(name));
-    builder.addf("<name>%s</name>", name);
+    // A track point without a name gets no element; an empty one only costs space on every point
+    if (point.name[0] != 0) {
+        char name[256];
+        escapeXml(point.name, name, sizeof(name));
+        builder.addf("<name>%s</name>", name);
+    }
 }
 
 } // namespace
@@ -121,6 +124,11 @@ void escapeXml(const char* text, char* out, size_t size) {
     size_t used = 0;
     for (const char* p = text; *p != '\0'; p++) {
         const char* replacement = nullptr;
+        const unsigned char byte = static_cast<unsigned char>(*p);
+        // XML 1.0 has no control characters other than tab, line feed and carriage return
+        if (byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D) {
+            continue;
+        }
         switch (*p) {
         case '&':
             replacement = "&amp;";
@@ -142,6 +150,15 @@ void escapeXml(const char* text, char* out, size_t size) {
         }
         if (replacement == nullptr) {
             if (used + 1 >= size) {
+                // Cut on a character boundary: take back a UTF-8 sequence that was only started
+                if ((byte & 0xC0) == 0x80) {
+                    while (used > 0 && (static_cast<unsigned char>(out[used - 1]) & 0xC0) == 0x80) {
+                        used--;
+                    }
+                    if (used > 0) {
+                        used--;
+                    }
+                }
                 break;
             }
             out[used++] = *p;
