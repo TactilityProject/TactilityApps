@@ -1,6 +1,90 @@
 # Changelog
 
+## 0.9.0
+
+**Map**
+- Outdoor map style (Settings, Map style): paths in red, tracks in brown and cycleways in blue from zoom 12, unpaved
+  ways lighter, stronger woods and meadows. The tiles of zoom 12 and 13 are prepared again once for it.
+- Peaks show with their height ("Vysoká 754 m") from zoom 10, by importance.
+- At zoom 18 and 19 every point of interest of the map is drawn, named or not; where two meet, one moves a little or
+  becomes a dot, and only names give way. Gates and bollards show at zoom 19 only.
+- 100 more kinds of points of interest have a name and an icon (shelter, guidepost, map board, hut, spring, cave,
+  cliff, saddle and many more); a kind the app does not know shows a plain marker with its kind as the label.
+- Terrain: hillshade and contour lines (100 m at zoom 12, 50 m at 13, 20 m from 14, 10 m from 16, every fifth
+  darker) where the heights of a region are on the card: a region's actions, Download terrain (AWS Terrain Tiles,
+  about 0.1 MB a 15 x 15 km area per elevation tile, at most 300). With Settings, Terrain on (default) the heights
+  come with every new download and with browsed areas; switched on, the regions downloaded before get theirs while
+  the map is left alone (a region with all of them gets a `terrain.ok`). The light comes from the top left of the
+  screen on a turned map too (in steps of 45 degrees, tiles drawn again once the turn settled). The map credits the
+  elevation sources while terrain shows.
+- The height of a place shows in its sheet next to the coordinates ("48.93400 N 20.38300 E · 955 m").
+- Contour lines carry their height from zoom 13: one number in the middle of each long major line, at least 60 px
+  apart, with a pale halo.
+- The route card shows the route's climb and descent and a small elevation profile where terrain is on the card
+  (read in the background a few seconds after the route; Settings, Terrain on).
+- Tiles around the screen no longer stay magnified (pixelated) after the view changed while they waited to be read:
+  such a read did not start and the tile counted as having no data until the app was restarted. Their terrain and
+  trails are not lost that way either.
+- Terrain files download in pieces of 32 KB and give way to map tiles for the screen between pieces; terrain starts
+  2 s after the last browsed tile.
+- The search index is built only while the map is left alone with every tile on screen drawn.
+- Peaks, saddles, cliffs and volcanoes show in the outdoor style only, among the POIs: their icons first, their
+  names where room is left.
+- A map style button under the search button (and the key L) switches Standard / Outdoor; it left Settings.
+- Settings: each row says what it does and when to change it, the list keeps its place when a value changes, and
+  no line stays empty at the bottom. Lists follow the finger pixel by pixel.
+- Download, Choose region: "Search by name" finds a region in the whole list (case and accents ignored).
+- The map buttons hide after 10 s without input (the map following the position does not count). A finished
+  download's card closes 3 s after it ended, the background work card when nothing runs any more.
+- A north-up map starts turning with two fingers from 35 degrees (was 45).
+- Contour lines are mauve now, apart from the brown paths and tracks and the marked trails. "Heights" are called
+  "terrain" in the app (Download terrain, Downloading terrain).
+- Terrain for a browsed area starts as soon as its last map tile is prepared (was about 1.2 s later).
+- A tile that failed to draw is tried again after 10 s (up to 5 times in a row) and on every zoom change; one stayed
+  magnified (pixelated) until the app was restarted.
+- A newly downloaded tile on screen is prepared at once and drawn with its labels and POIs the first time; new height
+  files redraw only the tiles that use them, once per download. Preparing no longer waits forever when PSRAM is
+  broken up (a tile is stored uncompressed without the compressor's 320 KB block).
+- Peaks, saddles, cliffs and volcanoes can be picked like POIs (a tap, Enter); their sheet shows the mapped height.
+- Holding the trackball click with the controls shown opens a waypoint sheet at the crosshair (with the height); in
+  mouse mode holding the button does it at the pointer. With the controls hidden a long click still opens the menu.
+- Marked hiking and cycling routes (Settings, Marked trails; off by default): a region's actions, Download trails,
+  fetches them once from OpenStreetMap through the Overpass API and draws them in their marking colours, side by side
+  where several share a path. **Not usable yet:** the Overpass server needs TLS 1.3, which Tactility's firmware does
+  not have; the download says so.
+
+**Search**
+- Unnamed points of interest are found by their kind ("shelter", "bicycle parking", "waste basket"...). The search
+  indexes are made again in idle time.
+
+**Routing**
+- Long routes on the device: Bratislava - Košice by car (419 km) is found on the T-Deck in about 8 s, Košice -
+  Bratislava (403 km) in about 13 s. The main-road graphs along the way are made before a long search. A second long
+  search no longer fails for memory, the street graphs near both ends of a route are made first, and a route into a
+  region just downloaded no longer waits for every graph.
+- Walking prefers paths, tracks and footways to roads (Settings, "Walk prefers paths", on); bike routes prefer
+  cycleways and quiet, paved roads. The routing graphs are made again in idle time; until then the old ones are used.
+- While following a route, a vibration before each turn and two when off the route or arrived, on boards with a
+  motor (T-Deck Max, T-LoRa Pager).
+- Following a GPX file: Walk, Bike or Car chosen while the file is read now gives a road route to the track's end.
+
+**Downloads**
+- Up to 32 regions (was 16: regions beyond the 16th were silently left out).
+- Starting a download while another one was unfinished no longer makes the two cancel each other in turns.
+- The download card says what is downloaded, how big it is, how fast, and in words what it is doing.
+- The download pill sits under the navigation bar while navigating instead of on it.
+
+**Other**
+- About in sections. The app's version is shown everywhere as in its manifest (it said 0.6.0 and sent 0.2.0 in the
+  User-Agent).
+- A prepared tile whose label or graph file went missing is prepared again.
+- Search: a house number next to the border of a search block finds its street in the next block. Search indexes are
+  made again in idle time.
+
 ## 0.8.1
+
+Published in TactilityApps as 0.8.1 (the version had been raised to 0.8.0 there with the new app icons; this was
+worked on as 0.6.0).
 
 **Menu**
 - The main menu is a grid of nine tiles with icons: Search, Download, Maps, Waypoints, Track, GPX, Location,

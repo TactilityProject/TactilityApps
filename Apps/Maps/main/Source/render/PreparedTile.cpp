@@ -32,6 +32,8 @@ constexpr uint8_t FLAG_RAMP = 1 << 3;
 constexpr uint8_t FLAG_SUBCLASS = 1 << 4;
 constexpr uint8_t FLAG_BRUNNEL = 1 << 5;
 constexpr uint8_t FLAG_ADMIN = 1 << 6;
+/** Format 6: "surface" unpaved (the outdoor style draws it lighter). */
+constexpr uint8_t FLAG_UNPAVED = 1 << 7;
 
 uint16_t readU16(const uint8_t* bytes) {
     return static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
@@ -77,6 +79,45 @@ int labelKindOf(Layer layer) {
         default:
             return -1;
     }
+}
+
+/**
+ * Writes "name 754 m" into out (at least 64 + 16 bytes), "754 m" for a peak without a name, nothing added without a
+ * height. The length of the text goes to length. Returns out.
+ */
+const char* appendHeight(char* out, const char* name, size_t nameLength, int32_t elevation, uint16_t& length) {
+    size_t used = 0;
+    if (name != nullptr) {
+        memcpy(out, name, nameLength);
+        used = nameLength;
+    }
+    if (elevation != INT32_MIN) {
+        char digits[16];
+        int count = 0;
+        // Metres of a peak: some thousand at most, and a damaged tile may give anything
+        int64_t value = elevation;
+        const bool negative = value < 0;
+        if (negative) {
+            value = -value;
+        }
+        do {
+            digits[count++] = static_cast<char>('0' + value % 10);
+            value /= 10;
+        } while (value > 0 && count < 11);
+        if (used > 0) {
+            out[used++] = ' ';
+        }
+        if (negative) {
+            out[used++] = '-';
+        }
+        while (count > 0) {
+            out[used++] = digits[--count];
+        }
+        out[used++] = ' ';
+        out[used++] = 'm';
+    }
+    length = static_cast<uint16_t>(used);
+    return out;
 }
 
 /** The length of text cut to at most maxBytes without splitting a UTF-8 character. */
@@ -142,7 +183,11 @@ uint8_t preparedPartsNeeded(const PreparedHeader* header, const TileKey& tile, u
         return PART_GEOMETRY | PART_LABELS | graph;
     }
     uint8_t parts = 0;
-    if (header->version != PREPARED_FORMAT_VERSION) {
+    // Format 6 added paths and tracks to the tiles of zoom 12 and 13 (the outdoor style) and the unpaved flag. A tile
+    // of format 5 at another zoom stays: it is only without the unpaved flag, and making every tile on the card again
+    // would take hours of idle time
+    const bool keptOlder = header->version == 5 && tile.z != 12 && tile.z != 13;
+    if (header->version != PREPARED_FORMAT_VERSION && !keptOlder) {
         parts |= PART_GEOMETRY;
     }
     if (header->version < PREPARED_SPLIT_VERSION || header->labelVersion != PREPARED_LABEL_FORMAT_VERSION) {
@@ -452,6 +497,19 @@ void putVersion(ByteWriter& out, const char* sourceVersion) {
     out.putBytes(version, PREPARED_VERSION_LENGTH);
 }
 
+/**
+ * Whether the compressor's block (about 320 KB in one piece) can be had now. Without it a tile is stored raw (the
+ * flag in its header says so) instead of waiting: PSRAM broken up by the system left preparing stuck before.
+ */
+bool compressorFits() {
+    void* probe = largeAlloc(sizeof(tdefl_compressor));
+    if (probe == nullptr) {
+        return false;
+    }
+    largeFree(probe);
+    return true;
+}
+
 } // namespace
 
 bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const TileKey& sourceTile, uint32_t sourceSize,
@@ -461,6 +519,7 @@ bool TileConverter::convert(MvtDecoder& tileDecoder, ByteInput* input, const Til
         return false;
     }
     size_t bodySize = 0;
+    deflate = deflate && compressorFits();
     if (labelOut != nullptr && !writeLabelFile(sourceVersion, sourceSize, deflate, *labelOut)) {
         return false;
     }
@@ -483,6 +542,7 @@ bool TileConverter::convertCombined(MvtDecoder& tileDecoder, ByteInput* input, c
     const char* sourceVersion, bool deflate, ByteWriter& out, ConvertStats* stats) {
     const uint32_t start = nowMs();
     size_t bodySize = 0;
+    deflate = deflate && compressorFits();
     if (!run(tileDecoder, input, sourceTile, true, true) || !writeGeometry(sourceVersion, sourceSize, deflate, true, out, bodySize)) {
         return false;
     }
@@ -645,33 +705,38 @@ bool TileConverter::beginFeature(const FeatureInfo& info) {
     section = sectionOf(info.layer);
     const int kind = labelKindOf(info.layer);
     bool hasLabel = kind >= 0 && info.name != nullptr && info.nameLength > 0;
+    if (info.layer == Layer::MountainPeak) {
+        // A peak, saddle or cliff with a height but no name is still worth its icon and "754 m"
+        hasLabel = hasLabel || info.elevation != INT32_MIN;
+    }
     uint8_t poiTypeId = 0;
     if (info.layer == Layer::Poi || info.layer == Layer::Housenumber) {
         hasLabel = false;
         if (info.layer == Layer::Poi) {
             poiTypeId = poiTypeFor(info.classText, info.classTextLength, info.subclassText, info.subclassTextLength);
-            if (poiTypeId != 0) {
-                const PoiType& type = poiType(poiTypeId);
-                // A tile of zoom z serves z up to z + 5, so types that start at 16 are kept from the tiles of 15 on
-                const bool named = info.name != nullptr && info.nameLength > 0;
-                // Tiles of the highest data zoom serve every zoom above it, so they keep the small types too
-                hasLabel = (tile.z >= MAX_SOURCE_ZOOM || tile.z >= static_cast<int>(type.minZoom) - 1) && (named || type.unnamedOk);
-            }
+            const PoiType& type = poiType(poiTypeId);
+            // A tile of zoom z serves z up to z + 5, so types that start at 16 are kept from the tiles of 15 on.
+            // Tiles of the highest data zoom serve every zoom above it, so they keep every type. Unnamed POIs are kept
+            // too: from zoom 18 the map draws all of them (the layout hides the unnamed ones that are not worth it below).
+            hasLabel = tile.z >= MAX_SOURCE_ZOOM || tile.z >= static_cast<int>(type.minZoom) - 1;
         } else {
             // House numbers only come from the highest data zoom, they are meant for the closest views
             hasLabel = tile.z >= MAX_SOURCE_ZOOM && info.houseNumber != nullptr && info.houseNumberLength > 0 &&
                 info.geometryType == GEOMETRY_POINT;
         }
     }
-    // Kept when the style draws it in one of the section's stages at one of the zoom levels the tile is used for
-    const Palette& palette = colorPalette();
+    // Kept when a style draws it in one of the section's stages at one of the zoom levels the tile is used for: the
+    // colour style, or the outdoor one (paths and tracks from zoom 12). Monochrome and binary draw subsets of these.
+    const Palette* palettes[2] = { &colorPalette(), &outdoorPalette() };
     bool drawn = false;
     if (section >= 0) {
-        for (int zoom = minZoom; zoom <= maxZoom && !drawn; zoom++) {
-            for (int i = 0; i < static_cast<int>(Stage::Count) && !drawn; i++) {
-                const auto stage = static_cast<Stage>(i);
-                DrawStyle style {};
-                drawn = static_cast<int>(preparedSection(stage)) == section && styleFor(info, stage, zoom, palette, style);
+        for (const Palette* palette : palettes) {
+            for (int zoom = minZoom; zoom <= maxZoom && !drawn; zoom++) {
+                for (int i = 0; i < static_cast<int>(Stage::Count) && !drawn; i++) {
+                    const auto stage = static_cast<Stage>(i);
+                    DrawStyle style {};
+                    drawn = static_cast<int>(preparedSection(stage)) == section && styleFor(info, stage, zoom, *palette, style);
+                }
             }
         }
     }
@@ -685,6 +750,21 @@ bool TileConverter::beginFeature(const FeatureInfo& info) {
         feature.featureClass = static_cast<Value>(poiTypeId);
         feature.nameLength = info.name != nullptr ? cutUtf8(info.name, info.nameLength, POI_TEXT_MAX_BYTES) : 0;
         feature.nameLatinLength = info.nameLatin != nullptr ? cutUtf8(info.nameLatin, info.nameLatinLength, POI_TEXT_MAX_BYTES) : 0;
+        if (poiTypeId == poiGenericType() && feature.nameLength == 0 && info.classText != nullptr) {
+            // A class nobody listed: its name says what it is
+            feature.name = info.classText;
+            feature.nameLength = cutUtf8(info.classText, info.classTextLength, POI_TEXT_MAX_BYTES);
+        }
+    } else if (hasLabel && info.layer == Layer::MountainPeak) {
+        feature.featureClass = static_cast<Value>(poiTypeForPeak(info.classText, info.classTextLength));
+        feature.name = appendHeight(peakText[0], info.name, info.name != nullptr ? cutUtf8(info.name, info.nameLength, POI_TEXT_MAX_BYTES) : 0,
+            info.elevation, feature.nameLength);
+        feature.nameLatin = nullptr;
+        feature.nameLatinLength = 0;
+        if (info.nameLatin != nullptr && info.nameLatinLength > 0) {
+            feature.nameLatin = appendHeight(peakText[1], info.nameLatin, cutUtf8(info.nameLatin, info.nameLatinLength, POI_TEXT_MAX_BYTES),
+                info.elevation, feature.nameLatinLength);
+        }
     } else if (hasLabel && info.layer == Layer::Housenumber) {
         feature.featureClass = Value::None;
         feature.rank = -1;
@@ -924,6 +1004,9 @@ void TileConverter::endFeature() {
     }
     if (feature.adminLevel >= 0) {
         flags |= FLAG_ADMIN;
+    }
+    if (feature.unpaved) {
+        flags |= FLAG_UNPAVED;
     }
     out.put(flags);
     out.putVarint(static_cast<uint64_t>(feature.featureClass));

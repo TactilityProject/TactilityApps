@@ -19,3 +19,15 @@ coverage technique (as described for font-rs and stb_truetype), no code was copi
 Test fixtures in `tests/fixtures/` are vector tiles from [OpenFreeMap](https://openfreemap.org/), in the
 OpenMapTiles schema. © OpenMapTiles © OpenStreetMap contributors. OpenStreetMap data is available under the
 Open Database License (ODbL).
+
+Elevation (downloaded by the app since 0.9.0, Download terrain): AWS Terrain
+Tiles ("Terrarium", tilezen/joerd), open data on AWS. Required attribution for the area the app is used in:
+"Europe terrain data produced using Copernicus data and information funded by the European Union - EU-DEM layers";
+"Austria terrain data © offene Daten Österreichs – Digitales Geländemodell (DGM) Österreich"; and the U.S.
+Geological Survey line for SRTM / GMTED (full list: https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
+Reaching the bucket over HTTPS needs the Amazon Root CA 1 and Starfield Services Root CA G2 certificates
+(`app/RootCertificates.h`, TERRAIN_ROOT_CERTIFICATES).
+
+Marked routes (0.9.0, opt-in, off by default; the server needs TLS 1.3, so not reachable from the device yet):
+OpenStreetMap data through the Overpass API, © OpenStreetMap contributors, ODbL. Test fixture
+`tests/fixtures/trails/zliabky-routes.json.gz`: one Overpass answer for a 6 x 5 km box, same licence.

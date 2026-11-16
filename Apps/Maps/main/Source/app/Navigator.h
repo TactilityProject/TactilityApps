@@ -51,6 +51,8 @@ public:
      */
     bool requestTrack(const char* gpxPath);
     void cancel() { search.cancel(); }
+    /** Settings, "Walk prefers paths": read by the next search. */
+    void setPreferTrails(bool value) { search.setPreferTrails(value); }
 
     State state() const { return currentState.load(); }
     /** The last search's outcome and its message, for the toast. Reading it sets the state back to Idle. */
@@ -76,6 +78,19 @@ private:
     static void taskMain(void* context);
     void loop();
     void runRoute();
+    /** Makes the missing z14 graphs around both ends of a long route before the search starts. */
+    static constexpr int MAX_LAYER_PREPARE = 96;
+    static constexpr uint32_t LAYER_PREPARE_MS = 120000;
+    void prepareEnds();
+    /**
+     * For a route over 50 km: the z10 graphs of the main-road layer along the way (tiles whose centre is within 30 km
+     * of the straight line between the ends) that are not made yet, made before the search. Made during the search
+     * each waited 10 s with little memory and some were given up, so the layer had holes and the route was "too long"
+     * (Kosice - Bratislava on the T-Deck, 15 Nov 2026). At most MAX_LAYER_PREPARE tiles and LAYER_PREPARE_MS.
+     */
+    void prepareLayer();
+    /** Makes the graphs of these tiles that are missing (the render lanes, urgent), waiting at most maxMs. */
+    int prepareGraphs(const TileKey* tiles, int count, uint32_t maxMs, const char* what);
     /** The short search back to the current route; true when `next` holds the spliced route. */
     bool runRejoin(GraphSource& source, Route& next);
     void runBench();

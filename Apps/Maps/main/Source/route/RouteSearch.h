@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "PagedArray.h"
 #include "../mvt/InflateReader.h"
 #include "GrowArray.h"
 #include "RouteGraph.h"
@@ -116,9 +117,11 @@ public:
 
     /**
      * Takes up to memoryBytes of large memory for the search: the node states, the queue and the tiles' graphs. Returns
-     * false when not even a small search fits.
+     * false when not even a small search fits. Bike routes settle the most states and get a quarter of the memory
+     * for them, walk and car a fifth (their long routes ran out of graph memory first: Kosice - Bratislava by car on
+     * the T-Deck, 15 Nov 2026; 50 Bratislava pairs at 2 MB: walk 48 -> 50 found, bike stays at 49 with a quarter).
      */
-    bool begin(size_t memoryBytes);
+    bool begin(size_t memoryBytes, RouteProfile profile = RouteProfile::Car);
     /** Gives the memory back. */
     void end();
 
@@ -128,7 +131,12 @@ public:
      * Fills sides from the graphs of the tiles along a route's points: road segments within SIDE_METRES of it that are
      * not part of it and not parallel to it (a separately drawn pavement is no other road). Needs no search memory.
      */
-    bool addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides);
+    /** coarse (optional, one per point): points on steps of the main-road layer. Stretches made only of them get no
+     *  sides (the follower uses no edge rule there) and their tiles are not read: on a 400 km route that walked 250
+     *  tiles that are not on the card, 0.3 s each. */
+    /** Walking prefers paths and tracks to roads (routeCost); for the searches that follow. */
+    void setPreferTrails(bool value) { preferTrails = value; }
+    bool addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides, const GrowArray<uint8_t>* coarse = nullptr);
     static constexpr float SIDE_METRES = 60.0f;
     static constexpr size_t MAX_SIDES = 8000;
     /** Makes a running find() return Cancelled soon. */
@@ -200,11 +208,12 @@ private:
 
     Tile* tiles = nullptr;
     int tileCount = 0;
-    Entry* table = nullptr;
+    PagedArray<Entry> table;
+    bool preferTrails = false;
     uint32_t tableCapacity = 0;
     uint32_t used = 0;
     uint32_t maxNodes = 0;
-    QueueItem* queue = nullptr;
+    PagedArray<QueueItem> queue;
     uint32_t queueSize = 0;
     uint32_t queueCapacity = 0;
     size_t budget = 0;

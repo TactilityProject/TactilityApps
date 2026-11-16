@@ -3,6 +3,7 @@
 
 #include "../platform/Platform.h"
 #include "../tiles/TileMath.h"
+#include "TerrainOverlay.h"
 
 namespace maps {
 
@@ -24,7 +25,7 @@ int TileCache::init(int maxSlots) {
         if (pixels == nullptr) {
             break;
         }
-        slots[count++] = { { -1, 0, 0 }, 0, false, false, false, 0, pixels };
+        slots[count++] = { { -1, 0, 0 }, 0, false, false, false, false, 0, pixels };
     }
     return count;
 }
@@ -92,12 +93,13 @@ uint16_t* TileCache::reserve(const TileKey& tile) {
     return slots[victim].pixels;
 }
 
-void TileCache::commit(const TileKey& tile, int sourceZoom) {
+void TileCache::commit(const TileKey& tile, int sourceZoom, bool shaded) {
     int committed = -1;
     for (int i = 0; i < count && committed < 0; i++) {
         if (slots[i].reserved && slots[i].key == tile) {
             slots[i].valid = true;
             slots[i].stale = false;
+            slots[i].shaded = shaded;
             slots[i].sourceZoom = static_cast<int8_t>(sourceZoom);
             slots[i].reserved = false;
             slots[i].lastUse = ++useCounter;
@@ -117,6 +119,51 @@ void TileCache::release(const TileKey& tile) {
         if (slots[i].reserved && slots[i].key == tile) {
             slots[i].reserved = false;
             return;
+        }
+    }
+}
+
+void TileCache::dropShaded() {
+    for (int i = 0; i < count; i++) {
+        if (slots[i].valid && slots[i].shaded) {
+            slots[i].stale = true;
+        }
+    }
+}
+
+void TileCache::dropTerrain(const TileKey* files, int fileCount) {
+    constexpr int FILE_ZOOM = 12;
+    for (int i = 0; i < this->count; i++) {
+        Slot& slot = slots[i];
+        if (!slot.valid || slot.key.z < FILE_ZOOM) {
+            continue;
+        }
+        if (fileCount < 0) {
+            slot.stale = true;
+            continue;
+        }
+        // Only a file the tile's patch reads: its own (heights, trails), or a neighbour its margin reaches into
+        TerrainSpan span {};
+        bool needed[9] = {};
+        if (terrainSpan(slot.key, span)) {
+            terrainFilesNeeded(span, needed);
+        }
+        const TileKey own = ancestorOf(slot.key, FILE_ZOOM);
+        for (int j = 0; j < fileCount; j++) {
+            const int dx = files[j].x - own.x;
+            const int dy = files[j].y - own.y;
+            if (files[j].z == FILE_ZOOM && dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1 && (needed[(dy + 1) * 3 + dx + 1] || (dx == 0 && dy == 0))) {
+                slot.stale = true;
+                break;
+            }
+        }
+    }
+}
+
+void TileCache::markStale(const TileKey& tile) {
+    for (int i = 0; i < count; i++) {
+        if (slots[i].valid && slots[i].key == tile) {
+            slots[i].stale = true;
         }
     }
 }
@@ -175,7 +222,7 @@ int TileCache::regrow() {
         if (pixels == nullptr) {
             break;
         }
-        slots[i] = { { -1, 0, 0 }, 0, false, false, false, 0, pixels };
+        slots[i] = { { -1, 0, 0 }, 0, false, false, false, false, 0, pixels };
         freed--;
     }
     return freed;

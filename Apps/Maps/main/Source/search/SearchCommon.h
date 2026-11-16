@@ -16,6 +16,94 @@ namespace maps {
 /** Metres per z14 unit at a tile row (fractional, e.g. the middle of a region's rows). */
 double metresPerUnitAtTileY(double tileY);
 
+/**
+ * Cuts a polyline (x, y pairs) to the rectangle x0..x1, y0..y1 (inclusive): emit(xy, pointCount) is called for each
+ * piece inside, in order. A line wholly inside is emitted as it is; the points where a line crosses the border are
+ * rounded to whole units. Used by both index builders for the lines of margin tiles (they must cut alike).
+ * piece is scratch space.
+ */
+template <typename Emit>
+void clipPolyline(const int32_t* xy, size_t count, int32_t x0, int32_t y0, int32_t x1, int32_t y1, GrowArray<int32_t>& piece, Emit emit) {
+    if (count < 2) {
+        return;
+    }
+    int32_t lx0 = xy[0], ly0 = xy[1], lx1 = xy[0], ly1 = xy[1];
+    for (size_t i = 1; i < count; i++) {
+        lx0 = xy[2 * i] < lx0 ? xy[2 * i] : lx0;
+        lx1 = xy[2 * i] > lx1 ? xy[2 * i] : lx1;
+        ly0 = xy[2 * i + 1] < ly0 ? xy[2 * i + 1] : ly0;
+        ly1 = xy[2 * i + 1] > ly1 ? xy[2 * i + 1] : ly1;
+    }
+    if (lx1 < x0 || lx0 > x1 || ly1 < y0 || ly0 > y1) {
+        return;
+    }
+    if (lx0 >= x0 && lx1 <= x1 && ly0 >= y0 && ly1 <= y1) {
+        emit(xy, count);
+        return;
+    }
+    piece.clear();
+    auto add = [&](int32_t x, int32_t y) {
+        const size_t n = piece.size();
+        if (n >= 2 && piece[n - 2] == x && piece[n - 1] == y) {
+            return;
+        }
+        piece.push(x);
+        piece.push(y);
+    };
+    auto flush = [&]() {
+        if (piece.size() >= 4) {
+            emit(piece.begin(), piece.size() / 2);
+        }
+        piece.clear();
+    };
+    auto rounded = [](double v, int32_t lo, int32_t hi) {
+        auto r = static_cast<int32_t>(v >= 0 ? v + 0.5 : v - 0.5);
+        return r < lo ? lo : (r > hi ? hi : r);
+    };
+    for (size_t i = 0; i + 1 < count; i++) {
+        const double ax = xy[2 * i];
+        const double ay = xy[2 * i + 1];
+        const double dx = static_cast<double>(xy[2 * i + 2]) - ax;
+        const double dy = static_cast<double>(xy[2 * i + 3]) - ay;
+        const double p[4] = { -dx, dx, -dy, dy };
+        const double q[4] = { ax - x0, x1 - ax, ay - y0, y1 - ay };
+        double t0 = 0.0;
+        double t1 = 1.0;
+        bool visible = true;
+        for (int k = 0; k < 4 && visible; k++) {
+            if (p[k] == 0.0) {
+                visible = q[k] >= 0.0;
+                continue;
+            }
+            const double r = q[k] / p[k];
+            if (p[k] < 0.0) {
+                visible = r <= t1;
+                t0 = r > t0 ? r : t0;
+            } else {
+                visible = r >= t0;
+                t1 = r < t1 ? r : t1;
+            }
+        }
+        if (!visible || t0 > t1) {
+            flush();
+            continue;
+        }
+        if (t0 > 0.0) {
+            flush();
+            add(rounded(ax + t0 * dx, x0, x1), rounded(ay + t0 * dy, y0, y1));
+        } else {
+            add(xy[2 * i], xy[2 * i + 1]);
+        }
+        if (t1 < 1.0) {
+            add(rounded(ax + t1 * dx, x0, x1), rounded(ay + t1 * dy, y0, y1));
+            flush();
+        } else {
+            add(xy[2 * i + 2], xy[2 * i + 3]);
+        }
+    }
+    flush();
+}
+
 /** An open-addressing table from a 64-bit hash to a caller's index; the caller's callback decides equality. */
 class HashIndex {
 public:

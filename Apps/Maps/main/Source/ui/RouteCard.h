@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "../render/ElevationProfile.h"
+
 #include "Widgets.h"
 
 #include <cstdint>
@@ -22,6 +24,8 @@ public:
     static constexpr int NOTE_LINES = 3;
     static constexpr int NOTE_LINE_LENGTH = 96;
     static constexpr int MODE_COUNT = 3;
+    /** The height of the elevation chart in pixels. */
+    static constexpr int CHART_HEIGHT = 28;
 
     enum class Button : uint8_t {
         None,
@@ -38,6 +42,8 @@ public:
     void open(const char* summary, const char* note);
     void setSummary(const char* summary);
     void setNote(const char* note);
+    /** The route's elevation profile, drawn as a strip with its climb and descent; nullptr or count < 2 for none. */
+    void setElevation(const ElevationProfile* value) { elevation = value != nullptr && value->count >= 2 ? value : nullptr; }
     void close() { visible = false; }
     bool isOpen() const { return visible; }
     /** While busy the card shows "Finding a route..." instead of the summary, and Start does nothing. */
@@ -72,6 +78,10 @@ public:
     Button handleTap(int x, int y);
 
 private:
+    const ElevationProfile* elevation = nullptr;
+    Rect chart {};
+    bool showChart = false;
+    void drawElevation(Canvas& canvas, Font& font, const UiTheme& theme);
     /** The modes, then Start and Close. */
     static constexpr int FOCUS_COUNT = MODE_COUNT + 2;
     static constexpr int FOCUS_START = MODE_COUNT;

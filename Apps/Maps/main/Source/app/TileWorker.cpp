@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -29,11 +30,24 @@ constexpr uint32_t IDLE_WAIT_MS = 30;
  * much PSRAM free in all for the original, the features and the labels. */
 constexpr size_t CONVERT_MIN_BLOCK = 336 * 1024;
 constexpr size_t CONVERT_MIN_FREE = 900 * 1024;
+/** Made room for when a tile's routing graph failed for memory: a dense city tile needs about 1 MB while it is made. */
+constexpr size_t GRAPH_MIN_BLOCK = 512 * 1024;
+constexpr size_t GRAPH_MIN_FREE = 1600 * 1024;
 /** While a download runs, a tile on screen is prepared only with this much more PSRAM free, for the download's bodies. */
 constexpr size_t CONVERT_DOWNLOAD_SPARE = 400 * 1024;
 
+/**
+ * Tried with this much less: most tiles (browsed ones are 5-20 KB) need far less than CONVERT_MIN_BLOCK, a large
+ * original is read in chunks, and a tile that still runs out of memory waits and is tried again.
+ */
+constexpr size_t CONVERT_SMALL_BLOCK = 160 * 1024;
+/** After this many waits for memory in a row with nothing prepared, preparing stops until the app starts again. */
+constexpr int CONVERT_MAX_WAITS = 4;
+/** A tile on screen is prepared before its first drawing when its original is at most this large. */
+constexpr size_t PREPARE_NOW_MAX_BYTES = 96 * 1024;
+
 bool memoryForConversion() {
-    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= CONVERT_MIN_BLOCK &&
+    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= CONVERT_SMALL_BLOCK &&
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= CONVERT_MIN_FREE;
 }
 constexpr char CACHE_MAGIC[4] = { 'T', 'M', 'C', '2' };
@@ -385,6 +399,13 @@ bool TileWorker::relieveMemory(size_t bytes, size_t totalBytes, int minSlots) {
     }
     const int after = tileCache.slotCount();
     unlock();
+    // Still short: the lanes free the buffers they keep between tiles (file, terrain, trails) at their next tile. Not
+    // every time: they were made again at once, and the churn broke PSRAM into pieces
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < bytes || heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < totalBytes) {
+        for (int i = 0; i < laneCount; i++) {
+            lanes[i].releaseExtras = true;
+        }
+    }
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     logInfo("Memory for a %u KB block: %d of %d cache slots freed, largest block %u KB", static_cast<unsigned>(bytes / 1024), before - after,
         before, static_cast<unsigned>(largest / 1024));
@@ -402,6 +423,393 @@ bool TileWorker::restoreMemory() {
     return missing == 0;
 }
 
+void TileWorker::setTerrain(bool enabled) {
+    if (terrainOn.load() == enabled) {
+        return;
+    }
+    terrainOn = enabled;
+    if (mutex == nullptr) {
+        // Before start(), which takes it over
+        return;
+    }
+    lock();
+    updateStyleId();
+    tileCache.clear();
+    unlock();
+}
+
+void TileWorker::updateStyleId() {
+    styleCacheId(*palette, styleId, sizeof(styleId));
+    if (terrainOn) {
+        // The SD cache keeps tiles with terrain apart from those without, and those of each light step
+        const size_t length = strlen(styleId);
+        const int step = lightStep.load();
+        if (length + 2 < sizeof(styleId)) {
+            styleId[length] = 't';
+            styleId[length + 1] = step != 0 ? static_cast<char>('0' + step) : '\0';
+            styleId[length + 2] = '\0';
+        }
+    }
+}
+
+void TileWorker::noteMissingTerrain(const TileKey& tile) {
+    lock();
+    bool known = false;
+    for (int i = 0; i < missingTerrainCount && !known; i++) {
+        known = missingTerrain[i] == tile;
+    }
+    if (!known && missingTerrainCount < MAX_MISSING_TERRAIN) {
+        missingTerrain[missingTerrainCount++] = tile;
+    }
+    unlock();
+}
+
+int TileWorker::takeMissingTerrain(TileKey* out, int max) {
+    lock();
+    const int count = std::min(missingTerrainCount, max);
+    for (int i = 0; i < count; i++) {
+        out[i] = missingTerrain[i];
+    }
+    missingTerrainCount = 0;
+    unlock();
+    return count;
+}
+
+void TileWorker::setLightStep(int step) {
+    if (lightStep.load() == step) {
+        return;
+    }
+    lightStep = step;
+    if (mutex == nullptr) {
+        return;
+    }
+    lock();
+    updateStyleId();
+    tileCache.dropShaded();
+    unlock();
+}
+
+void TileWorker::terrainChanged(const TileKey* files, int count) {
+    lock();
+    terrainGeneration++;
+    terrainSlotCount = 0;
+    if (terrainOn || trailsOn) {
+        tileCache.dropTerrain(files, count);
+    }
+    unlock();
+}
+
+void TileWorker::setTrails(bool enabled) {
+    if (trailsOn.load() == enabled) {
+        return;
+    }
+    trailsOn = enabled;
+    if (mutex == nullptr) {
+        return;
+    }
+    lock();
+    tileCache.clear();
+    unlock();
+}
+
+int TileWorker::terrainRegion(const TileKey& tile, bool trails) {
+    lock();
+    const uint32_t generation = terrainGeneration;
+    for (int i = 0; i < terrainSlotCount; i++) {
+        if (terrainSlots[i].tile == tile && terrainSlots[i].trails == trails && terrainSlots[i].generation == generation) {
+            const int region = terrainSlots[i].region;
+            unlock();
+            return region;
+        }
+    }
+    unlock();
+    int found = -1;
+    char path[PATH_MAX_LENGTH];
+    for (int r = 0; r < store->regionCount() && found < 0; r++) {
+        const bool named = trails ? trailPath(path, sizeof(path), store->root(), store->regionName(r), tile)
+                                  : terrainPath(path, sizeof(path), store->root(), store->regionName(r), tile);
+        if (store->mayHave(r, tile) && named && fileExists(path)) {
+            found = r;
+        }
+    }
+    lock();
+    if (generation == terrainGeneration) {
+        const int slot = terrainSlotCount < MAX_TERRAIN_SLOTS ? terrainSlotCount++ : terrainSlotNext;
+        terrainSlotNext = (slot + 1) % MAX_TERRAIN_SLOTS;
+        terrainSlots[slot] = { tile, found, generation, trails };
+    }
+    unlock();
+    return found;
+}
+
+namespace {
+
+struct TerrainJobData {
+    TileWorker* worker;
+    TerrainOverlay* overlay;
+    TerrainSpan span;
+    bool found;
+    /** A height file is there but the overlay has no memory yet: the lane allocates it and asks again. */
+    bool needsOverlay;
+    /** The tile is on screen (not the ring around it): only then are missing heights asked for. */
+    bool visible;
+};
+
+} // namespace
+
+bool TileWorker::terrainJob(IoTask& io, void* context) {
+    (void)io;
+    auto* job = static_cast<TerrainJobData*>(context);
+    TileWorker* self = job->worker;
+    const TileKey dem = job->span.dem;
+    // The own height file first: without it nothing is drawn, and the downloader may fetch it (Terrain on, Wi-Fi). The
+    // neighbours (for the margin) are not asked for: those on screen ask for themselves.
+    const int ownRegion = self->terrainRegion(dem);
+    if (ownRegion < 0) {
+        if (job->visible) {
+            self->noteMissingTerrain(dem);
+        }
+        return true;
+    }
+    if (!job->overlay->isReady()) {
+        // The ~140 KB of the overlay only once some tile has heights
+        job->needsOverlay = true;
+        return true;
+    }
+    struct Opener {
+        TileWorker* self;
+        TileKey dem;
+    } opener { self, dem };
+    job->found = readTerrainPatch(
+        [](int index, void* context) -> FILE* {
+            auto* o = static_cast<Opener*>(context);
+            const TileKey key { TERRAIN_ZOOM, o->dem.x + index % 3 - 1, o->dem.y + index / 3 - 1 };
+            if (key.x < 0 || key.y < 0 || key.x >= (1 << TERRAIN_ZOOM) || key.y >= (1 << TERRAIN_ZOOM)) {
+                return nullptr;
+            }
+            const int region = o->self->terrainRegion(key);
+            char path[PATH_MAX_LENGTH];
+            if (region < 0 || !terrainPath(path, sizeof(path), o->self->store->root(), o->self->store->regionName(region), key)) {
+                return nullptr;
+            }
+            return fopen(path, "rb");
+        },
+        &opener, job->span, job->overlay->patch(), job->overlay->rowBuffer());
+    return true;
+}
+
+namespace {
+
+struct HeightJobData {
+    TileWorker* worker;
+    double lat;
+    double lon;
+    float metres;
+    bool found;
+};
+
+} // namespace
+
+void TileWorker::heightsAt(const double* lats, const double* lons, int count, float* metres, bool* found) {
+    struct Batch {
+        TileWorker* worker;
+        const double* lats;
+        const double* lons;
+        int count;
+        float* metres;
+        bool* found;
+    } batch { this, lats, lons, count, metres, found };
+    io->run(IoPriority::Background, [](IoTask& task, void* context) {
+        (void)task;
+        auto* b = static_cast<Batch*>(context);
+        TileWorker* self = b->worker;
+        FILE* file = nullptr;
+        TileKey open { -1, 0, 0 };
+        for (int i = 0; i < b->count; i++) {
+            b->found[i] = false;
+            b->metres[i] = 0.0f;
+            const double worldX = lonToWorldX(b->lons[i], TERRAIN_ZOOM);
+            const double worldY = latToWorldY(b->lats[i], TERRAIN_ZOOM);
+            const TileKey tile { TERRAIN_ZOOM, static_cast<int>(worldX / TILE_SIZE), static_cast<int>(worldY / TILE_SIZE) };
+            if (!(tile == open)) {
+                if (file != nullptr) {
+                    fclose(file);
+                    file = nullptr;
+                }
+                open = tile;
+                const int region = self->terrainRegion(tile);
+                char path[PATH_MAX_LENGTH];
+                if (region >= 0 && terrainPath(path, sizeof(path), self->store->root(), self->store->regionName(region), tile)) {
+                    file = fopen(path, "rb");
+                }
+            }
+            if (file != nullptr) {
+                b->found[i] = readTerrainHeight(file, worldX - tile.x * TILE_SIZE, worldY - tile.y * TILE_SIZE, b->metres[i]);
+            }
+        }
+        if (file != nullptr) {
+            fclose(file);
+        }
+        return true;
+    }, &batch);
+}
+
+bool TileWorker::heightsAt(const double* lats, const double* lons, int count, float* metres, bool* found, uint8_t* fileBuffer,
+    TileKey& heldTile) {
+    struct Batch {
+        TileWorker* worker;
+        const double* lats;
+        const double* lons;
+        int count;
+        float* metres;
+        bool* found;
+        uint8_t* buffer;
+        TileKey* held;
+    } batch { this, lats, lons, count, metres, found, fileBuffer, &heldTile };
+    // The profile shows on the card the user looks at: before background work, after the tiles on screen
+    return io->run(IoPriority::Prefetch, [](IoTask& task, void* context) {
+        (void)task;
+        auto* b = static_cast<Batch*>(context);
+        TileWorker* self = b->worker;
+        for (int i = 0; i < b->count; i++) {
+            b->found[i] = false;
+            b->metres[i] = 0.0f;
+            const double worldX = lonToWorldX(b->lons[i], TERRAIN_ZOOM);
+            const double worldY = latToWorldY(b->lats[i], TERRAIN_ZOOM);
+            const TileKey tile { TERRAIN_ZOOM, static_cast<int>(worldX / TILE_SIZE), static_cast<int>(worldY / TILE_SIZE) };
+            if (!(b->held->z != -1 && b->held->x == tile.x && b->held->y == tile.y)) {
+                // Another file: read whole (128 KB in one go), or marked as missing
+                *b->held = tile;
+                b->held->z = -2;
+                const int region = self->terrainRegion(tile);
+                char path[PATH_MAX_LENGTH];
+                if (region >= 0 && terrainPath(path, sizeof(path), self->store->root(), self->store->regionName(region), tile)) {
+                    FILE* file = fopen(path, "rb");
+                    if (file != nullptr) {
+                        if (fread(b->buffer, 1, TERRAIN_FILE_BYTES, file) == TERRAIN_FILE_BYTES && checkTerrainHeader(b->buffer)) {
+                            b->held->z = TERRAIN_ZOOM;
+                        }
+                        fclose(file);
+                    }
+                }
+                if (b->held->z != TERRAIN_ZOOM) {
+                    // Remembered as missing for the points that follow in it
+                    b->held->z = -2;
+                }
+            }
+            const TileKey& held = *b->held;
+            if (held.z == TERRAIN_ZOOM && held.x == tile.x && held.y == tile.y) {
+                b->metres[i] = terrainHeightIn(b->buffer, worldX - tile.x * TILE_SIZE, worldY - tile.y * TILE_SIZE);
+                b->found[i] = true;
+            }
+        }
+        return true;
+    }, &batch);
+}
+
+bool TileWorker::heightAt(double lat, double lon, float& metres) {
+    HeightJobData job { this, lat, lon, 0.0f, false };
+    io->run(IoPriority::Visible, [](IoTask& task, void* context) {
+        (void)task;
+        auto* data = static_cast<HeightJobData*>(context);
+        TileWorker* self = data->worker;
+        const double worldX = lonToWorldX(data->lon, TERRAIN_ZOOM);
+        const double worldY = latToWorldY(data->lat, TERRAIN_ZOOM);
+        const TileKey tile { TERRAIN_ZOOM, static_cast<int>(worldX / TILE_SIZE), static_cast<int>(worldY / TILE_SIZE) };
+        const int region = self->terrainRegion(tile);
+        char path[PATH_MAX_LENGTH];
+        if (region < 0 || !terrainPath(path, sizeof(path), self->store->root(), self->store->regionName(region), tile)) {
+            return true;
+        }
+        FILE* file = fopen(path, "rb");
+        if (file != nullptr) {
+            data->found = readTerrainHeight(file, worldX - tile.x * TILE_SIZE, worldY - tile.y * TILE_SIZE, data->metres);
+            fclose(file);
+        }
+        return true;
+    }, &job);
+    metres = job.metres;
+    return job.found;
+}
+
+namespace {
+
+struct TrailJobData {
+    TileWorker* worker;
+    FileBuffer* file;
+    TileKey tile;
+    bool found;
+};
+
+} // namespace
+
+bool TileWorker::loadTrails(Lane& lane, const TileKey& tile, IoPriority priority) {
+    lane.renderer.setTrails(nullptr, 0);
+    if (!trailsOn.load() || tile.z < TRAIL_ZOOM) {
+        return false;
+    }
+    TrailJobData job { this, &lane.trailFile, ancestorOf(tile, TRAIL_ZOOM), false };
+    const bool ran = io->run(priority, [](IoTask& task, void* context) {
+        auto* data = static_cast<TrailJobData*>(context);
+        const int region = data->worker->terrainRegion(data->tile, true);
+        char path[PATH_MAX_LENGTH];
+        data->found = region >= 0 && trailPath(path, sizeof(path), data->worker->store->root(), data->worker->store->regionName(region), data->tile) &&
+            task.readFile(path, *data->file);
+        return true;
+    }, &job);
+    // A read for the ring that did not start (the view changed): the tile gives way rather than lose its trails
+    lane.extrasGaveWay = lane.extrasGaveWay || !ran;
+    if (job.found && checkTrailHeader(lane.trailFile.bytes(), lane.trailFile.size())) {
+        lane.renderer.setTrails(lane.trailFile.bytes(), lane.trailFile.size());
+        return true;
+    }
+    return false;
+}
+
+bool TileWorker::loadTerrain(Lane& lane, const TileKey& tile, IoPriority priority) {
+    lane.terrain.clearPatch();
+    TerrainSpan span {};
+    if (!terrainOn.load() || palette->binary || !terrainSpan(tile, span)) {
+        return false;
+    }
+    lock();
+    bool visible = false;
+    for (int i = 0; i < visibleWanted && !visible; i++) {
+        visible = wanted[i] == tile;
+    }
+    unlock();
+    TerrainJobData job { this, &lane.terrain, span, false, false, visible };
+    bool ran = io->run(priority, terrainJob, &job);
+    if (ran && job.needsOverlay) {
+        if (!lane.terrain.begin()) {
+            return false;
+        }
+        job.needsOverlay = false;
+        ran = io->run(priority, terrainJob, &job);
+    }
+    if (!ran) {
+        // A read for the ring that did not start (the view changed): the tile gives way rather than lose its terrain
+        lane.extrasGaveWay = true;
+        return false;
+    }
+    if (job.found) {
+        lane.terrain.setPatch(span.cells, terrainCellMetres(tile, span));
+        lane.drawnLightStep = lightStep.load();
+        lane.terrain.setLightStep(lane.drawnLightStep);
+        terrainSeen = true;
+    }
+    return job.found;
+}
+
+void TileWorker::setPalette(const Palette* next) {
+    lock();
+    palette = next;
+    updateStyleId();
+    // A tile a lane is drawing now may still come in with the old style: the next pan or zoom draws it again
+    tileCache.clear();
+    unlock();
+}
+
 bool TileWorker::start(TileStore* tileStore, IoTask* ioTask, const Palette* tilePalette, int cacheSlots, const char* cacheRoot) {
     store = tileStore;
     io = ioTask;
@@ -414,7 +822,7 @@ bool TileWorker::start(TileStore* tileStore, IoTask* ioTask, const Palette* tile
         return false;
     }
     logInfo("Tile cache: %d slots of %d KB", tileCache.slotCount(), TileCache::TILE_BYTES / 1024);
-    styleCacheId(*palette, styleId, sizeof(styleId));
+    updateStyleId();
     if (!cacheIndex.init(CACHE_INDEX_ENTRIES)) {
         logError("Tile worker: no memory for the cache index");
         return false;
@@ -443,7 +851,9 @@ bool TileWorker::start(TileStore* tileStore, IoTask* ioTask, const Palette* tile
         lane.converting = false;
         lane.prefetching = false;
         lane.cancel = false;
+        lane.releaseExtras = false;
         lane.renderer.setCancelFlag(&lane.cancel);
+        lane.renderer.setTerrain(&lane.terrain);
         if (labelStore != nullptr) {
             lane.renderer.setLabelHook([](const TileKey& source, const uint8_t* section, size_t size, int count, void* context) {
                 static_cast<LabelStore*>(context)->put(source, section, size, count);
@@ -507,6 +917,12 @@ void TileWorker::want(const TileKey* tiles, int count, int visibleCount) {
     const int room = std::max(1, tileCache.slotCount() - CACHE_SPARE_SLOTS);
     wantedCount = std::min({ count, static_cast<int>(MAX_WANTED), room });
     visibleWanted = visibleCount < wantedCount ? visibleCount : wantedCount;
+    if (wantedCount > 0 && tiles[0].z != wantedZoom) {
+        // Another zoom level: tiles that failed are tried again when it comes back (one stayed magnified until a restart)
+        wantedZoom = tiles[0].z;
+        missingCount = 0;
+        missingNext = 0;
+    }
     memcpy(wanted, tiles, sizeof(TileKey) * wantedCount);
     // The visible tiles count as just used, so tiles rendered for the ring evict others first. One that was drawn
     // from coarser data while it was still in the ring is a gap now that it is on screen.
@@ -568,7 +984,26 @@ void TileWorker::setConversionsPaused(bool paused) {
     unlock();
 }
 
+bool TileWorker::noteConversionWait() {
+    if (++conversionWaits < CONVERT_MAX_WAITS) {
+        return false;
+    }
+    // Memory too broken up for any tile (the system holds more PSRAM than usual): the map keeps drawing them from
+    // the originals, and they are prepared after the next start. The progress ends instead of staying.
+    lock();
+    const int dropped = conversionCount;
+    conversionCount = 0;
+    conversionsStopped = true;
+    unlock();
+    logInfo("Preparing tiles stopped for memory: %d tiles left for the next start (largest free PSRAM block %u KB)", dropped,
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+    return true;
+}
+
 bool TileWorker::queueConversion(const TileKey& tile, int region, bool urgent, bool split) {
+    if (conversionsStopped) {
+        return true;
+    }
     for (int i = 0; i < failedConversionCount; i++) {
         if (failedConversions[i] == tile) {
             return true;
@@ -760,6 +1195,8 @@ bool TileWorker::convertOne(Lane& lane) {
         lane.fileBuffer.trim(0);
         lane.converter.trim(0);
         lane.converted.release();
+        lane.trailFile.trim(0);
+        lane.terrain.end();
     }
     const TickType_t now = xTaskGetTickCount();
     if (static_cast<int32_t>(now - conversionsWaitUntil.load()) < 0) {
@@ -797,6 +1234,7 @@ bool TileWorker::convertOne(Lane& lane) {
             logInfo("Preparing tiles waits for memory (largest free PSRAM block %u KB, %u KB free, %d queued)",
                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024),
                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024), queued);
+            noteConversionWait();
             return false;
         }
         lane.triedTrim = false;
@@ -923,6 +1361,7 @@ bool TileWorker::convertOne(Lane& lane) {
                 nowMs() - convertedAt);
             // Tiles drawn from the original or an older prepared copy are drawn again from the new one, which has labels
             preparedCount++;
+            conversionWaits = 0;
             if (writeGeometry != nullptr || writeLabels != nullptr) {
                 preparedGeneration++;
                 lock();
@@ -947,7 +1386,7 @@ bool TileWorker::convertOne(Lane& lane) {
         conversionsWaitUntil = xTaskGetTickCount() + pdMS_TO_TICKS(MEMORY_BACKOFF_MS);
         logInfo("[%d] Preparing %d/%d/%d waits for memory (%s, largest free PSRAM block %u KB)", lane.index, job.tile.z, job.tile.x,
             job.tile.y, reason, static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
-        requeue = true;
+        requeue = !noteConversionWait();
     } else if (!ok && !requeue) {
         const auto largest = static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         lock();
@@ -962,6 +1401,11 @@ bool TileWorker::convertOne(Lane& lane) {
         unlock();
         logError("[%d] Could not prepare %d/%d/%d (%s, largest free PSRAM block %u bytes), %s", lane.index, job.tile.z, job.tile.x,
             job.tile.y, reason, largest, retry ? "tried again later" : "not tried again until the map reopens");
+        if (retry && reason != nullptr && strstr(reason, "memory") != nullptr) {
+            // The routing graph of a dense city tile needs about 1 MB while it is made (Kosice centre: 920-960 KB on
+            // the PC), more than a conversion makes room for: the second try gets more of the tile cache
+            relieveMemory(GRAPH_MIN_BLOCK, GRAPH_MIN_FREE);
+        }
         requeue = retry;
     }
     lock();
@@ -1185,10 +1629,15 @@ bool TileWorker::writeOne(Lane& lane) {
     return true;
 }
 
-void TileWorker::finish(Lane& lane, const TileKey& tile, bool success, int sourceZoom) {
+void TileWorker::finish(Lane& lane, const TileKey& tile, bool success, int sourceZoom, bool shaded) {
     lock();
     if (success) {
-        tileCache.commit(tile, sourceZoom);
+        tileCache.commit(tile, sourceZoom, shaded);
+        failedRetries = 0;
+        if (shaded && lane.drawnLightStep != lightStep.load()) {
+            // The map turned while it was drawn: it shows, and is drawn again with the new light
+            tileCache.markStale(tile);
+        }
         // Drawn while it was in the ring, then the view settled with it on screen: want() looked before it was
         // finished, so the gap is noted here, or it stayed drawn from a coarser zoom level and was never fetched
         const int bestZoom = tile.z < MAX_SOURCE_ZOOM ? tile.z : MAX_SOURCE_ZOOM;
@@ -1204,6 +1653,11 @@ void TileWorker::finish(Lane& lane, const TileKey& tile, bool success, int sourc
         missingNext = (missingNext + 1) % 64;
         if (missingCount < 64) {
             missingCount++;
+        }
+        // Whatever the failure (memory, a read that broke off), it is tried again in a while, a few times in a row
+        if (missingRetryAt == 0 && failedRetries < MAX_FAILED_RETRIES) {
+            failedRetries++;
+            missingRetryAt = xTaskGetTickCount() + pdMS_TO_TICKS(FAILED_RETRY_MS);
         }
     }
     lane.active = false;
@@ -1283,15 +1737,90 @@ bool TileWorker::loadJob(IoTask& io, void* context) {
     return false;
 }
 
+bool TileWorker::prepareAndDraw(Lane& lane, const TileKey& source, int region, const TileKey& tile, uint16_t* pixels, RenderStats& stats,
+    IoPriority priority) {
+    // Small originals only (a just downloaded tile is 5-60 KB), one conversion at a time, and memory for it
+    if (lane.fileBuffer.size() > PREPARE_NOW_MAX_BYTES || !memoryForConversion()) {
+        return false;
+    }
+    char regionName[REGION_NAME_MAX + 1] = "";
+    char version[48] = "";
+    // Only when no lane prepares: a lane never waits for another, the tile is then drawn from its original as before
+    lock();
+    bool busy = false;
+    for (int i = 0; i < laneCount; i++) {
+        busy = busy || lanes[i].converting;
+    }
+    if (!busy && region >= 0 && region < store->regionCount()) {
+        snprintf(regionName, sizeof(regionName), "%s", store->regionName(region));
+        snprintf(version, sizeof(version), "%s", store->regionVersion(region));
+        lane.converting = true;
+        lane.convertingTile = source;
+    }
+    unlock();
+    if (busy || regionName[0] == '\0') {
+        return false;
+    }
+    const uint32_t start = nowMs();
+    MemoryInput input(lane.fileBuffer.bytes(), lane.fileBuffer.size());
+    ConvertStats convertStats {};
+    bool ok = lane.converter.convert(lane.renderer.tileDecoder(), &input, source, static_cast<uint32_t>(lane.fileBuffer.size()), version,
+        deflatePrepared, &lane.converted, &lane.convertedLabels, &convertStats);
+    const uint32_t converted = nowMs();
+    if (ok) {
+        ConvertWriteJob write { root, regionName, source, &lane.converted, &lane.convertedLabels, nullptr, false };
+        ok = io->run(priority, convertWriteJob, &write) && !write.yielded;
+    }
+    const uint32_t written = nowMs();
+    bool drawn = false;
+    if (ok) {
+        drawn = lane.renderer.renderPrepared(lane.converted.bytes(), lane.converted.size(), tile, *palette, pixels, &stats);
+        logInfo("[%d] Prepared %d/%d/%d on screen: %u -> %u + %u bytes, convert %u ms, write %u ms", lane.index, source.z, source.x, source.y,
+            static_cast<unsigned>(lane.fileBuffer.size()), static_cast<unsigned>(lane.converted.size()),
+            static_cast<unsigned>(lane.convertedLabels.size()), converted - start, written - converted);
+    }
+    lane.converter.trim(KEEP_FILE_BUFFER / 4);
+    if (lane.convertedLabels.allocated() > KEEP_FILE_BUFFER / 4) {
+        lane.convertedLabels.release();
+    }
+    lock();
+    lane.converting = false;
+    if (ok) {
+        // Other tiles drawn from this original are drawn again from the copy (with labels)
+        preparedGeneration++;
+        tileCache.dropMagnified(&source, 1);
+        changed = true;
+    }
+    unlock();
+    if (ok && labelStore != nullptr) {
+        // Its labels are in the .prl just written: read once no tile on screen waits
+        labelStore->request(source, region);
+    }
+    return drawn;
+}
+
+void TileWorker::runLoad(IoPriority priority, LoadJob& job) {
+    // A read for the ring around the screen that waited while the view changed does not start (IoTask): then the job
+    // stays as it is here, and must count as giving way, not as "nothing on the card". Taken for the latter, the tile
+    // went into the missing list and stayed drawn magnified from a coarser zoom until the app was restarted (16 Nov).
+    job.yielded = true;
+    io->run(priority, loadJob, &job);
+}
+
 bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool visible) {
     const uint32_t start = nowMs();
+    if (lane.releaseExtras.exchange(false)) {
+        lane.terrain.end();
+        lane.trailFile.trim(0);
+        lane.renderer.setTrails(nullptr, 0);
+    }
     const IoPriority priority = visible ? IoPriority::Visible : IoPriority::Prefetch;
     LoadJob job {};
     job.worker = this;
     job.lane = &lane;
     job.tile = tile;
     job.tryCache = true;
-    io->run(priority, loadJob, &job);
+    runLoad(priority, job);
     if (job.yielded) {
         return false;
     }
@@ -1307,11 +1836,20 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
         lane.fileBuffer.trim(0);
         relieveMemory(job.noMemoryBytes + 0x10000);
         job.noMemoryBytes = 0;
-        io->run(priority, loadJob, &job);
+        runLoad(priority, job);
         if (job.yielded) {
             return false;
         }
     }
+    // Hillshade and contours: the tile's part of its height file, read before drawing
+    const uint32_t terrainStart = nowMs();
+    lane.extrasGaveWay = false;
+    const bool terrainFound = loadTerrain(lane, tile, priority);
+    loadTrails(lane, tile, priority);
+    if (lane.extrasGaveWay) {
+        return false;
+    }
+    const uint32_t terrainMs = nowMs() - terrainStart;
     // Still no block that large: the original is drawn reading it from the card a chunk at a time, as preparing does
     bool streamedOk = false;
     RenderStats streamStats {};
@@ -1390,19 +1928,32 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
             // A damaged prepared tile: the original is drawn and the copy made again
             job.tryCache = false;
             job.skipPrepared = true;
-            io->run(priority, loadJob, &job);
+            runLoad(priority, job);
             if (job.yielded) {
                 return false;
             }
         }
     }
-    if (job.found == Found::Original) {
+    bool preparedNow = false;
+    if (job.found == Found::Original && visible) {
+        // On screen and no prepared copy yet (a tile just downloaded): prepared now from the bytes in memory and drawn
+        // from that copy, with its labels, instead of drawn from the original and again after preparing
+        preparedNow = prepareAndDraw(lane, job.source.tile, job.source.region, tile, pixels, stats, priority);
+        rendered = preparedNow;
+        if (lane.renderer.wasCancelled()) {
+            return false;
+        }
+    }
+    if (job.found == Found::Original && !preparedNow) {
         MemoryInput input(lane.fileBuffer.bytes(), lane.fileBuffer.size());
         rendered = lane.renderer.render(&input, job.source.tile, tile, *palette, pixels, &stats);
         if (lane.renderer.wasCancelled()) {
             return false;
         }
-        // No current prepared copy: converted in idle time, before the tiles the scan found
+    }
+    if (job.found == Found::Original && (!preparedNow || job.source.tile.z >= MAX_SOURCE_ZOOM)) {
+        // No current prepared copy, or a z14 tile's routing graph still to make: converted in idle time, before the
+        // tiles the scan found
         lock();
         queueConversion(job.source.tile, job.source.region, true);
         unlock();
@@ -1416,17 +1967,34 @@ bool TileWorker::produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool
         }
         unlock();
     }
-    finish(lane, tile, rendered, job.source.tile.z);
+    if (!rendered && (job.found != Found::Nothing || job.noMemoryBytes > 0)) {
+        // Its data is on the card and it was still not drawn (a tile of an area with no data yet is no news)
+        logInfo("[%d] Tile %d/%d/%d not drawn: found %d (source z%d), cancelled %d, short of %u bytes", lane.index, tile.z, tile.x, tile.y,
+            static_cast<int>(job.found), job.source.tile.z, lane.renderer.wasCancelled() ? 1 : 0, static_cast<unsigned>(job.noMemoryBytes));
+    }
+    // Hillshade only on colour palettes (TerrainOverlay::draw)
+    finish(lane, tile, rendered, job.source.tile.z, terrainFound && palette != &monochromePalette());
     if (rendered) {
-        logInfo("[%d] Tile %d/%d/%d from z%d %s: read %u ms, render %u ms (%s %u, geometry %u, fill %u, %u features)", lane.index, tile.z,
-            tile.x, tile.y, job.source.tile.z, job.found == Found::Prepared ? ".prt" : ".pbf", loaded - start, stats.totalMs,
-            job.found == Found::Prepared ? "inflate" : "scan", stats.scanMs, stats.geometryMs, stats.fillMs, stats.features);
+        logInfo("[%d] Tile %d/%d/%d from z%d %s: read %u ms, render %u ms (%s %u, geometry %u, fill %u, %u features)%s", lane.index, tile.z,
+            tile.x, tile.y, job.source.tile.z, job.found == Found::Prepared ? ".prt" : (preparedNow ? ".pbf prepared now" : ".pbf"), loaded - start,
+            stats.totalMs, job.found == Found::Prepared || preparedNow ? "inflate" : "scan", stats.scanMs, stats.geometryMs, stats.fillMs,
+            stats.features, terrainFound ? ", with terrain" : "");
+        if (terrainFound) {
+            logInfo("[%d] Terrain %d/%d/%d: heights read in %u ms, %d contour lines", lane.index, tile.z, tile.x, tile.y, terrainMs,
+                lane.terrain.lastLines());
+        }
     }
     return true;
 }
 
 void TileWorker::loop(Lane& lane) {
     while (!stopRequested) {
+        if (lane.releaseExtras.exchange(false)) {
+            // Between tiles: the renderer holds no pointer into these now
+            lane.terrain.end();
+            lane.trailFile.trim(0);
+            lane.renderer.setTrails(nullptr, 0);
+        }
         // A TLS handshake is 2-3.6 s of CPU at a lower priority: rendering beside it on the same core starved it and
         // the core's idle task, which the task watchdog reported. It gets the core, at most 5 s.
         for (int wait = 0; lane.index == Downloader::NETWORK_CORE && Downloader::isHandshaking() && wait < 250 && !stopRequested; wait++) {

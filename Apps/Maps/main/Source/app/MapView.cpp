@@ -65,6 +65,51 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     // Idle time is counted from the start, not from boot
     lastInputAt = nowMs();
     snprintf(rootPath, sizeof(rootPath), "%s", root);
+    if (!openDisplay(display)) {
+        return false;
+    }
+    // From here on only the I/O task touches the SD card
+    if (!io.start()) {
+        logError("I/O task not started");
+        return false;
+    }
+    loadSavedState(root, dataPath);
+    loadWaypoints();
+    // Known before any download resumes: a region with a catalog outline needs it for its tile list
+    app_paths_get_assets_path(APP_ID, "regions.bin", catalogPath, sizeof(catalogPath));
+    downloader.setCatalogPath(catalogPath);
+    TrackRecorder::closeUnfinished(io, rootPath);
+    findGpxFolder();
+    loadShownGpx();
+    overlay.setFonts(&normalFont, smallFont.isOpen() && smallFont.lineHeight() >= MIN_LINE_HEIGHT ? &smallFont : &normalFont);
+    worker.setDeflatePrepared(settings.deflatePrepared);
+    worker.setSdCache(settings.sdCache);
+    worker.setTerrain(settings.terrain);
+    worker.setTrails(settings.trails);
+    startLabels(root);
+    if (!worker.start(&store, &io, palette, TILE_CACHE_SLOTS, root)) {
+        return false;
+    }
+    startServices(root);
+
+    if (hasSavedView) {
+        centerOn(savedView.lat, savedView.lon, savedView.zoom);
+    } else {
+        centerOn(DEFAULT_LAT, DEFAULT_LON, DEFAULT_ZOOM);
+    }
+    viewReady = true;
+
+    task_event_group_construct(&eventGroup);
+    eventGroupReady = true;
+    subscribed = app_event_subscribe(&appEvents, &eventGroup) == ERROR_NONE;
+    location.subscribe(&eventGroup);
+    readLocation();
+    attribution.expand(nowMs());
+    logMemory("map ready");
+    return true;
+}
+
+bool MapView::openDisplay(Device* display) {
     if (!output.begin(display)) {
         logError("Display output failed");
         return false;
@@ -82,11 +127,10 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         return false;
     }
     canvas = { frame, width, height };
-    // From here on only the I/O task touches the SD card
-    if (!io.start()) {
-        logError("I/O task not started");
-        return false;
-    }
+    return true;
+}
+
+void MapView::loadSavedState(const char* root, const char* dataPath) {
     browsedCounter.configure(io, root);
     int regionsFound = 0;
     auto loadState = [&] {
@@ -98,6 +142,9 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         if (settings.devMonochrome && !monochrome) {
             monochrome = true;
             palette = &monochromePalette();
+            theme = uiTheme(*palette, monochrome);
+        } else if (settings.outdoorStyle && !monochrome) {
+            palette = &outdoorPalette();
             theme = uiTheme(*palette, monochrome);
         }
         hasSavedView = readSavedView(settingsPath, savedView);
@@ -125,11 +172,9 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     };
     runOnCard(io, loadState);
     logInfo("Map root %s, %d regions", root, regionsFound);
-    loadWaypoints();
-    // Known before any download resumes: a region with a catalog outline needs it for its tile list
-    app_paths_get_assets_path(APP_ID, "regions.bin", catalogPath, sizeof(catalogPath));
-    downloader.setCatalogPath(catalogPath);
-    TrackRecorder::closeUnfinished(io, rootPath);
+}
+
+void MapView::findGpxFolder() {
     // GPX files are dropped into gpx/ at the top of the data volume (the SD card), where users find it
     char volume[PATH_MAX_LENGTH] = "";
     if (paths_get_data_root_path(volume, sizeof(volume)) == ERROR_NONE) {
@@ -139,10 +184,9 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         snprintf(gpxFolder, sizeof(gpxFolder), "%.*s/gpx", second != nullptr ? static_cast<int>(second - rootPath) : 0, rootPath);
     }
     logInfo("GPX folder %s", gpxFolder);
-    loadShownGpx();
-    overlay.setFonts(&normalFont, smallFont.isOpen() && smallFont.lineHeight() >= MIN_LINE_HEIGHT ? &smallFont : &normalFont);
-    worker.setDeflatePrepared(settings.deflatePrepared);
-    worker.setSdCache(settings.sdCache);
+}
+
+void MapView::startLabels(const char* root) {
     // Labels: sections copied by the render lanes, placed by the map loop; without memory the map has none
     labelsReady = labelStore.begin() && labels.begin(largeAlloc, largeFree);
     if (labelsReady) {
@@ -159,25 +203,30 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
         fontMaker.configure(io, root, ttfPath);
         fontMaker.start(missingLabelFonts);
     }
-    if (!worker.start(&store, &io, palette, TILE_CACHE_SLOTS, root)) {
-        return false;
-    }
+}
+
+void MapView::startServices(const char* root) {
     input.begin();
+    haptic.begin();
     pointerAcceleration.setSpeed(settings.pointerSpeed);
     cursorX = width / 2;
     cursorY = height / 2;
     // The overlay adapts to the inputs the board has: key hints with a keyboard, focus without touch or pointer
+    controls.setStyleButton(!monochrome);
     controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
     metrics::setKeyboard(input.hasKeyboard());
     layoutControls();
     downloadView = downloadLayout(width, height, overlay.font().lineHeight());
     downloader.setTiming(settings.devProbe);
     downloader.setMemoryRelief([](void* context, size_t bytes) { return static_cast<TileWorker*>(context)->relieveMemory(bytes); }, &worker);
+    downloader.setTerrainWithDownloads(settings.terrain);
+    downloader.setTrailsWithDownloads(settings.trails);
     if (!downloader.start(root, &store, &io)) {
         logError("Downloader not started");
     }
     routeProfile = static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2));
     navigatorStarted = navigator.start(io, store, worker, root);
+    navigator.setPreferTrails(settings.walkTrails);
     if (!navigatorStarted) {
         logError("Route search not started");
     }
@@ -190,22 +239,6 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     if (!(settings.devProbe ? probe.start() : probe.startWatchdog())) {
         logError("Stall probes not started");
     }
-
-    if (hasSavedView) {
-        centerOn(savedView.lat, savedView.lon, savedView.zoom);
-    } else {
-        centerOn(DEFAULT_LAT, DEFAULT_LON, DEFAULT_ZOOM);
-    }
-    viewReady = true;
-
-    task_event_group_construct(&eventGroup);
-    eventGroupReady = true;
-    subscribed = app_event_subscribe(&appEvents, &eventGroup) == ERROR_NONE;
-    location.subscribe(&eventGroup);
-    readLocation();
-    attribution.expand(nowMs());
-    logMemory("map ready");
-    return true;
 }
 
 void MapView::end() {
@@ -262,6 +295,7 @@ void MapView::end() {
         eventGroupReady = false;
     }
     input.end();
+    haptic.end();
     labels.end();
     labelStore.end();
     normalFont.close();
@@ -486,7 +520,17 @@ void MapView::drawStatus() {
     pillRect = {};
     statusShown = false;
     bool progress = true;
-    if (status.state == Downloader::State::Downloading && status.total > 0) {
+    if (status.state == Downloader::State::Downloading && status.total > 0 && (status.terrain || status.trails)) {
+        // Terrain and trails count elevation tiles: "Downloading terrain" for browsed areas, else with the region
+        char title[64];
+        const char* what = status.terrain ? "terrain" : "trails";
+        if (strcmp(status.region, BROWSE_REGION) == 0) {
+            snprintf(title, sizeof(title), "%s", what);
+        } else {
+            snprintf(title, sizeof(title), "%s %s", statusTitle, what);
+        }
+        formatProgressPill(TransferKind::Download, title, status.done, status.total, text, sizeof(text));
+    } else if (status.state == Downloader::State::Downloading && status.total > 0) {
         formatProgressPill(TransferKind::Download, statusTitle, status.done, status.total, text, sizeof(text));
     } else if (status.state == Downloader::State::Updating && status.total > 0) {
         formatProgressPill(TransferKind::Update, statusTitle, status.done, status.total, text, sizeof(text));
@@ -504,7 +548,8 @@ void MapView::drawStatus() {
     } else {
         return;
     }
-    const Rect rect = overlay.drawPill(canvas, text, *palette);
+    // Under the navigation bar while navigating: on top of it, it hid the next turn (15 Nov)
+    const Rect rect = overlay.drawPill(canvas, text, *palette, navigating ? navBar.height(sheetFont()) + 2 : 2);
     statusShown = true;
     if (progress) {
         pillRect = rect;
@@ -573,6 +618,35 @@ void MapView::drawMap() {
             overlay.drawAccuracyCircle(canvas, markerX, markerY, radius, *palette);
             overlay.drawMarker(canvas, markerX, markerY, position.showsArrow(), position.fix().course - bearing, *palette);
         }
+    }
+}
+
+void MapView::hideIdleControls(uint32_t now) {
+    // The buttons go after 10 s without input; the map moving with the position is no input
+    if (controls.isVisible() && screen == Screen::Map && !menuOpen && !dialog.isOpen() && !prompt.isOpen() && !sheet.isOpen() &&
+        !searchSheet.isOpen() && !pickingStart && now - lastInputAt >= CONTROLS_HIDE_MS) {
+        controls.hide();
+        cursorShown = false;
+        dirty = true;
+    }
+    // A download's card closes a few seconds after the download ended (its last line can be read), the work card
+    // as soon as nothing runs in the background any more
+    const bool downloading = lastStatus.state == Downloader::State::Connecting || lastStatus.state == Downloader::State::Downloading ||
+        lastStatus.state == Downloader::State::Updating || lastStatus.state == Downloader::State::Deleting;
+    if (downloadCard.isOpen() && !downloading && !downloader.isBrowsing()) {
+        if (downloadCardIdleSince == 0) {
+            downloadCardIdleSince = now == 0 ? 1 : now;
+        } else if (now - downloadCardIdleSince >= CARD_CLOSE_MS) {
+            downloadCard.close();
+            downloadCardIdleSince = 0;
+            dirty = true;
+        }
+    } else {
+        downloadCardIdleSince = 0;
+    }
+    if (workCard.isOpen() && !work.any()) {
+        workCard.close();
+        dirty = true;
     }
 }
 
@@ -714,45 +788,9 @@ void MapView::render() {
     const uint32_t start = nowMs();
     syncTouchKeyboard();
     probe.phase("render");
-    if (animation.active && (pinching || isFullScreen() || start - animation.startMs >= ZOOM_ANIMATION_MS)) {
-        animation.active = false;
-        io.hold(false);
-        updateWanted();
-        logInfo("Zoom animation: %d frames in %u ms, compose %u ms per frame, slowest frame %u ms (lock %u, compose %u, rest display)",
-            animation.frames, static_cast<unsigned>(start - animation.startMs),
-            animation.frames > 0 ? static_cast<unsigned>(animation.composeMs / animation.frames) : 0, static_cast<unsigned>(animation.slowestFrameMs),
-            static_cast<unsigned>(animation.slowestLockMs), static_cast<unsigned>(animation.slowestComposeMs));
-    }
-    if (turn.active && (pinching || isFullScreen() || start - turn.startMs >= TURN_ANIMATION_MS)) {
-        turn.active = false;
-        io.hold(false);
-        logInfo("Turn to %d degrees: %d frames in %u ms, compose %u ms per frame", static_cast<int>(turn.to), turn.frames,
-            static_cast<unsigned>(start - turn.startMs), turn.frames > 0 ? static_cast<unsigned>(turn.composeMs / turn.frames) : 0);
-        applyBearing(turn.to);
-    }
+    endAnimations(start);
     if (pinching || animation.active || turn.active) {
-        // The cached tiles scaled live, sharp tiles follow when the animation ends or the fingers lift
-        drawScaledMap();
-        if (screen == Screen::Download) {
-            // The frame and its bar stay put while the map scales under them
-            overlay.setBottomInset(downloadView.bar.height);
-            drawDownloadFrame();
-        } else {
-            overlay.setBottomInset(0);
-        }
-        overlay.drawAttributionMark(canvas, *palette);
-        output.present(frame, 0, height);
-        if (animation.active || turn.active) {
-            if (animation.active && nowMs() - start > animation.slowestFrameMs) {
-                animation.slowestFrameMs = nowMs() - start;
-                animation.slowestLockMs = animation.frameLockMs;
-                animation.slowestComposeMs = animation.frameComposeMs;
-            }
-            // The next frame comes with the next loop pass
-            dirty = true;
-        } else {
-            dirty = false;
-        }
+        drawAnimationFrame(start);
         return;
     }
     if (isFullScreen()) {
@@ -776,48 +814,13 @@ void MapView::render() {
             drawDownloadFrame();
         }
         if (attribution.isExpanded()) {
-            overlay.drawAttribution(canvas, *palette, attributionBar.x, attributionBar.y, attributionBar.width, attributionBar.height);
+            overlay.drawAttribution(canvas, *palette, attributionBar.x, attributionBar.y, attributionBar.width, attributionBar.height,
+                worker.terrainShown() && zoom >= TERRAIN_ZOOM);
         } else if (screen == Screen::Map) {
             overlay.drawAttributionMark(canvas, *palette);
         }
         if (screen == Screen::Map) {
-            if (isRotated() || turn.active) {
-                drawCompass();
-            }
-            controls.draw(canvas, overlay.font(), theme, positionButton());
-            if (controls.isVisible() && !sheet.isOpen() && !cursorShown) {
-                // The crosshair Enter picks places from: dark with a light rim, like the pointer
-                const auto x = static_cast<float>(width / 2);
-                const auto y = static_cast<float>(height / 2);
-                canvas.line(x - 7.0f, y, x + 7.0f, y, 3.0f, theme.panel);
-                canvas.line(x, y - 7.0f, x, y + 7.0f, 3.0f, theme.panel);
-                canvas.line(x - 6.0f, y, x + 6.0f, y, 1.5f, theme.text);
-                canvas.line(x, y - 6.0f, x, y + 6.0f, 1.5f, theme.text);
-            }
-            if (sheet.isOpen() && searchPinShown) {
-                // The place of the chosen search result
-                double sx;
-                double sy;
-                worldToScreenOffset(lonToWorldX(searchPinLon, zoom) - centerX, latToWorldY(searchPinLat, zoom) - centerY, sx, sy);
-                const auto px = static_cast<float>(sx + width / 2.0);
-                const auto py = static_cast<float>(sy + height / 2.0);
-                canvas.fillCircle(px, py, 7.0f, theme.panel);
-                canvas.fillCircle(px, py, 5.0f, theme.danger);
-            }
-            if (sheet.isOpen()) {
-                sheet.draw(canvas, sheetFont(), theme);
-            }
-            if (routeCard.isOpen()) {
-                routeCard.draw(canvas, sheetFont(), theme);
-            }
-            if (navigating) {
-                navBar.draw(canvas, sheetFont(), theme, width);
-            }
-            if (pickingStart && !menuOpen) {
-                drawPickStart();
-            }
-        }
-        if (screen == Screen::Map) {
+            drawMapUi();
             drawStatus();
             drawRecording();
         }
@@ -830,6 +833,105 @@ void MapView::render() {
             searchSheet.draw(canvas, sheetFont(), theme);
         }
     }
+    drawOverlays();
+    const uint32_t presentStart = nowMs();
+    probe.phase("display");
+    output.present(frame, 0, height);
+    probe.phase("after display");
+    dirty = false;
+    const uint32_t frameEnd = nowMs();
+    if (frameEnd - start > SLOW_LOOP_MS) {
+        logInfo("Slow frame %u ms: lock %u, compose %u, overlays %u, display %u", frameEnd - start, frameLockMs, frameComposeMs,
+            presentStart - start - frameLockMs - frameComposeMs, frameEnd - presentStart);
+    }
+    frameLockMs = 0;
+    frameComposeMs = 0;
+    noteViewComplete(start);
+}
+
+void MapView::endAnimations(uint32_t start) {
+    if (animation.active && (pinching || isFullScreen() || start - animation.startMs >= ZOOM_ANIMATION_MS)) {
+        animation.active = false;
+        io.hold(false);
+        updateWanted();
+        logInfo("Zoom animation: %d frames in %u ms, compose %u ms per frame, slowest frame %u ms (lock %u, compose %u, rest display)",
+            animation.frames, static_cast<unsigned>(start - animation.startMs),
+            animation.frames > 0 ? static_cast<unsigned>(animation.composeMs / animation.frames) : 0, static_cast<unsigned>(animation.slowestFrameMs),
+            static_cast<unsigned>(animation.slowestLockMs), static_cast<unsigned>(animation.slowestComposeMs));
+    }
+    if (turn.active && (pinching || isFullScreen() || start - turn.startMs >= TURN_ANIMATION_MS)) {
+        turn.active = false;
+        io.hold(false);
+        logInfo("Turn to %d degrees: %d frames in %u ms, compose %u ms per frame", static_cast<int>(turn.to), turn.frames,
+            static_cast<unsigned>(start - turn.startMs), turn.frames > 0 ? static_cast<unsigned>(turn.composeMs / turn.frames) : 0);
+        applyBearing(turn.to);
+    }
+}
+
+void MapView::drawAnimationFrame(uint32_t start) {
+    // The cached tiles scaled live, sharp tiles follow when the animation ends or the fingers lift
+    drawScaledMap();
+    if (screen == Screen::Download) {
+        // The frame and its bar stay put while the map scales under them
+        overlay.setBottomInset(downloadView.bar.height);
+        drawDownloadFrame();
+    } else {
+        overlay.setBottomInset(0);
+    }
+    overlay.drawAttributionMark(canvas, *palette);
+    output.present(frame, 0, height);
+    if (animation.active || turn.active) {
+        if (animation.active && nowMs() - start > animation.slowestFrameMs) {
+            animation.slowestFrameMs = nowMs() - start;
+            animation.slowestLockMs = animation.frameLockMs;
+            animation.slowestComposeMs = animation.frameComposeMs;
+        }
+        // The next frame comes with the next loop pass
+        dirty = true;
+    } else {
+        dirty = false;
+    }
+}
+
+void MapView::drawMapUi() {
+    if (isRotated() || turn.active) {
+        drawCompass();
+    }
+    controls.draw(canvas, overlay.font(), theme, positionButton());
+    if (controls.isVisible() && !sheet.isOpen() && !cursorShown) {
+        // The crosshair Enter picks places from: dark with a light rim, like the pointer
+        const auto x = static_cast<float>(width / 2);
+        const auto y = static_cast<float>(height / 2);
+        canvas.line(x - 7.0f, y, x + 7.0f, y, 3.0f, theme.panel);
+        canvas.line(x, y - 7.0f, x, y + 7.0f, 3.0f, theme.panel);
+        canvas.line(x - 6.0f, y, x + 6.0f, y, 1.5f, theme.text);
+        canvas.line(x, y - 6.0f, x, y + 6.0f, 1.5f, theme.text);
+    }
+    if (sheet.isOpen() && searchPinShown) {
+        // The place of the chosen search result
+        double sx;
+        double sy;
+        worldToScreenOffset(lonToWorldX(searchPinLon, zoom) - centerX, latToWorldY(searchPinLat, zoom) - centerY, sx, sy);
+        const auto px = static_cast<float>(sx + width / 2.0);
+        const auto py = static_cast<float>(sy + height / 2.0);
+        canvas.fillCircle(px, py, 7.0f, theme.panel);
+        canvas.fillCircle(px, py, 5.0f, theme.danger);
+    }
+    if (sheet.isOpen()) {
+        sheet.draw(canvas, sheetFont(), theme);
+    }
+    if (routeCard.isOpen()) {
+        routeCard.draw(canvas, sheetFont(), theme);
+    }
+    if (navigating) {
+        navBar.draw(canvas, sheetFont(), theme, width);
+    }
+    if (pickingStart && !menuOpen) {
+        drawPickStart();
+    }
+}
+
+void MapView::drawOverlays() {
     if (menuOpen) {
         if (mainMenuOpen()) {
             menuGrid.draw(canvas, overlay.font(), theme);
@@ -867,18 +969,9 @@ void MapView::render() {
         canvas.line(x, y, x, y + 13.0f, 2.0f, theme.text);
         canvas.line(x, y, x + 9.0f, y + 9.0f, 2.0f, theme.text);
     }
-    const uint32_t presentStart = nowMs();
-    probe.phase("display");
-    output.present(frame, 0, height);
-    probe.phase("after display");
-    dirty = false;
-    const uint32_t frameEnd = nowMs();
-    if (frameEnd - start > SLOW_LOOP_MS) {
-        logInfo("Slow frame %u ms: lock %u, compose %u, overlays %u, display %u", frameEnd - start, frameLockMs, frameComposeMs,
-            presentStart - start - frameLockMs - frameComposeMs, frameEnd - presentStart);
-    }
-    frameLockMs = 0;
-    frameComposeMs = 0;
+}
+
+void MapView::noteViewComplete(uint32_t start) {
     if (!viewTimed && !isFullScreen() && isViewComplete()) {
         viewTimed = true;
         // The first connection to OpenFreeMap stalls the device for about 1.5 s: after the first view, not during it
@@ -978,261 +1071,168 @@ void MapView::saveShot(const char* name) {
     logInfo("Screenshot %s: %s", path, runOnCard(io, save) ? "saved" : "failed");
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The steps of one pass of the map loop (run)
+
+void MapView::pollKeys(uint32_t now) {
+    KeyEvent events[8];
+    const int count = input.readKeys(events, 8);
+    bool enterThisPoll = false;
+    if (count > 0) {
+        markInput(now);
+    }
+    for (int i = 0; i < count; i++) {
+        if (events[i].key == keys::ENTER) {
+            handleEnter(events[i].pressed, now);
+            enterThisPoll = enterThisPoll || events[i].pressed;
+        } else if (events[i].pressed) {
+            handleKey(events[i].key);
+        }
+    }
+    if (enterHeld && !enterThisPoll && now - enterSeenAt > ENTER_RELEASE_MS) {
+        handleEnter(false, now);
+    }
+    if (enterHeld && !enterLong && now - enterDownAt >= LONG_PRESS_MS) {
+        enterLong = true;
+        longClick();
+    }
+    if (input.takeDevicesChanged()) {
+        // The trackball was switched between keyboard and mouse mode
+        controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
+        metrics::setKeyboard(input.hasKeyboard());
+        cursorShown = false;
+        pointerAcceleration.reset();
+        // The download card's key hint comes or goes: laid out again so it does not overlap the buttons
+        if (downloadCard.isOpen()) {
+            fillDownloadCard();
+        }
+        dirty = true;
+    }
+}
+
+void MapView::updateIdle(uint32_t now) {
+    if (!idle && now - lastInputAt >= IDLE_AFTER_MS) {
+        idle = true;
+        worker.setIdle(true);
+        downloader.setIdle(true);
+    }
+    if (!updatesAllowed && now - lastInputAt >= UPDATE_IDLE_MS && now - lastPowerCheck >= POWER_CHECK_MS) {
+        // Outdated regions update quietly once the map has been left alone, on Wi-Fi and with enough power
+        lastPowerCheck = now;
+        if (Downloader::isOnline() && powerAllowsUpdates()) {
+            updatesAllowed = true;
+            downloader.setUpdatesAllowed(true);
+        }
+    }
+    // A replay has no fix event to wake the loop: it is read every second, as a GPS sends fixes
+    if (now - lastLocationCheck >= (replaying ? ReplaySource::STEP_MS : LOCATION_CHECK_MS)) {
+        readLocation();
+    }
+}
+
+void MapView::pollServices(uint32_t now) {
+    pollDownloader(now);
+    if (mainMenuOpen()) {
+        refreshMainMenu();
+    }
+    pollGpxImport();
+    pollSearchIndex(now);
+    recorder.flushIfDue(io, now);
+    if (recorder.state() == TrackRecorder::State::Recording && now - lastRecordingDraw >= 1000 && screen == Screen::Map) {
+        // The elapsed time on the indicator
+        lastRecordingDraw = now;
+        dirty = true;
+    }
+}
+
+void MapView::updateViewState(uint32_t now) {
+    pollLabelFonts();
+    updateLabels(now);
+    downloader.setViewComplete(!isFullScreen() && isViewComplete());
+    hideIdleControls(now);
+    pollElevation();
+    // The hillshade's light follows the turn once it settled (in 45 degree steps): from the top left of the screen
+    if (!turn.active && !animation.active && !pinching && now - lastInputAt >= 300) {
+        worker.setLightStep(terrainLightStep(bearing));
+    }
+    updateSmooth(now);
+    if (browsedCounter.poll(now) && screen == Screen::Download) {
+        dirty = true;
+    }
+    updateWork(now);
+    updateNavigation(now);
+}
+
+void MapView::pollAppEvents() {
+    if (subscribed) {
+        AppEvent event;
+        while (app_event_poll(&appEvents, &event) == ERROR_NONE) {
+            if (event.type == APP_EVENT_CLOSE) {
+                exitRequested = true;
+            }
+        }
+    }
+}
+
+void MapView::expireOverlays(uint32_t now) {
+    if (cursorShown && now - cursorMovedAt >= POINTER_HIDE_MS) {
+        // A pointer that is not used does not cover the map
+        cursorShown = false;
+        controls.setHover(Control::None);
+        dirty = true;
+    }
+    if (worker.takeChanged() && !isFullScreen()) {
+        dirty = true;
+    }
+    if (attribution.update(now)) {
+        dirty = true;
+    }
+    if (static_cast<int32_t>(now - toastUntil) >= 0 && toastUntil != 0) {
+        toastUntil = 0;
+        dirty = true;
+    }
+}
+
+void MapView::waitForNextPass() {
+    // Sleeps until the next input poll, waking early for app events and new positions
+    uint32_t flags = 0;
+    if (animation.active || turn.active) {
+        // Animation frames come as fast as they can be drawn, one tick lets the render lanes on this core go on
+        vTaskDelay(1);
+    } else if (!subscribed && location.bit() == 0) {
+        // Without a claimed bit the wait would return at once
+        vTaskDelay(pdMS_TO_TICKS(LOOP_INTERVAL_MS));
+    } else if (task_event_group_wait_any(&eventGroup, &flags, pdMS_TO_TICKS(LOOP_INTERVAL_MS)) == ERROR_NONE &&
+        (flags & location.bit()) != 0) {
+        readLocation();
+    }
+}
+
 void MapView::run() {
     while (!exitRequested) {
         const uint32_t now = nowMs();
         probe.heartbeat(now);
         probe.phase("keys");
-        KeyEvent events[8];
-        const int count = input.readKeys(events, 8);
-        bool enterThisPoll = false;
-        if (count > 0) {
-            markInput(now);
-        }
-        for (int i = 0; i < count; i++) {
-            if (events[i].key == keys::ENTER) {
-                handleEnter(events[i].pressed, now);
-                enterThisPoll = enterThisPoll || events[i].pressed;
-            } else if (events[i].pressed) {
-                handleKey(events[i].key);
-            }
-        }
-        if (enterHeld && !enterThisPoll && now - enterSeenAt > ENTER_RELEASE_MS) {
-            handleEnter(false, now);
-        }
-        if (enterHeld && !enterLong && now - enterDownAt >= LONG_PRESS_MS) {
-            enterLong = true;
-            longClick();
-        }
-        if (input.takeDevicesChanged()) {
-            // The trackball was switched between keyboard and mouse mode
-            controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
-            metrics::setKeyboard(input.hasKeyboard());
-            cursorShown = false;
-            pointerAcceleration.reset();
-            // The download card's key hint comes or goes: laid out again so it does not overlap the buttons
-            if (downloadCard.isOpen()) {
-                fillDownloadCard();
-            }
-            dirty = true;
-        }
+        pollKeys(now);
         const uint32_t afterKeys = nowMs();
         probe.phase("pointer");
         handleMouse(now);
         handleTouch(now);
         const uint32_t afterInput = nowMs();
-        if (!idle && now - lastInputAt >= IDLE_AFTER_MS) {
-            idle = true;
-            worker.setIdle(true);
-            downloader.setIdle(true);
-        }
-        if (!updatesAllowed && now - lastInputAt >= UPDATE_IDLE_MS && now - lastPowerCheck >= POWER_CHECK_MS) {
-            // Outdated regions update quietly once the map has been left alone, on Wi-Fi and with enough power
-            lastPowerCheck = now;
-            if (Downloader::isOnline() && powerAllowsUpdates()) {
-                updatesAllowed = true;
-                downloader.setUpdatesAllowed(true);
-            }
-        }
-        // A replay has no fix event to wake the loop: it is read every second, as a GPS sends fixes
-        if (now - lastLocationCheck >= (replaying ? ReplaySource::STEP_MS : LOCATION_CHECK_MS)) {
-            readLocation();
-        }
+        updateIdle(now);
         const uint32_t afterLocation = nowMs();
         probe.phase("downloader");
-        pollDownloader(now);
-        if (mainMenuOpen()) {
-            refreshMainMenu();
-        }
-        pollGpxImport();
-        pollSearchIndex(now);
-        recorder.flushIfDue(io, now);
-        if (recorder.state() == TrackRecorder::State::Recording && now - lastRecordingDraw >= 1000 && screen == Screen::Map) {
-            // The elapsed time on the indicator
-            lastRecordingDraw = now;
-            dirty = true;
-        }
+        pollServices(now);
         const uint32_t afterDownloader = nowMs();
         probe.phase("gaps");
         pollGaps(now);
         probe.phase("labels");
-        pollLabelFonts();
-        updateLabels(now);
-        updateSmooth(now);
-        if (browsedCounter.poll(now) && screen == Screen::Download) {
-            dirty = true;
-        }
-        updateWork(now);
-        updateNavigation(now);
+        updateViewState(now);
         probe.phase("loop");
         const uint32_t afterGaps = nowMs();
-
-        if (waitingRoute && navigator.state() != Navigator::State::Searching) {
-            waitingRoute = false;
-        }
-        if (waitingSearchIndex && searchIndexJob.state() != SearchIndexJob::State::Busy) {
-            waitingSearchIndex = false;
-        }
-        if (!waitingIdle && !waitingRoute && !waitingSearchIndex) {
-            const DebugScript::Step step = script.next(now);
-            switch (step.action) {
-                case DebugScript::Action::Key:
-                    markInput(now);
-                    if (step.key == keys::ENTER) {
-                        handleEnter(true, now);
-                        handleEnter(false, now);
-                    } else if (step.key == 'c') {
-                        // "key c" in a debug script is a trackball click in mouse mode
-                        click(true);
-                    } else {
-                        handleKey(step.key);
-                    }
-                    break;
-                case DebugScript::Action::Shot:
-                    render();
-                    saveShot(step.name);
-                    break;
-                case DebugScript::Action::Goto:
-                    centerOn(step.lat, step.lon, step.zoom);
-                    break;
-                case DebugScript::Action::WaitIdle:
-                    waitingIdle = true;
-                    break;
-                case DebugScript::Action::Exit:
-                    exitRequested = true;
-                    break;
-                case DebugScript::Action::Touch:
-                    syntheticTouch = step;
-                    syntheticTouchStart = now;
-                    syntheticTouchActive = true;
-                    syntheticTouchEnded = false;
-                    break;
-                case DebugScript::Action::Squeeze:
-                    squeezeMemory(static_cast<size_t>(step.zoom) * 1024);
-                    break;
-                case DebugScript::Action::RouteBench: {
-                    char path[PATH_MAX_LENGTH];
-                    snprintf(path, sizeof(path), "%s/%s", rootPath, step.name);
-                    navigator.bench(path, step.zoom >= 3 ? RouteProfile::Count : static_cast<RouteProfile>(step.zoom));
-                    break;
-                }
-                case DebugScript::Action::Navigate:
-                    navigateTo(step.lat, step.lon, static_cast<RouteProfile>(std::min(step.zoom, 2)), false);
-                    break;
-                case DebugScript::Action::WaitRoute:
-                    waitingRoute = true;
-                    break;
-                case DebugScript::Action::Replay:
-                    startReplay(step.name, step.values[0], step.values[1], static_cast<uint32_t>(step.values[2]));
-                    break;
-                case DebugScript::Action::SearchIndex:
-                    startSearchIndex(step.zoom != 0, step.name[0] != '\0' ? step.name : nullptr);
-                    break;
-                case DebugScript::Action::WaitSearchIndex:
-                    waitingSearchIndex = true;
-                    break;
-                case DebugScript::Action::FileCheck:
-                    checkFile(step.name);
-                    break;
-                case DebugScript::Action::OffRoute:
-                    if (setOffRouteTuning(step.name, step.values[0])) {
-                        logInfo("Off route: %s = %g", step.name, static_cast<double>(step.values[0]));
-                    } else {
-                        logError("Off route: no value named %s", step.name);
-                    }
-                    break;
-                case DebugScript::Action::Pointer:
-                    cursorX = std::clamp(static_cast<int>(step.values[0]), 0, width - 1);
-                    cursorY = std::clamp(static_cast<int>(step.values[1]), 0, height - 1);
-                    cursorShown = true;
-                    cursorMovedAt = nowMs();
-                    if (mainMenuOpen()) {
-                        menuGrid.hover(cursorX, cursorY);
-                    }
-                    dirty = true;
-                    break;
-                case DebugScript::Action::FollowGpx: {
-                    char path[PATH_MAX_LENGTH];
-                    snprintf(path, sizeof(path), "%s/%s", rootPath, step.name);
-                    followGpxFile(path);
-                    break;
-                }
-                case DebugScript::Action::Restart:
-                    logInfo("debug: restarting the board");
-                    saveView();
-                    vTaskDelay(pdMS_TO_TICKS(300));
-                    esp_restart();
-                    break;
-                case DebugScript::Action::Memory: {
-                    logMemory(step.name);
-                    // The tasks that run now, by their handles (the task list of FreeRTOS is not exported to apps)
-                    struct Named {
-                        const char* name;
-                        TaskHandle_t task;
-                    };
-                    const Named tasks[] = { { "io", io.taskHandle() }, { "render0", worker.laneTask(0) }, { "render1", worker.laneTask(1) },
-                        { "download", downloader.controlTaskHandle() }, { "browse", downloader.browseTaskHandle() },
-                        { "route", navigator.taskHandle() }, { "search", searchTask.taskHandle() }, { "sidx", searchIndexJob.taskHandle() } };
-                    char line[240];
-                    int at = snprintf(line, sizeof(line), "Stack left %s: main %u", step.name,
-                        static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-                    for (const Named& named : tasks) {
-                        if (named.task != nullptr && at < static_cast<int>(sizeof(line)) - 24) {
-                            at += snprintf(line + at, sizeof(line) - static_cast<size_t>(at), ", %s %u", named.name,
-                                static_cast<unsigned>(uxTaskGetStackHighWaterMark(named.task)));
-                        }
-                    }
-                    logInfo("%s", line);
-                    // Into the script log too: the serial line is not always there (silent after a restart, 13 Nov)
-                    scriptLog("Memory %s: internal %u free (largest %u), PSRAM %u free (largest %u)", step.name,
-                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-                        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
-                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
-                        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
-                    scriptLog("%s", line);
-                    break;
-                }
-                case DebugScript::Action::TouchOnly:
-                    input.setTouchOnly(true);
-                    cursorShown = false;
-                    controls.setInputs({ input.hasKeyboard(), input.hasTouch(), input.hasPointer() });
-                    metrics::setKeyboard(input.hasKeyboard());
-                    if (downloadCard.isOpen()) {
-                        fillDownloadCard();
-                    }
-                    dirty = true;
-                    break;
-                default:
-                    break;
-            }
-        } else if (viewTimed && !dirty) {
-            waitingIdle = false;
-        }
-
-        if (subscribed) {
-            AppEvent event;
-            while (app_event_poll(&appEvents, &event) == ERROR_NONE) {
-                if (event.type == APP_EVENT_CLOSE) {
-                    exitRequested = true;
-                }
-            }
-        }
-        if (cursorShown && now - cursorMovedAt >= POINTER_HIDE_MS) {
-            // A pointer that is not used does not cover the map
-            cursorShown = false;
-            controls.setHover(Control::None);
-            dirty = true;
-        }
-        if (worker.takeChanged() && !isFullScreen()) {
-            dirty = true;
-        }
-        if (attribution.update(now)) {
-            dirty = true;
-        }
-        if (static_cast<int32_t>(now - toastUntil) >= 0 && toastUntil != 0) {
-            toastUntil = 0;
-            dirty = true;
-        }
+        pollDebug(now);
+        pollAppEvents();
+        expireOverlays(now);
         const uint32_t beforeRender = nowMs();
         if (dirty && !exitRequested) {
             render();
@@ -1244,18 +1244,7 @@ void MapView::run() {
                 afterKeys - now, afterInput - afterKeys, afterLocation - afterInput, afterDownloader - afterLocation, afterGaps - afterDownloader,
                 beforeRender - afterGaps, done - beforeRender);
         }
-        // Sleeps until the next input poll, waking early for app events and new positions
-        uint32_t flags = 0;
-        if (animation.active || turn.active) {
-            // Animation frames come as fast as they can be drawn, one tick lets the render lanes on this core go on
-            vTaskDelay(1);
-        } else if (!subscribed && location.bit() == 0) {
-            // Without a claimed bit the wait would return at once
-            vTaskDelay(pdMS_TO_TICKS(LOOP_INTERVAL_MS));
-        } else if (task_event_group_wait_any(&eventGroup, &flags, pdMS_TO_TICKS(LOOP_INTERVAL_MS)) == ERROR_NONE &&
-            (flags & location.bit()) != 0) {
-            readLocation();
-        }
+        waitForNextPass();
     }
 }
 

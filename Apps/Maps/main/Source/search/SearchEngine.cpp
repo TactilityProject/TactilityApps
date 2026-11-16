@@ -136,7 +136,8 @@ ResultGroup describeLabel(const char* label, char* type, size_t typeSize) {
             subLength = 0;
         }
         uint8_t id = poiTypeFor(classText, classLength, sub, subLength);
-        if (id != 0) {
+        // A class nobody listed has the generic type, which says only "Place": its own name is better
+        if (id != 0 && id != poiGenericType()) {
             copyText(type, typeSize, poiType(id).label);
         } else {
             const char* source = (sub != nullptr && subLength > 0 && strcmp(sub, "None") != 0) ? sub : classText;

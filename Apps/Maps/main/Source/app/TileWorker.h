@@ -44,6 +44,36 @@ public:
     static constexpr int LANES = 2;
 
     bool start(TileStore* store, IoTask* io, const Palette* palette, int cacheSlots, const char* cacheRoot);
+    /** Another map style: the tiles in memory are drawn again with it. */
+    void setPalette(const Palette* next);
+    /** Hillshade and contours from the regions' height files (Settings, Terrain): the tiles in memory are drawn again. */
+    void setTerrain(bool enabled);
+    bool terrainEnabled() const { return terrainOn.load(); }
+    /** Whether a tile was drawn with heights since terrain was switched on (the map credits the sources then). */
+    bool terrainShown() const { return terrainOn.load() && terrainSeen.load(); }
+    /** The ground height at a point from the regions' height files (on the I/O task); false where there are none. */
+    bool heightAt(double lat, double lon, float& metres);
+    /** The same for several points in one card job (a route's profile), each terrain file opened once in a row. */
+    void heightsAt(const double* lats, const double* lons, int count, float* metres, bool* found);
+    /**
+     * The same with a whole terrain file kept in memory between calls: fileBuffer has TERRAIN_FILE_BYTES, held the
+     * file of heldTile (TileKey z -1 at first), which is updated when another file is read. One card read per file.
+     */
+    bool heightsAt(const double* lats, const double* lons, int count, float* metres, bool* found, uint8_t* fileBuffer, TileKey& heldTile);
+    /** Marked trails from the regions' .trl files (Settings, Marked trails). */
+    void setTrails(bool enabled);
+    /**
+     * Height or trail files came (the z12 tiles listed; count -1: any): looked up again, the tiles they touch drawn
+     * again, showing until then.
+     */
+    void terrainChanged(const TileKey* files = nullptr, int count = -1);
+    /**
+     * The light step of the turned map (terrainLightStep): the hillshade comes from the top left of the screen. Tiles
+     * drawn with another step stay on screen until drawn again.
+     */
+    void setLightStep(int step);
+    /** z12 tiles a drawn tile needed heights of and found none (at most out's 8), for the downloader. */
+    int takeMissingTerrain(TileKey* out, int max);
     /** Where the lanes put the label sections of the prepared tiles they draw. Set before start(). */
     void setLabelStore(LabelStore* store) { labelStore = store; }
     void stop();
@@ -154,6 +184,10 @@ private:
         int index;
         TileRenderer renderer;
         FileBuffer fileBuffer;
+        /** The light step the lane's tile is drawn with. */
+        int drawnLightStep = 0;
+        /** The terrain or trail read of the tile did not start: it is drawn again later. */
+        bool extrasGaveWay = false;
         /**
          * The source file fileBuffer still holds from the last tile, so the tiles drawn magnified from one large
          * low-zoom file read it from the card once instead of once each. Only the lane's own jobs use it, one at a time.
@@ -184,7 +218,32 @@ private:
         std::atomic<bool> trimBuffers;
         /** Whether the buffers were freed for the conversion now waiting; reset once a conversion starts. */
         bool triedTrim;
+        /** Heights of the tile being drawn (allocated the first time terrain is on, about 90 KB of PSRAM). */
+        TerrainOverlay terrain;
+        /** The .trl file of the tile being drawn. */
+        FileBuffer trailFile;
+        /** Set when memory is wanted elsewhere (a route search): the lane frees terrain and trail buffers. */
+        std::atomic<bool> releaseExtras;
     };
+
+    /** Which region holds the height file of a z12 tile, -1 none; MAX_TERRAIN_SLOTS remembered, oldest replaced. */
+    struct TerrainSlot {
+        TileKey tile;
+        int region;
+        uint32_t generation;
+        /** A .trl file instead of a .hgt one. */
+        bool trails;
+    };
+    static constexpr int MAX_TERRAIN_SLOTS = 48;
+    /** Reads the patch of tile into the lane's overlay through the I/O task; false when there is none. */
+    bool loadTerrain(Lane& lane, const TileKey& tile, IoPriority priority);
+    /** On the I/O task: the region with the height file (or with trails, the .trl file) of a z12 tile, or -1. */
+    int terrainRegion(const TileKey& tile, bool trails = false);
+    /** Reads the .trl file of tile's z12 tile for the lane's renderer; false when there is none. */
+    bool loadTrails(Lane& lane, const TileKey& tile, IoPriority priority);
+    static bool terrainJob(IoTask& io, void* context);
+    /** The SD cache folder name of the palette, with 't' when terrain is drawn. Under lock() once started. */
+    void updateStyleId();
 
     struct Conversion {
         TileKey tile;
@@ -233,6 +292,8 @@ private:
         /** The tile's data is on the card but PSRAM had no block this large for it, or 0. */
         size_t noMemoryBytes;
     };
+    /** Runs loadJob on the I/O task; a job that did not start (a prefetch the view left behind) counts as giving way. */
+    void runLoad(IoPriority priority, LoadJob& job);
 
     static void taskMain(void* context);
     void loop(Lane& lane);
@@ -242,7 +303,12 @@ private:
     static bool loadJob(IoTask& io, void* context);
     /** Produces a claimed tile. Returns false when it yielded to more urgent card work and should be tried again. */
     bool produce(Lane& lane, const TileKey& tile, uint16_t* pixels, bool visible);
-    void finish(Lane& lane, const TileKey& tile, bool success, int sourceZoom);
+    void finish(Lane& lane, const TileKey& tile, bool success, int sourceZoom, bool shaded = false);
+    /**
+     * Prepares the original in the lane's file buffer (source, of region) now and draws tile from the copy: true when
+     * drawn. False (nothing changed) when the original is large, memory is short or another lane prepares.
+     */
+    bool prepareAndDraw(Lane& lane, const TileKey& source, int region, const TileKey& tile, uint16_t* pixels, RenderStats& stats, IoPriority priority);
     /** Writes one rendered tile to the SD card cache, only while no tile is waiting to be drawn. */
     bool writeOne(Lane& lane);
     /** Call between lock() and unlock(). */
@@ -282,6 +348,11 @@ private:
     int missingNext = 0;
     /** Ticks when tiles that failed for want of memory are tried again (the missing list is cleared), or 0. */
     TickType_t missingRetryAt = 0;
+    /** Retries of failed tiles in a row without a tile drawn, and the zoom level of the wanted tiles. */
+    static constexpr int MAX_FAILED_RETRIES = 5;
+    static constexpr uint32_t FAILED_RETRY_MS = 10000;
+    int failedRetries = 0;
+    int wantedZoom = -1;
     static constexpr uint32_t MEMORY_RETRY_MS = 5000;
     static constexpr int MAX_PENDING_WRITES = 32;
     TileKey pendingWrites[MAX_PENDING_WRITES] {};
@@ -300,6 +371,11 @@ private:
     int retriedConversionNext = 0;
     int retriedConversionCount = 0;
     int conversionCount = 0;
+    /** Waits for memory in a row with nothing prepared; once preparing gave up for this run. */
+    int conversionWaits = 0;
+    bool conversionsStopped = false;
+    /** Counts a wait for memory; true when preparing stopped (the queue was emptied). */
+    bool noteConversionWait();
     PreparedScanner scanner;
     ScanResult scanResult {};
     bool scanning = false;
@@ -317,6 +393,18 @@ private:
     std::atomic<TickType_t> idleSince = 0;
     std::atomic<TickType_t> conversionsWaitUntil = 0;
     char styleId[8] = "";
+    std::atomic<bool> terrainOn { false };
+    std::atomic<bool> terrainSeen { false };
+    std::atomic<int> lightStep { 0 };
+    static constexpr int MAX_MISSING_TERRAIN = 8;
+    TileKey missingTerrain[MAX_MISSING_TERRAIN] {};
+    int missingTerrainCount = 0;
+    void noteMissingTerrain(const TileKey& tile);
+    std::atomic<bool> trailsOn { false };
+    TerrainSlot terrainSlots[MAX_TERRAIN_SLOTS] {};
+    int terrainSlotCount = 0;
+    int terrainSlotNext = 0;
+    uint32_t terrainGeneration = 1;
     CacheIndex cacheIndex;
     CacheWalker cacheWalker;
     bool walking = false;

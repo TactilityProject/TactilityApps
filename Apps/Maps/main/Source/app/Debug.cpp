@@ -215,6 +215,15 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::FileCheck;
             return step;
         }
+        if ((strcmp(command, "heights") == 0 || strcmp(command, "terrain") == 0) && sscanf(argument, "%47s", step.name) == 1) {
+            // heights <region>: downloads the region's elevation now (as Download heights does)
+            step.action = Action::Heights;
+            return step;
+        }
+        if (strcmp(command, "trails") == 0 && sscanf(argument, "%47s", step.name) == 1) {
+            step.action = Action::Trails;
+            return step;
+        }
         if (strcmp(command, "offroute") == 0 && sscanf(argument, "%47s %f", step.name, &step.values[0]) == 2) {
             step.action = Action::OffRoute;
             return step;

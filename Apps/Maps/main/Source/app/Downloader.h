@@ -69,6 +69,12 @@ public:
         int64_t total;
         uint64_t bytes;
         char message[64];
+        /** Done because another job replaced it (or Pause): not finished, continues from its meta.json later. */
+        bool paused;
+        /** The job fetches heights (done and total count elevation tiles). */
+        bool terrain;
+        /** The job fetches marked trails (done and total count the steps: query, files). */
+        bool trails;
     };
 
     bool start(const char* root, TileStore* store, IoTask* io);
@@ -78,6 +84,32 @@ public:
     bool download(const char* region);
     /** Deletes a region, keeping the tiles another region still needs. */
     bool remove(const char* region);
+    /**
+     * Fetches the region's elevation (AWS Terrain Tiles, z12) and stores a height file next to each z12 tile
+     * (render/TerrainOverlay.h). One request at a time, at most MAX_TERRAIN_TILES. Tiles already on the card are skipped.
+     */
+    bool downloadTerrain(const char* region);
+    /**
+     * Fetches the region's marked trails with one Overpass API query (opt-in, Settings, Marked trails) and stores a
+     * .trl file next to each z12 tile (render/Trails.h). After a 429 or 504 it waits 30 s, at most twice.
+     */
+    bool downloadTrails(const char* region);
+    void setTrailsWithDownloads(bool value) { trailsWithDownloads = value; }
+    /**
+     * Heights follow every finished download and browsed tiles (Settings, Terrain); switched on, the regions downloaded
+     * before get theirs in idle time (a region with all of them has maps/<region>/terrain.ok).
+     */
+    void setTerrainWithDownloads(bool value);
+    /** Whether height files were stored since the last call; the map looks them up again. */
+    /**
+     * Asks for the heights of a z12 tile (Settings, Terrain on): the map drew a tile on screen there without them.
+     * Fetched in idle time into the browsed region; a tile is not asked for twice in a row.
+     */
+    void queueTerrain(const TileKey& tile);
+    /** The z12 tiles of the files into files (MAX_TERRAIN_ARRIVED of them), count -1 when more came. */
+    bool takeTerrainChanged(TileKey* files, int& count);
+    static constexpr int MAX_TERRAIN_ARRIVED = 8;
+    static constexpr int MAX_TERRAIN_TILES = 300;
     /** Brings a region to the newest tile version now, without waiting for idle time (Regions, Update now). */
     bool update(const char* region);
     /**
@@ -130,6 +162,14 @@ public:
     int movedTiles() const;
     /** Idle: no input for a while. Downloaded tiles are only written to the card while idle. */
     void setIdle(bool value) { idle = value; }
+    /** Whether every tile on screen is drawn: idle-time heights wait for it (drawing takes the internal RAM). */
+    void setViewComplete(bool value) {
+        // A view completing with terrain waiting starts it at once
+        if (value && !viewComplete.exchange(true) && terrainWithDownloads && browseTerrainCount > 0 && wake != nullptr) {
+            xSemaphoreGive(wake);
+        }
+        viewComplete = value;
+    }
     TaskHandle_t browseTaskHandle() const { return browseTask; }
     TaskHandle_t controlTaskHandle() const { return controlTask; }
     /** Logs the phases of the first TileJSON request (developer option). */
@@ -140,7 +180,9 @@ private:
         None,
         Download,
         Update,
-        Delete
+        Delete,
+        Terrain,
+        Trails
     };
 
     struct Connection {
@@ -200,6 +242,19 @@ private:
     void controlLoop();
     void runDownload();
     void runDelete();
+    /** Fetches the heights of the region in meta; false when it failed or was cancelled. */
+    /** quiet: an idle-time run, which says nothing unless it fetched heights. */
+    bool runTerrain(const RegionMeta& region, bool quiet = false);
+    /** The heights of the listed z12 tiles that are not on the card yet; the list is reused for the missing ones. */
+    bool runTerrainTiles(const char* regionName, TileKey* tiles, int count, bool quiet);
+    /** Stores a height file (a TerrainFileJob), trying again when the write gave way to the map. */
+    bool storeTerrain(void* job);
+    /** Idle-time heights: browsed areas, and the regions without them after Terrain was switched on. */
+    void runPendingTerrain();
+    /** Takes the control task for idle work when no job waits; releaseIdle() gives it back. */
+    bool claimIdle();
+    void releaseIdle();
+    bool runTrails(const RegionMeta& region);
     /** Updates one region whose tiles are older than the source; manual: not paused by input. */
     void runUpdate(bool manual);
     /** The name of a complete region with an older tile version than the source, or false. */
@@ -227,7 +282,7 @@ private:
     void saveProgress();
     bool readMeta(const char* region, RegionMeta& out);
     bool writeMeta(const RegionMeta& out);
-    void setStatus(State state, const char* message);
+    void setStatus(State state, const char* message, bool paused = false);
     bool claimIndex(int64_t& index, int connectionIndex);
     void finishIndex(int connectionIndex);
 
@@ -254,8 +309,30 @@ private:
     char urlTemplate[160] = "";
     char version[48] = "";
     Connection connections[CONNECTIONS] {};
+    bool terrainWithDownloads = false;
+    std::atomic<bool> terrainSweep { false };
+    uint32_t terrainFailedMs = 0;
+    /** When browsing last ended (ms), 0 before. */
+    std::atomic<uint32_t> browseEndedAt { 0 };
+    /** The last idle-time heights run stopped because map tiles were browsed. */
+    bool terrainYielded = false;
+    static constexpr int BROWSE_TERRAIN = 16;
+    /** z12 tiles whose heights a browsed tile asked for, and the last ones queued (not asked for twice). */
+    TileKey browseTerrain[BROWSE_TERRAIN] {};
+    int browseTerrainCount = 0;
+    TileKey browseTerrainSeen[BROWSE_TERRAIN] {};
+    int browseTerrainSeenNext = 0;
+    bool trailsWithDownloads = false;
+    std::atomic<bool> terrainChanged { false };
+    /** A height or trail file was stored for this z12 tile. */
+    void noteTerrainFile(const TileKey& tile);
+    TileKey terrainArrived[MAX_TERRAIN_ARRIVED] {};
+    int terrainArrivedCount = 0;
+    bool terrainArrivedAll = false;
     ChunkedBody bodies[CONNECTIONS];
     SemaphoreHandle_t tileJsonLock = nullptr;
+    /** Held for each HTTPS request (perform()). */
+    SemaphoreHandle_t transferLock = nullptr;
     SemaphoreHandle_t browseWake = nullptr;
     SemaphoreHandle_t browseStopped = nullptr;
     TaskHandle_t browseTask = nullptr;
@@ -271,6 +348,7 @@ private:
     int browseEmptyNext = 0;
     std::atomic<bool> browsing = false;
     std::atomic<bool> idle = true;
+    std::atomic<bool> viewComplete = false;
     std::atomic<bool> warmUp = false;
     bool timing = false;
     Connection browseConnection {};

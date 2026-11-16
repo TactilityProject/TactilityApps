@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "SearchExtract.h"
 
+#include "../render/PoiTypes.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -13,17 +15,6 @@ constexpr int TILE_UNITS = 4096;
 
 bool textIs(const char* text, size_t length, const char* value) {
     return text != nullptr && strlen(value) == length && memcmp(text, value, length) == 0;
-}
-
-/** Unnamed POI classes that are not worth an index entry (study.py JUNK). */
-bool isJunkClass(const char* text, size_t length) {
-    static const char* const JUNK[] = { "gate", "bollard", "lift_gate", "waste_basket", "bicycle_parking", "information", "shelter", "recycling" };
-    for (const char* junk : JUNK) {
-        if (textIs(text, length, junk)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 /** Classes the study's street matching left out (data.py PATHCLS). */
@@ -201,7 +192,9 @@ bool TileExtractor::beginFeature(const FeatureInfo& info) {
         if (info.layer != Layer::Poi) {
             return false;
         }
-        if (isJunkClass(info.classText, info.classTextLength)) {
+        // Every other unnamed POI is indexed under its category ("shelter", "waste basket", "guidepost"...); an unnamed
+        // barrier (gate, bollard, lift gate) is not a place to go to
+        if (poiClassIsBarrier(info.classText, info.classTextLength)) {
             out->junkPois++;
             return false;
         }

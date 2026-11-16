@@ -42,32 +42,19 @@ void MapView::fillDownloadCard() {
         rows[count] = lines[count];
         count++;
     };
+    // Line 1 says what was fetched, line 2 how big it is and how fast, line 3 the state in words.
+    const char* name = statusTitle[0] != '\0' ? statusTitle : status.region;
     if (running && status.total > 0) {
-        add("%s %d%%, %d of %d tiles", status.state == Downloader::State::Updating ? "Updating" : "Downloading",
-            static_cast<int>(status.done * 100 / status.total), static_cast<int>(status.done), static_cast<int>(status.total));
-        // The size so far against an estimate from the tiles done
-        char done[16];
-        char estimate[16];
-        formatBytes(status.bytes, done, sizeof(done));
+        formatTileLine(name, status.done, status.total, lines[count], sizeof(lines[count]));
+        rows[count] = lines[count];
+        count++;
+        // The time left comes from an estimate of the whole size, made from the tiles done so far
         const uint64_t total = status.done > 0 ? status.bytes * static_cast<uint64_t>(status.total) / static_cast<uint64_t>(status.done) : 0;
-        formatBytes(total, estimate, sizeof(estimate));
-        add("%s of about %s", done, status.done > 0 ? estimate : "?");
         const double rate = transferRate.bytesPerSecond();
-        if (rate > 0.0) {
-            char speed[16];
-            formatBytes(static_cast<uint64_t>(rate), speed, sizeof(speed));
-            const int64_t left = transferRate.secondsLeft(status.bytes, total);
-            char remaining[24] = "";
-            if (left >= 0) {
-                formatDuration(left, remaining, sizeof(remaining));
-            }
-            add("%s/s%s%s", speed, left >= 0 ? ", " : "", left >= 0 ? remaining : "");
-            if (left >= 0) {
-                snprintf(lines[count - 1] + strlen(lines[count - 1]), sizeof(lines[0]) - strlen(lines[count - 1]), " left");
-            }
-        } else {
-            add("Measuring the speed...");
-        }
+        formatSizeLine(status.bytes, rate, rate > 0.0 ? transferRate.secondsLeft(status.bytes, total) : -1, lines[count], sizeof(lines[count]));
+        rows[count] = lines[count];
+        count++;
+        add("%s", status.state == Downloader::State::Updating ? "Updating" : (status.terrain ? "Downloading terrain" : (status.trails ? "Downloading trails" : "Downloading")));
     } else if (status.state == Downloader::State::Connecting) {
         add("%s", status.message);
     } else if (downloader.isBrowsing() && browseTotal > 0) {
@@ -76,9 +63,9 @@ void MapView::fillDownloadCard() {
         add("They are kept in Downloaded maps,");
         add("region \"browsed\".");
     } else if (pausedRegion[0] != '\0') {
-        add("Paused. Resume continues where it stopped.");
+        add("Paused: continues when you press Resume");
     } else {
-        add("%s", status.message[0] != '\0' ? status.message : "Nothing is downloading.");
+        add("%s", status.state == Downloader::State::Done && !status.paused ? "Done" : status.message[0] != '\0' ? status.message : "Nothing is downloading.");
     }
     // Tiles fetched while browsing can't be paused or cancelled from the card, only the card closed
     const bool browsing = !running && status.state != Downloader::State::Connecting && downloader.isBrowsing() && browseTotal > 0;
@@ -140,8 +127,39 @@ void MapView::pollDownloader(uint32_t now) {
         worker.tilesArrived(arrived, arrivedCount);
         dirty = true;
     }
-    if (!resumeChecked) {
-        // A download that was interrupted continues when the map opens again
+    // The arrived list again for the z12 tiles of new files (no more room on this stack)
+    static_assert(Downloader::MAX_TERRAIN_ARRIVED <= Downloader::MAX_ARRIVED);
+    int terrainFileCount = 0;
+    if (downloader.takeTerrainChanged(arrived, terrainFileCount)) {
+        // Collected while a heights run goes on: its files redraw the tiles once, not once per file (each redraw also
+        // held up the next request, which waits for a complete view)
+        if (terrainFileCount < 0 || pendingTerrainCount + terrainFileCount > MAX_PENDING_TERRAIN) {
+            pendingTerrainAll = true;
+        } else {
+            for (int i = 0; i < terrainFileCount; i++) {
+                pendingTerrain[pendingTerrainCount++] = arrived[i];
+            }
+        }
+        if (pendingTerrainSince == 0) {
+            pendingTerrainSince = now == 0 ? 1 : now;
+        }
+    }
+    const bool heightsRunning = lastStatus.terrain && lastStatus.state == Downloader::State::Downloading;
+    if (pendingTerrainSince != 0 && (!heightsRunning || now - pendingTerrainSince >= TERRAIN_REDRAW_MAX_MS)) {
+        // The tiles they touch are drawn again with them, the old ones show until then
+        worker.terrainChanged(pendingTerrain, pendingTerrainAll ? -1 : pendingTerrainCount);
+        pendingTerrainCount = 0;
+        pendingTerrainAll = false;
+        pendingTerrainSince = 0;
+        dirty = true;
+    }
+    // Tiles drawn without heights ask for them (the downloader does nothing while Terrain is off)
+    const int missingCount = worker.takeMissingTerrain(arrived, Downloader::MAX_ARRIVED);
+    for (int i = 0; i < missingCount; i++) {
+        downloader.queueTerrain(arrived[i]);
+    }
+    if (!resumeChecked && !downloader.isBusy()) {
+        // A download that was interrupted continues when the map opens again (never in place of a running one)
         resumeChecked = true;
         int unfinished = -1;
         RegionMeta meta {};
@@ -220,13 +238,15 @@ void MapView::pollDownloader(uint32_t now) {
                 retryAt = now + RETRY_AFTER_MS;
                 logInfo("Download of %s failed, trying again in %u s (%d of %d)", status.region, RETRY_AFTER_MS / 1000, retries, MAX_RETRIES);
             }
-        } else if (status.state == Downloader::State::Done && (lastStatus.state == Downloader::State::Downloading ||
+        } else if (status.state == Downloader::State::Done && !status.paused && (lastStatus.state == Downloader::State::Downloading ||
             lastStatus.state == Downloader::State::Connecting)) {
             retries = 0;
         }
         // After a finished download the next unfinished region continues, but not one paused on purpose
-        // (a short download can go from Connecting straight to Done between two polls)
-        if (status.state == Downloader::State::Done && (lastStatus.state == Downloader::State::Downloading ||
+        // (a short download can go from Connecting straight to Done between two polls). A job that ended because a
+        // new one replaced it is not finished: resuming then would cancel the new job (seen 15 Nov: two regions
+        // took turns cancelling each other)
+        if (status.state == Downloader::State::Done && !status.paused && (lastStatus.state == Downloader::State::Downloading ||
             lastStatus.state == Downloader::State::Connecting)) {
             resumeChecked = false;
         }

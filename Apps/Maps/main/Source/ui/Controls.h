@@ -16,6 +16,8 @@ enum class Control : uint8_t {
     Position,
     /** Opens the search, like the key "/"; sits under the menu button. Last in the enum so the focus order of the others stays. */
     Search,
+    /** Switches the map style (Standard, Outdoor), like the key "L"; under the search button, only on colour displays. */
+    Style,
     Count,
     None = Count
 };
@@ -54,6 +56,8 @@ public:
     /** top: the height of a bar along the top edge (navigation), the menu button goes below it. */
     void layout(int width, int height, int scaleBarTop, int top = 0);
     void setInputs(const InputKinds& kinds) { inputs = kinds; }
+    /** Whether the map style button shows (colour displays: a 1-bit or grey display has one style). */
+    void setStyleButton(bool shown) { styleButton = shown; }
     const InputKinds& inputKinds() const { return inputs; }
     /** Focus mode: no touch and no pointer, the arrow keys move between the buttons. */
     bool usesFocus() const { return !inputs.touch && !inputs.pointer; }
@@ -80,6 +84,7 @@ public:
     void draw(Canvas& canvas, Font& font, const UiTheme& theme, PositionButton position);
 
 private:
+    bool styleButton = true;
     void drawIcon(Canvas& canvas, Control control, const Rect& rect, uint16_t color, PositionButton position, const UiTheme& theme);
 
     int size = SIZE;

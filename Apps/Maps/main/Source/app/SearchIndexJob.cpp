@@ -35,7 +35,10 @@ constexpr uint32_t SORT_BUFFER = 64 * 1024;
 /** Files the build keeps open at once: the card's FAT mount allows four for the whole system. */
 constexpr int REAL_FILES = 2;
 /** The stamp's format: change it to rebuild every index (e.g. after a change of the builder's output). */
-constexpr char STAMP_VERSION[] = "sidx2";   // sidx2 (0.6.0): streets named only by name_int are in
+constexpr char STAMP_VERSION[] = "sidx4";   // sidx2 (0.6.0): streets named only by name_int are in; sidx3 (0.9.0): every
+                                            // unnamed POI but the barriers is in (shelters, guideposts, waste baskets...);
+                                            // sidx4 (0.9.0): a block's house numbers also match streets of the tiles
+                                            // around it (margin tiles)
 
 template <typename Function>
 bool onCard(IoTask& io, Function& function) {
@@ -719,6 +722,21 @@ bool SearchIndexJob::buildRegion(const char* region) {
             }
             if (blockTiles.size() == 0) {
                 continue;
+            }
+            if (blocks) {
+                // The ring of tiles around the block, for their streets only: a house number next to the border finds
+                // its street across it (search/SearchStream.h, StreamTile::margin)
+                const int32_t left = minX + bx * BLOCK_TILES;
+                const int32_t top = minY + by * BLOCK_TILES;
+                for (const StreamTile& t : list.tiles) {
+                    const bool inside = t.x >= left && t.x < left + BLOCK_TILES && t.y >= top && t.y < top + BLOCK_TILES;
+                    const bool ring = t.x >= left - 1 && t.x <= left + BLOCK_TILES && t.y >= top - 1 && t.y <= top + BLOCK_TILES;
+                    if (ring && !inside) {
+                        StreamTile margin = t;
+                        margin.margin = true;
+                        blockTiles.push(margin);
+                    }
+                }
             }
             char outPath[PATH_MAX_LENGTH];
             char temporary[PATH_MAX_LENGTH];

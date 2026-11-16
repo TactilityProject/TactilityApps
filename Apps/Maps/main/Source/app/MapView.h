@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "../platform/Version.h"
 #include "BinFontText.h"
 #include "Debug.h"
 #include "DisplayOutput.h"
 #include "Downloader.h"
+#include "Haptic.h"
+#include "ElevationJob.h"
 #include "GpxImport.h"
 #include "Input.h"
 #include "IoTask.h"
@@ -25,6 +28,8 @@
 #include "../render/LabelLayout.h"
 #include "../tiles/DownloadPlan.h"
 #include "../tiles/RegionCatalog.h"
+#include "../ui/CatalogBrowser.h"
+#include "../ui/SettingsList.h"
 #include "../tiles/RegionMeta.h"
 #include "../tiles/TileStore.h"
 #include "../ui/Canvas.h"
@@ -57,7 +62,6 @@ namespace maps {
 
 struct AffineScratch;
 
-#define APP_VERSION "0.6.0"
 constexpr const char* APP_ID = "tactility.maps";
 
 /**
@@ -153,20 +157,11 @@ private:
         RouteStart
     };
 
-    enum class SettingItem : uint8_t {
-        SdCache,
-        PreparedTiles,
-        SmoothPinch,
-        BrowseDownload,
-        PointerSpeed,
-        Labels,
-        LatinNames,
-        RouteMode,
-        Count
-    };
 
     // MapView.cpp: the map itself
     void centerOn(double lat, double lon, int zoom);
+    /** Appends " · 812 m" (the ground height) to a sheet's coordinates where heights are on the card. */
+    void addHeight(double lat, double lon, char* coordinates, size_t size);
     /**
      * "Navigate here": a route to lat, lon with the profile. With a GPS fix it starts there; without one the app asks
      * where it starts (on the map, the screen centre, or an approximate position), unless ask is false (debug scripts:
@@ -221,12 +216,17 @@ private:
     /** Sets the bearing at once; want false leaves the tile list alone (live turning with two fingers). */
     void applyBearing(float degrees, bool want = true);
     static constexpr float TURN_ANIMATION_MS = 300.0f;
+    /** The map buttons hide after this long without input; a finished download's card closes this long after. */
+    static constexpr uint32_t CONTROLS_HIDE_MS = 10000;
+    static constexpr uint32_t CARD_CLOSE_MS = 3000;
+    uint32_t downloadCardIdleSince = 0;
+    void hideIdleControls(uint32_t now);
     /** Q and E turn the map by this much. */
     static constexpr float KEY_TURN_DEGREES = 15.0f;
     /** How far two fingers must twist before a turned map turns with them. */
     static constexpr float PINCH_TURN_START = 15.0f;
     /** The same for a map that is north up, so a pinch rarely turns it by accident. */
-    static constexpr float PINCH_TURN_START_NORTH = 45.0f;
+    static constexpr float PINCH_TURN_START_NORTH = 35.0f;
     bool isRotated() const { return bearing != 0.0f; }
     /** A screen offset from the screen centre as a world offset at the current zoom, and back. */
     void screenToWorldOffset(double sx, double sy, double& wx, double& wy) const;
@@ -237,6 +237,55 @@ private:
     Rect compassRect() const;
     void drawCompass();
     void render();
+    /** The steps of begin(). */
+    bool openDisplay(Device* display);
+    /** Settings, saved view, regions, fonts and the debug script, read on the I/O task. */
+    void loadSavedState(const char* root, const char* dataPath);
+    /** gpx/ at the top of the data volume (the SD card), where users drop their files. */
+    void findGpxFolder();
+    void startLabels(const char* root);
+    /** Input, buttons, downloader, route search and the stall probes. */
+    void startServices(const char* root);
+    /**
+     * The topmost overlay, which gets taps, clicks and long clicks before anything under it: in the order they are
+     * drawn (prompt over dialog over menu over the cards over the search sheet); Screen when none is open.
+     */
+    enum class InputLayer : uint8_t {
+        Prompt,
+        Dialog,
+        Menu,
+        DownloadCard,
+        WorkCard,
+        SearchSheet,
+        Screen
+    };
+    InputLayer inputLayer() const;
+    /** The parts of a frame (render). */
+    void endAnimations(uint32_t start);
+    /** While pinching, zooming or turning: the cached tiles scaled live, with the frame of the download screen. */
+    void drawAnimationFrame(uint32_t start);
+    /** On the map screen: compass, buttons, crosshair, search pin, sheet, route card, navigation bar, start picking. */
+    void drawMapUi();
+    /** Over every screen: menus, dialog, prompt and keyboard, cards, toast, pointer. */
+    void drawOverlays();
+    /** The first complete frame of a view: timing and memory in the log, and browsing gets ready. */
+    void noteViewComplete(uint32_t start);
+    /** One pass of the map loop (run), step by step. */
+    void pollKeys(uint32_t now);
+    void updateIdle(uint32_t now);
+    /** Downloader, GPX import, search index, track recorder: what other tasks report. */
+    void pollServices(uint32_t now);
+    /** Gaps, labels, the view's state for the downloader, buttons, light, smoothing, work, navigation. */
+    void updateViewState(uint32_t now);
+    void pollAppEvents();
+    /** The pointer, toasts and the attribution that time out, and tiles that came. */
+    void expireOverlays(uint32_t now);
+    /** Sleeps until the next input poll, waking early for app events and new positions. */
+    void waitForNextPass();
+    /** MapDebug.cpp: the debug script's next step when it waits for none. */
+    void pollDebug(uint32_t now);
+    /** MapDebug.cpp: one step of the debug script (Debug.h). */
+    void runDebugStep(const DebugScript::Step& step, uint32_t now);
     void drawMap();
     /** Places the labels of the tiles on screen for the current view, when it settled or new label data came. */
     void placeLabels();
@@ -340,6 +389,8 @@ private:
     void openSettings();
     void fillSettingList();
     void toggleSetting(SettingItem item);
+    /** Standard <-> Outdoor (the style button, L), saved with the settings. */
+    void switchMapStyle();
     void openAbout();
     void scrollAbout(int lines);
     void drawAbout();
@@ -357,6 +408,10 @@ private:
     void openCatalog(int parent);
     void chooseCatalog();
     void catalogBack();
+    /** Lays the catalog's list out and shows it. */
+    void presentCatalog();
+    /** Every catalog region whose name holds the text (case and accents ignored). */
+    void openCatalogResults(const char* query);
     /** Works out the highest max zoom of a catalog region within the download limits, and asks to download it. */
     void planCatalogRegion(int index);
     void startCatalogDownload();
@@ -447,6 +502,10 @@ private:
     DisplayOutput output;
     IoTask io;
     Input input;
+    /** The vibration motor, on boards that have one: a pulse before each turn, two when off the route or arrived. */
+    Haptic haptic;
+    /** The step whose turn was felt already (-2: none). */
+    int hapticStep = -2;
     BinFontText normalFont;
     BinFontText smallFont;
     BinFontText largeFont;
@@ -562,13 +621,11 @@ private:
     /** The folder of the region whose actions popup is open: the list can be rebuilt while it is open. */
     char actionRegion[REGION_NAME_MAX + 1] {};
     ListView settingList;
-    ListView catalogList;
     char catalogPath[PATH_MAX_LENGTH] = "";
     FileBuffer catalogFile;
     RegionCatalog catalog;
-    /** The region whose children the list shows, -1 for the continents; the row of "All of ..." when it has one. */
-    int catalogParent = -1;
-    int catalogRows[ListView::MAX_ITEMS] {};
+    /** The catalog's list: continents, a region's parts, search results. */
+    CatalogBrowser catalogBrowser;
     struct CatalogPlan {
         int region;
         int maxZoom;
@@ -617,6 +674,9 @@ private:
     int gpxFileCount = 0;
     ListView gpxList;
     GpxImport gpxImport;
+    /** The elevation profile of the route on the card (Settings, Terrain). */
+    ElevationJob elevationJob;
+    void pollElevation();
     /** The offline search indexes, built in idle time (M6). */
     SearchIndexJob searchIndexJob;
     /** A build is due: at start, and after a download or an update ended. */
@@ -636,13 +696,15 @@ private:
         Update,
         CatalogDownload,
         DeleteWaypoint,
-        CancelDownload
+        CancelDownload,
+        Terrain
     };
     DialogPurpose dialogPurpose = DialogPurpose::Delete;
     TextPrompt prompt;
     enum class PromptPurpose : uint8_t {
         RenameRegion,
-        RenameWaypoint
+        RenameWaypoint,
+        CatalogSearch
     };
     PromptPurpose promptPurpose = PromptPurpose::RenameRegion;
     int aboutScroll = 0;
@@ -744,6 +806,13 @@ private:
     bool syntheticTouchEnded = false;
     void syntheticTouchState(uint32_t now, TouchState& state);
     void updateSmooth(uint32_t now);
+    /** Height and trail files that arrived and are not drawn yet (pollDownloader). */
+    static constexpr int MAX_PENDING_TERRAIN = 16;
+    static constexpr uint32_t TERRAIN_REDRAW_MAX_MS = 8000;
+    TileKey pendingTerrain[MAX_PENDING_TERRAIN] {};
+    int pendingTerrainCount = 0;
+    bool pendingTerrainAll = false;
+    uint32_t pendingTerrainSince = 0;
     /** The bearing the labels were placed for. */
     float labelBearing = 0.0f;
     Attribution attribution;

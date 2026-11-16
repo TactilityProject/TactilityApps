@@ -2,6 +2,7 @@
 #include "WaypointSheet.h"
 
 #include "Metrics.h"
+#include "TextEdit.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -194,23 +195,7 @@ void WaypointSheet::append(uint32_t codepoint) {
         value[0] = '\0';
         selectedAll = false;
     }
-    char bytes[4];
-    int count = 0;
-    if (codepoint < 0x80) {
-        bytes[count++] = static_cast<char>(codepoint);
-    } else if (codepoint < 0x800) {
-        bytes[count++] = static_cast<char>(0xC0 | (codepoint >> 6));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-        bytes[count++] = static_cast<char>(0xE0 | (codepoint >> 12));
-        bytes[count++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-    const size_t length = strlen(value);
-    if (length + static_cast<size_t>(count) < sizeof(value)) {
-        memcpy(value + length, bytes, static_cast<size_t>(count));
-        value[length + static_cast<size_t>(count)] = '\0';
-    }
+    utf8Append(value, sizeof(value), codepoint);
 }
 
 void WaypointSheet::erase() {
@@ -219,14 +204,7 @@ void WaypointSheet::erase() {
         selectedAll = false;
         return;
     }
-    size_t length = strlen(value);
-    while (length > 0 && (static_cast<unsigned char>(value[length - 1]) & 0xC0) == 0x80) {
-        length--;
-    }
-    if (length > 0) {
-        length--;
-    }
-    value[length] = '\0';
+    utf8EraseLast(value);
 }
 
 WaypointSheet::Button WaypointSheet::handleKey(uint32_t key) {

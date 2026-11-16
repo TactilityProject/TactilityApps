@@ -139,7 +139,29 @@ uint8_t PreparedScanner::partsNeeded(const char* preparedPath, const TileKey& ti
     if (split != nullptr) {
         *split = header.version < PREPARED_SPLIT_VERSION && isPreparedReadable(header, tile, sourceSize);
     }
-    return preparedPartsNeeded(&header, tile, sourceSize);
+    uint8_t parts = preparedPartsNeeded(&header, tile, sourceSize);
+    // The header says the companions are current, but one may have been deleted since (by hand, or a card fault):
+    // a .prt whose .prg is gone gave no route there and was never made again
+    const size_t length = strlen(preparedPath);
+    if (header.version >= PREPARED_SPLIT_VERSION && length > 4 && length < PATH_MAX_LENGTH && strcmp(preparedPath + length - 4, ".prt") == 0) {
+        char companion[PATH_MAX_LENGTH];
+        memcpy(companion, preparedPath, length + 1);
+        const uint8_t checks[2] = { PART_LABELS, PART_GRAPH };
+        const char* endings[2] = { "prl", "prg" };
+        for (int i = 0; i < 2; i++) {
+            if ((parts & checks[i]) != 0 || (checks[i] == PART_GRAPH && (!tileHasGraph(tile.z) || PREPARED_GRAPH_FORMAT_VERSION == 0))) {
+                continue;
+            }
+            memcpy(companion + length - 3, endings[i], 3);
+            FILE* companionFile = fopen(companion, "rb");
+            if (companionFile == nullptr) {
+                parts |= checks[i];
+            } else {
+                fclose(companionFile);
+            }
+        }
+    }
+    return parts;
 }
 
 bool PreparedScanner::listColumns(const TileStore& store) {

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TouchKeyboard.h"
 
+#include "TextEdit.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -44,18 +46,8 @@ uint32_t upperCase(uint32_t code) {
 
 /** Writes a code point as UTF-8 into out (at least 5 bytes). */
 void encode(uint32_t code, char* out) {
-    int n = 0;
-    if (code < 0x80) {
-        out[n++] = static_cast<char>(code);
-    } else if (code < 0x800) {
-        out[n++] = static_cast<char>(0xC0 | (code >> 6));
-        out[n++] = static_cast<char>(0x80 | (code & 0x3F));
-    } else {
-        out[n++] = static_cast<char>(0xE0 | (code >> 12));
-        out[n++] = static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-        out[n++] = static_cast<char>(0x80 | (code & 0x3F));
-    }
-    out[n] = '\0';
+    out[0] = '\0';
+    utf8Append(out, 5, code);
 }
 
 } // namespace

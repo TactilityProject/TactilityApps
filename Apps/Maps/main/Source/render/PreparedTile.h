@@ -45,7 +45,7 @@ namespace maps {
  *   <y>.prg  the routing graph of a z14 tile (RouteGraph.h). Read only when routing.
  * Versions 2-4 still draw, with their labels, until the tile is split in idle time.
  */
-constexpr uint16_t PREPARED_FORMAT_VERSION = 5;
+constexpr uint16_t PREPARED_FORMAT_VERSION = 6;
 /** The first version without labels inside: its labels are in the .prl file. */
 constexpr uint16_t PREPARED_SPLIT_VERSION = 5;
 constexpr uint16_t PREPARED_MIN_READABLE_VERSION = 2;
@@ -68,10 +68,16 @@ constexpr uint16_t PREPARED_FLAG_DEFLATED = 1;
  *           u32 A count, u32 A size, u32 A stored size, u32 B count, u32 B size, u32 B stored size,
  *           char source version[32]
  */
-constexpr uint8_t PREPARED_LABEL_FORMAT_VERSION = 2;
+/**
+ * Version 3 (0.8.6): every POI is stored, named or not, with the type id of PoiTypes.h (a class nobody listed gets the
+ * generic type), and the mountain_peak records hold a type id (peak, volcano, saddle, cliff) and the height in their
+ * name ("Vysoka 754 m"), so version 2 files are made again.
+ */
+constexpr uint8_t PREPARED_LABEL_FORMAT_VERSION = 3;
 constexpr size_t PREPARED_LABEL_HEADER_SIZE = 80;
 /** The version of the routing graph file (route/RouteGraph.h), 0 while the app makes none. */
-constexpr uint8_t PREPARED_GRAPH_FORMAT_VERSION = 1;
+/** 2 (0.9.0): the unpaved flag on edges; graphs of version 1 are made again in idle time. */
+constexpr uint8_t PREPARED_GRAPH_FORMAT_VERSION = 2;
 /** Only tiles of this zoom have a routing graph. */
 constexpr int GRAPH_ZOOM = 14;
 /**
@@ -242,6 +248,8 @@ private:
     ByteWriter poiRecords;
     ByteWriter numberRecords;
     size_t poiBytes = 0;
+    /** The name and Latin name of a peak with its height appended; the feature's text points here while it is written. */
+    char peakText[2][64 + 16] {};
     uint32_t labelCount = 0;
     uint32_t numberCount = 0;
     bool keepGeometry = true;

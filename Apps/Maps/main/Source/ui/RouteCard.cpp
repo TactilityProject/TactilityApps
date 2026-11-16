@@ -109,7 +109,9 @@ void RouteCard::layout(int width, int height, Font& font) {
     const int buttonHeight = metrics::buttonHeight(line);
     // With a keyboard one more muted line lists the shortcuts
     const int hintHeight = metrics::hasKeyboard() ? line + 2 : 0;
-    int cardHeight = PADDING + line + 4 + noteLineCount * line + (noteLineCount > 0 ? 4 : 0) + hintHeight + buttonHeight + PADDING;
+    // The profile: a line with the climb, then the chart under it
+    const int chartHeight = elevation != nullptr ? line + CHART_HEIGHT + 6 : 0;
+    int cardHeight = PADDING + line + 4 + noteLineCount * line + (noteLineCount > 0 ? 4 : 0) + chartHeight + hintHeight + buttonHeight + PADDING;
     // A low screen: the card must stay under the mode bar, so the hint and then the note lines go
     const int cardRoom = height - 4 - (MODE_TOP + modeHeight() + 8) - 2;
     showHint = hintHeight > 0;
@@ -117,13 +119,20 @@ void RouteCard::layout(int width, int height, Font& font) {
         cardHeight -= hintHeight;
         showHint = false;
     }
+    // Then the note lines, and the chart last: it says more than the note on a low screen
+    showChart = chartHeight > 0;
     while (cardHeight > cardRoom && noteLineCount > 0) {
         noteLineCount--;
         cardHeight -= line + (noteLineCount == 0 ? 4 : 0);
     }
+    if (cardHeight > cardRoom && showChart) {
+        cardHeight -= chartHeight;
+        showChart = false;
+    }
     frame = { (width - cardWidth) / 2, height - cardHeight - 4, cardWidth, cardHeight };
     const int buttonWidth = (cardWidth - 3 * PADDING) / 2;
     const int buttonY = frame.y + cardHeight - PADDING - buttonHeight;
+    chart = showChart ? Rect { frame.x + PADDING, buttonY - (showHint ? hintHeight : 0) - CHART_HEIGHT - 4, cardWidth - 2 * PADDING, CHART_HEIGHT } : Rect {};
     for (int i = 0; i < 2; i++) {
         buttons[i] = { frame.x + PADDING + i * (buttonWidth + PADDING), buttonY, buttonWidth, buttonHeight };
     }
@@ -132,6 +141,34 @@ void RouteCard::layout(int width, int height, Font& font) {
     for (int i = 0; i < MODE_COUNT; i++) {
         modes[i] = { modeBar.x + 4 + i * (MODE_WIDTH + 4), modeBar.y + 4, MODE_WIDTH, modeHeight() };
     }
+}
+
+void RouteCard::drawElevation(Canvas& canvas, Font& font, const UiTheme& theme) {
+    const ElevationProfile& p = *elevation;
+    char text[64];
+    snprintf(text, sizeof(text), "Climb %d m, descent %d m (%d-%d m)", static_cast<int>(p.ascentM + 0.5f), static_cast<int>(p.descentM + 0.5f),
+        static_cast<int>(p.lowM + 0.5f), static_cast<int>(p.highM + 0.5f));
+    drawClippedText(canvas, font, chart.x, chart.y - font.lineHeight() - 2, text, chart.width, theme.text);
+    // The heights from the lowest to the highest (at least 50 m tall, so a flat route stays flat), filled below the line
+    const float span = p.highM - p.lowM > 50.0f ? p.highM - p.lowM : 50.0f;
+    const float length = p.distanceM[p.count - 1] > 0.0f ? p.distanceM[p.count - 1] : 1.0f;
+    float lastX = 0.0f;
+    float lastY = 0.0f;
+    for (int i = 0; i < p.count; i++) {
+        const float x = static_cast<float>(chart.x) + p.distanceM[i] / length * static_cast<float>(chart.width - 1);
+        const float y = static_cast<float>(chart.y + chart.height - 1) - (p.heightM[i] - p.lowM) / span * static_cast<float>(chart.height - 2);
+        if (i > 0) {
+            for (int column = static_cast<int>(lastX); column <= static_cast<int>(x); column++) {
+                const float t = x > lastX ? (static_cast<float>(column) - lastX) / (x - lastX) : 1.0f;
+                const int top = static_cast<int>(lastY + (y - lastY) * t);
+                canvas.fillRect(column, top, 1, chart.y + chart.height - top, theme.accent, 90);
+            }
+            canvas.line(lastX, lastY, x, y, 1.5f, theme.accent);
+        }
+        lastX = x;
+        lastY = y;
+    }
+    canvas.fillRect(chart.x, chart.y + chart.height, chart.width, 1, theme.border);
 }
 
 void RouteCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
@@ -157,6 +194,11 @@ void RouteCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     for (int i = 0; i < noteLineCount; i++) {
         drawClippedText(canvas, font, frame.x + PADDING, textY, noteLines[i], textWidth, theme.muted);
         textY += line;
+    }
+    if (showChart && elevation != nullptr) {
+        drawElevation(canvas, font, theme);
+        // The hint goes under the chart and its line
+        textY += line + CHART_HEIGHT + 6;
     }
     if (showHint) {
         drawClippedText(canvas, font, frame.x + PADDING, textY, "W/B/C: mode  S: start  P: profile", textWidth, theme.muted);

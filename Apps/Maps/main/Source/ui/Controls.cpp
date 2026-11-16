@@ -28,6 +28,7 @@ void Controls::layout(int width, int height, int scaleBarTop, int top) {
     rects[static_cast<int>(Control::ZoomIn)] = { width - EDGE - SIZE, height / 2 - SIZE - 3, SIZE, SIZE };
     rects[static_cast<int>(Control::ZoomOut)] = { width - EDGE - SIZE, height / 2 + 3, SIZE, SIZE };
     rects[static_cast<int>(Control::Search)] = { EDGE, top + EDGE + SIZE + EDGE, SIZE, SIZE };
+    rects[static_cast<int>(Control::Style)] = styleButton ? Rect { EDGE, top + EDGE + 2 * (SIZE + EDGE), SIZE, SIZE } : Rect {};
     const int positionTop = std::max(height / 2 + SIZE + 12, scaleBarTop - EDGE - SIZE);
     rects[static_cast<int>(Control::Position)] = { width - EDGE - SIZE, positionTop, SIZE, SIZE };
 }
@@ -52,6 +53,9 @@ Control Controls::hit(int x, int y) const {
     // A few pixels of slack around each button, fingers are wider than 32 px
     for (int i = 0; i < static_cast<int>(Control::Count); i++) {
         const Rect& r = rects[i];
+        if (r.width == 0) {
+            continue;
+        }
         if (x >= r.x - 4 && y >= r.y - 3 && x < r.x + r.width + 4 && y < r.y + r.height + 3) {
             return static_cast<Control>(i);
         }
@@ -71,6 +75,8 @@ char Controls::keyOf(Control control) {
             return 'G';
         case Control::Search:
             return '/';
+        case Control::Style:
+            return 'L';
         default:
             return 0;
     }
@@ -92,6 +98,9 @@ Control Controls::controlForKey(uint32_t key) {
             return Control::Position;
         case '/':
             return Control::Search;
+        case 'l':
+        case 'L':
+            return Control::Style;
         default:
             return Control::None;
     }
@@ -99,7 +108,11 @@ Control Controls::controlForKey(uint32_t key) {
 
 void Controls::moveFocus(int steps) {
     const int count = static_cast<int>(Control::Count);
-    const int next = ((static_cast<int>(focus) + steps) % count + count) % count;
+    int next = ((static_cast<int>(focus) + steps) % count + count) % count;
+    if (!styleButton && static_cast<Control>(next) == Control::Style) {
+        // Not shown: skipped
+        next = ((next + (steps < 0 ? -1 : 1)) % count + count) % count;
+    }
     focus = static_cast<Control>(next);
 }
 
@@ -144,6 +157,17 @@ void Controls::drawIcon(Canvas& canvas, Control control, const Rect& r, uint16_t
             canvas.ring(cx - 2.0f * k, cy - 2.0f * k, 5.5f * k, 2.2f * k, color);
             canvas.line(cx + 2.0f * k, cy + 2.0f * k, cx + 8.0f * k, cy + 8.0f * k, 2.6f * k, color);
             break;
+        case Control::Style: {
+            // Layers: two flat diamonds, one above the other
+            for (const float dy : { -3.0f, 3.0f }) {
+                const float y = cy + dy * k;
+                canvas.line(cx - 8.0f * k, y, cx, y - 4.0f * k, 2.0f * k, color);
+                canvas.line(cx, y - 4.0f * k, cx + 8.0f * k, y, 2.0f * k, color);
+                canvas.line(cx + 8.0f * k, y, cx, y + 4.0f * k, 2.0f * k, color);
+                canvas.line(cx, y + 4.0f * k, cx - 8.0f * k, y, 2.0f * k, color);
+            }
+            break;
+        }
         default:
             break;
     }
@@ -157,6 +181,9 @@ void Controls::draw(Canvas& canvas, Font& font, const UiTheme& theme, PositionBu
     for (int i = 0; i < static_cast<int>(Control::Count); i++) {
         const auto control = static_cast<Control>(i);
         const Rect& r = rects[i];
+        if (r.width == 0) {
+            continue;
+        }
         const bool filled = control == Control::Position && (position == PositionButton::Following || position == PositionButton::FollowingHeading);
         const bool focusedNow = (usesFocus() && control == focus) || control == hover;
         canvas.fillRoundRect(r.x, r.y, r.width, r.height, 7, filled ? theme.accent : theme.panel, filled ? 255 : theme.controlOpacity);

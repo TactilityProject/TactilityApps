@@ -79,6 +79,16 @@ void MapView::applyLabelFonts() {
     LabelFont* normal = labelFonts[1].isOpen() ? &labelFonts[1] : static_cast<LabelFont*>(&normalFont);
     LabelFont* large = labelFonts[2].isOpen() ? &labelFonts[2] : (largeFont.isOpen() ? &largeFont : normal);
     labels.setFonts(small, normal, large);
+    // The letters most names use are unpacked into the glyph caches now, not while the first view's labels are placed
+    // (about 4 ms of a z18 placement, 16 Nov). The large font is left: few labels use it and its masks fill the cache.
+    const uint32_t start = nowMs();
+    for (LabelFont* font : { small, normal }) {
+        LabelGlyph glyph {};
+        for (uint32_t c = 32; c < 127; c++) {
+            font->glyph(c, glyph, true);
+        }
+    }
+    logInfo("Label glyphs ready in %u ms", static_cast<unsigned>(nowMs() - start));
 }
 
 void MapView::pollLabelFonts() {
@@ -113,7 +123,8 @@ void MapView::applyLabelSettings() {
     // Dark names with a light halo, water in blue, peaks in brown; black on white on monochrome displays
     labels.setStyle({ monochrome ? palette->text : static_cast<uint16_t>(0x2124), monochrome ? palette->text : static_cast<uint16_t>(0x4208),
         monochrome ? palette->text : static_cast<uint16_t>(0x2A35), monochrome ? palette->text : static_cast<uint16_t>(0x6A04),
-        monochrome ? palette->halo : static_cast<uint16_t>(0xFFFF), binary, monochrome ? palette->text : static_cast<uint16_t>(0x7BEF) });
+        monochrome ? palette->halo : static_cast<uint16_t>(0xFFFF), binary, monochrome ? palette->text : static_cast<uint16_t>(0x7BEF),
+        palette->outdoor && !monochrome });
     labelZoom = -1;
 }
 

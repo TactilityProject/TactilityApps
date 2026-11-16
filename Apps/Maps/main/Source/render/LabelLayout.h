@@ -54,6 +54,11 @@ struct LabelStyle {
     bool binary;
     /** House numbers: small and quiet. */
     uint16_t houseNumber = 0x7BEF;
+    /**
+     * Peaks, saddles, cliffs and volcanoes: only in the outdoor style. They go with the POIs: their icons first, their
+     * names only where room is left.
+     */
+    bool peaks = true;
 };
 
 /** How a POI type looks: its icon (an alpha mask, iconSize x iconSize), colour, and the first zoom it shows at. */
@@ -107,6 +112,17 @@ public:
     static constexpr int NUMBER_CANDIDATE_LIMIT = MAX_CANDIDATES / 2;
     /** POI names show next to their icon from this zoom. */
     static constexpr int POI_NAME_ZOOM = 17;
+    /**
+     * From this zoom nothing is left out: every POI of the tiles on screen is a candidate, named or not, whatever its
+     * rank. Two icons that collide both stay: the later one moves to the nearest free spot within ICON_MOVE_PIXELS,
+     * or shrinks to a dot when there is none. Only names give way. Barriers (types that start at BARRIER_ZOOM) show
+     * from the zoom above.
+     */
+    static constexpr int POI_ALL_ZOOM = 18;
+    static constexpr int BARRIER_ZOOM = 19;
+    static constexpr int ICON_MOVE_PIXELS = 12;
+    /** The dot that stands for an icon that has no room, a small alpha mask. */
+    static constexpr int DOT_SIZE = 5;
     static constexpr int LINE_REPEAT_PIXELS = 300;
     /** Sprite pixels for all labels of a view, two bytes each (text and halo coverage). */
     static constexpr size_t ARENA_BYTES = 192 * 1024;
@@ -192,6 +208,11 @@ private:
         uint8_t poiType;
         uint8_t iconSize;
         const uint8_t* icon;
+        /** Where the icon is drawn: the point, or the free spot it moved to (POIs from POI_ALL_ZOOM). */
+        float iconX;
+        float iconY;
+        /** The icon is the dot: no free spot was near, and no name is drawn. */
+        bool dot;
         /** Order among candidates of the same priority and rank, from the name and the map position: the label's identity. */
         uint32_t order;
         /** It was on screen in the last placement. */
@@ -241,7 +262,11 @@ private:
     void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle, bool taken = true);
     bool placePoint(const Candidate& candidate);
     /** Takes the place of a POI's icon; its sprite (with the name where there is room) is drawn by finishPois(). */
-    bool placePoiIcon(const Candidate& candidate);
+    bool placePoiIcon(Candidate& candidate);
+    /** Whether a placed label can be picked (a tap, Enter): POIs, house numbers, peaks. */
+    static bool selectable(const Placed& label);
+    /** Whether a candidate is placed as an icon with the name beside it: POIs, and peaks that have an icon. */
+    static bool hasIcon(const Candidate& candidate);
     void finishPois();
     int placeLine(const Candidate& candidate);
     /** Draws text turned by angle (radians) around the centre of a new sprite; false when the arena is full. */

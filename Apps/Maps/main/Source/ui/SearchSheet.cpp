@@ -2,6 +2,7 @@
 #include "SearchSheet.h"
 
 #include "Metrics.h"
+#include "TextEdit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -427,38 +428,11 @@ void SearchSheet::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
 // ---------------------------------------------------------------------------------------------------------------
 
 void SearchSheet::append(uint32_t codepoint) {
-    char bytes[4];
-    size_t count = 0;
-    if (codepoint < 0x80) {
-        bytes[count++] = static_cast<char>(codepoint);
-    } else if (codepoint < 0x800) {
-        bytes[count++] = static_cast<char>(0xC0 | (codepoint >> 6));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-        bytes[count++] = static_cast<char>(0xE0 | (codepoint >> 12));
-        bytes[count++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-    const size_t length = strlen(value);
-    if (length + count < sizeof(value)) {
-        memcpy(value + length, bytes, count);
-        value[length + count] = '\0';
-    }
+    utf8Append(value, sizeof(value), codepoint);
 }
 
 bool SearchSheet::erase() {
-    size_t length = strlen(value);
-    if (length == 0) {
-        return false;
-    }
-    while (length > 0 && (static_cast<unsigned char>(value[length - 1]) & 0xC0) == 0x80) {
-        length--;
-    }
-    if (length > 0) {
-        length--;
-    }
-    value[length] = '\0';
-    return true;
+    return utf8EraseLast(value);
 }
 
 SearchSheet::Event SearchSheet::activate(int entry) {

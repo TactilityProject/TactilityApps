@@ -165,13 +165,14 @@ bool MapView::loadSearchIndexes() {
     const double lat = worldYToLat(centerY, zoom);
     const double lon = worldXToLon(centerX, zoom);
     const TileKey centre = tileAt(lat, lon, 14);
-    int order[TileStore::MAX_REGIONS];
+    // Bytes, not ints: this runs on the main task, whose stack is tight
+    uint8_t order[TileStore::MAX_REGIONS];
     int orderCount = 0;
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < store.regionCount(); i++) {
             const bool here = store.mayHave(i, centre);
             if ((pass == 0) == here) {
-                order[orderCount++] = i;
+                order[orderCount++] = static_cast<uint8_t>(i);
             }
         }
     }
@@ -506,6 +507,7 @@ void MapView::openSearchResult(const char* name, const char* type, int32_t x, in
     selectedWaypoint = -1;
     char coordinates[48];
     searchCoordinates(lat, lon, coordinates, sizeof(coordinates));
+    addHeight(lat, lon, coordinates, sizeof(coordinates));
     char distance[96];
     describeDistance(lat, lon, distance, sizeof(distance));
     if (note != nullptr && note[0] != '\0') {
@@ -705,8 +707,9 @@ void MapView::pollSearchIndex(uint32_t now) {
     }
     switch (searchIndexJob.state()) {
         case SearchIndexJob::State::Busy:
-            // Downloads come first: the build waits with its files closed
-            searchIndexJob.pause(downloading);
+            // Downloads come first, and the map on screen: the build waits with its files closed while the map is
+            // used or a tile on screen is still to be drawn, and goes on once it is left alone
+            searchIndexJob.pause(downloading || !idle || (!isFullScreen() && !isViewComplete()));
             return;
         case SearchIndexJob::State::Done:
         case SearchIndexJob::State::Failed: {

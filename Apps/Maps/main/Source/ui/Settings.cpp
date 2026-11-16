@@ -24,6 +24,10 @@ constexpr Entry ENTRIES[] = {
     { "smooth_pinch", &Settings::smoothPinch },
     { "browse_download", &Settings::browseDownload },
     { "latin_names", &Settings::latinNames },
+    { "walk_trails", &Settings::walkTrails },
+    { "outdoor_style", &Settings::outdoorStyle },
+    { "terrain", &Settings::terrain },
+    { "trails", &Settings::trails },
     { "dev_mono", &Settings::devMonochrome },
     { "dev_probe", &Settings::devProbe },
 };

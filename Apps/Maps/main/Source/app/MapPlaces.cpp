@@ -52,7 +52,49 @@ void formatDistance(double metres, char* out, size_t size) {
     }
 }
 
+/**
+ * Cuts the height off a peak's label ("Kriv\xC3\xA1\xC5\x88 1709 m" -> "Kriv\xC3\xA1\xC5\x88") and returns it, INT32_MIN when the
+ * label does not end in one.
+ */
+int splitPeakHeight(char* name) {
+    size_t length = strlen(name);
+    if (length < 3 || strcmp(name + length - 2, " m") != 0) {
+        return INT32_MIN;
+    }
+    size_t start = length - 2;
+    while (start > 0 && name[start - 1] >= '0' && name[start - 1] <= '9') {
+        start--;
+    }
+    const bool negative = start > 0 && name[start - 1] == '-';
+    const size_t digitsEnd = length - 2;
+    if (start == digitsEnd || digitsEnd - start > 6) {
+        return INT32_MIN;
+    }
+    int value = 0;
+    for (size_t i = start; i < digitsEnd; i++) {
+        value = value * 10 + (name[i] - '0');
+    }
+    size_t cut = negative ? start - 1 : start;
+    // The space between the name and the height, unless the label is the height alone
+    if (cut > 0 && name[cut - 1] == ' ') {
+        cut--;
+    } else if (cut > 0) {
+        return INT32_MIN;
+    }
+    name[cut] = '\0';
+    return negative ? -value : value;
+}
+
 } // namespace
+
+void MapView::addHeight(double lat, double lon, char* coordinates, size_t size) {
+    float metres = 0.0f;
+    if (!worker.heightAt(lat, lon, metres)) {
+        return;
+    }
+    const size_t used = strlen(coordinates);
+    snprintf(coordinates + used, size - used, " \xC2\xB7 %d m", static_cast<int>(std::floor(static_cast<double>(metres) + 0.5)));
+}
 
 bool MapView::worldToScreen(double lat, double lon, float& x, float& y) const {
     const double worldSize = std::ldexp(static_cast<double>(TILE_SIZE), zoom);
@@ -129,6 +171,7 @@ void MapView::openNewWaypoint(double lat, double lon, const char* givenName) {
     }
     char coordinates[48];
     formatCoordinates(lat, lon, coordinates, sizeof(coordinates));
+    addHeight(lat, lon, coordinates, sizeof(coordinates));
     char distance[64];
     describeDistance(lat, lon, distance, sizeof(distance));
     sheet.openNew(name, coordinates, distance, canType());
@@ -155,6 +198,7 @@ void MapView::openWaypointSheet(int index) {
     sheetLon = waypoint.lon;
     char coordinates[48];
     formatCoordinates(waypoint.lat, waypoint.lon, coordinates, sizeof(coordinates));
+    addHeight(waypoint.lat, waypoint.lon, coordinates, sizeof(coordinates));
     char distance[64];
     describeDistance(waypoint.lat, waypoint.lon, distance, sizeof(distance));
     sheet.openExisting(waypoint.name, coordinates, distance);
@@ -253,14 +297,29 @@ void MapView::openPlaceSheet(int index) {
     selectedWaypoint = -1;
     const char* type = item.kind == LabelKind::HouseNumber ? "House number" : poiType(item.poiType).label;
     char name[WaypointSheet::NAME_LENGTH];
+    int mappedHeight = INT32_MIN;
     if (item.kind == LabelKind::HouseNumber) {
         snprintf(name, sizeof(name), "No. %s", item.name);
+    } else if (item.kind == LabelKind::Peak) {
+        // The label is "Name 1234 m" (or "1234 m"): the name goes to the title, the mapped height after the coordinates
+        snprintf(name, sizeof(name), "%s", item.name);
+        mappedHeight = splitPeakHeight(name);
+        if (name[0] == '\0') {
+            snprintf(name, sizeof(name), "%s", type);
+        }
     } else {
         // A POI without a name is called by its type
         snprintf(name, sizeof(name), "%s", item.name[0] != '\0' ? item.name : type);
     }
     char coordinates[48];
     formatCoordinates(sheetLat, sheetLon, coordinates, sizeof(coordinates));
+    if (mappedHeight != INT32_MIN) {
+        // The surveyed height of the summit, better than the height files' 30 m grid there
+        const size_t used = strlen(coordinates);
+        snprintf(coordinates + used, sizeof(coordinates) - used, " \xC2\xB7 %d m", mappedHeight);
+    } else {
+        addHeight(sheetLat, sheetLon, coordinates, sizeof(coordinates));
+    }
     char distance[64];
     describeDistance(sheetLat, sheetLon, distance, sizeof(distance));
     sheet.openPlace(name, type, coordinates, distance);

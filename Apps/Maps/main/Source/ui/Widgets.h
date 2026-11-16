@@ -77,11 +77,17 @@ public:
     int add(const char* label, const char* detail = "");
     void setDetail(int index, const char* detail);
     /**
-     * One sentence per row, in row order, shown above the hint while a row is highlighted (nothing for touch, which
-     * never highlights). The texts must outlive the list; the line is reserved in the layout whenever they are set.
+     * One short line per row, in row order, shown under the row's label in a smaller line of its own (rows are that
+     * much taller while descriptions are set). The texts must outlive the list.
      */
     void setDescriptions(const char* const* texts, int count);
+    /** The scroll position in pixels, to keep it when a list is filled again (restoreScroll after layout). */
+    int scrollTop() const { return firstVisible * rowPixels + offset; }
+    void restoreScroll(int pixels);
     int count() const { return itemCount; }
+    /** A row's texts (for tests). */
+    const char* label(int index) const { return items[index].label; }
+    const char* detail(int index) const { return items[index].detail; }
     int selected() const { return selection; }
     /** Moves the selection without showing the highlight. */
     void select(int index);
@@ -94,6 +100,8 @@ public:
     void setHighlighted(bool value) { highlighted = value; }
     /** Scrolls the rows by a number of rows, leaving the selection where it is. */
     void scrollBy(int rows);
+    /** Scrolls by pixels, following a finger (a part-row shows at the edges of a full screen list). */
+    void scrollPixels(int pixels);
 
     void layoutFullScreen(int width, int height, Font& font);
     void layoutPopup(int width, int height, Font& font, int popupWidth);
@@ -122,7 +130,6 @@ public:
 private:
     void keepVisible();
     int hintLines() const;
-    int descriptionHeight(Font& font) const;
 
     struct Item {
         char label[TEXT_LENGTH];
@@ -133,6 +140,8 @@ private:
     int itemCount = 0;
     int selection = 0;
     int firstVisible = 0;
+    /** Pixels the list is scrolled past the top of firstVisible (0 .. rowPixels - 1). */
+    int offset = 0;
     int visibleRows = 1;
     bool highlighted = false;
     char title[TEXT_LENGTH] = "";

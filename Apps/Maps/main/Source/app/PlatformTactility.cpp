@@ -87,10 +87,12 @@ void logError(const char* format, ...) {
 }
 
 void logMemory(const char* label) {
-    LOG_I(TAG, "Memory %s: internal %u free (largest %u), PSRAM %u free (largest %u), app large blocks %u in %u",
+    LOG_I(TAG, "Memory %s: internal %u free (largest %u), DMA %u free (largest %u), PSRAM %u free (largest %u), app large blocks %u in %u",
         label,
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)),
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
         static_cast<unsigned>(largeBytes.load()),

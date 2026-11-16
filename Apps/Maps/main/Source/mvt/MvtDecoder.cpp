@@ -298,6 +298,8 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.onewayKey = index;
                 } else if (strcmp(name, "layer") == 0) {
                     table.layerKey = index;
+                } else if (strcmp(name, "surface") == 0) {
+                    table.surfaceKey = index;
                 } else if (strcmp(name, "name") == 0) {
                     table.nameKey = index;
                 } else if (strcmp(name, "name:latin") == 0) {
@@ -310,6 +312,8 @@ bool MvtDecoder::scanLayer(size_t layerEnd, LayerTable& table, Layer layer) {
                     table.nameIntKey = index;
                 } else if (strcmp(name, "rank") == 0) {
                     table.rankKey = index;
+                } else if (strcmp(name, "ele") == 0) {
+                    table.elevationKey = index;
                 } else if (strcmp(name, "housenumber") == 0) {
                     table.houseNumberKey = index;
                 }
@@ -429,6 +433,8 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
     } else if (keyIndex == table.onewayKey && entry->hasText == 0 && entry->rank != INT32_MIN) {
         // Negative integers have no integer code, their value is kept in rank
         info.oneway = static_cast<int8_t>(entry->rank > 0 ? 1 : (entry->rank < 0 ? -1 : 0));
+    } else if (keyIndex == table.surfaceKey && entry->hasText != 0) {
+        info.unpaved = entry->textLength == 7 && memcmp(namePool + entry->textOffset, "unpaved", 7) == 0;
     } else if (keyIndex == table.layerKey && entry->hasText == 0 && entry->rank != INT32_MIN) {
         info.layerNumber = static_cast<int8_t>(entry->rank < -8 ? -8 : (entry->rank > 7 ? 7 : entry->rank));
     } else if (keyIndex == table.nameKey && entry->hasText != 0) {
@@ -449,6 +455,9 @@ void MvtDecoder::applyTag(const LayerTable& table, uint32_t key, uint32_t value,
         info.nameIntLength = entry->textLength;
     } else if (keyIndex == table.rankKey && isInteger) {
         info.rank = entry->rank;
+    } else if (keyIndex == table.elevationKey && entry->hasText == 0 && entry->rank != INT32_MIN) {
+        // Like oneway, a negative height has no integer code: its value is in rank
+        info.elevation = entry->rank;
     } else if (keyIndex == table.houseNumberKey && entry->hasText != 0) {
         info.houseNumber = namePool + entry->textOffset;
         info.houseNumberLength = entry->textLength;

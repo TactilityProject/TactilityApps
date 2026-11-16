@@ -278,6 +278,18 @@ void MapView::drawPickStart() {
     pickBar.draw(canvas, sheetFont(), theme, width);
 }
 
+void MapView::pollElevation() {
+    if (elevationJob.state() != ElevationJob::State::Done) {
+        return;
+    }
+    elevationJob.acknowledge();
+    if (routeCard.isOpen()) {
+        routeCard.setElevation(&elevationJob.profile());
+        routeCard.layout(width, height, sheetFont());
+        dirty = true;
+    }
+}
+
 void MapView::fillRouteCard() {
     navigator.lock();
     const Route& route = navigator.route();
@@ -299,6 +311,15 @@ void MapView::fillRouteCard() {
     snprintf(summary, sizeof(summary), "%s \xC2\xB7 %s \xC2\xB7 %s", distance, time, track ? "GPX track" : routeProfileName(profile));
     routeCard.open(summary, track ? "Follows the track as it is: no turns are announced" : (profile == RouteProfile::Car ? CAR_NOTE : nullptr));
     routeCard.setMode(static_cast<int>(profile));
+    // The profile comes a moment later, read from the terrain files in the background
+    routeCard.setElevation(nullptr);
+    if (settings.terrain) {
+        navigator.lock();
+        elevationJob.start(worker, navigator.route());
+        navigator.unlock();
+    } else {
+        elevationJob.cancel();
+    }
     routeCard.layout(width, height, sheetFont());
     // A mode chosen while the track was read: applied now that the track's end is known
     if (track && trackModePending) {
@@ -417,6 +438,7 @@ void MapView::startNavigation() {
     navigator.unlock();
     navigating = true;
     arrivedAt = 0;
+    hapticStep = -2;
     lastRecalculation = 0;
     recalculationFailed = false;
     {
@@ -527,6 +549,7 @@ void MapView::updateNavigation(uint32_t now) {
                 follower.begin(navigator.route());
                 const float newLength = navigator.route().lengthM;
                 navigator.unlock();
+                hapticStep = -2;
                 recalculationFailed = false;
                 scriptLog("Navigation: new route, %.0f m%s, %u ms", newLength, navigator.lastWasRejoin() ? " (back to the old route)" : "",
                     navigator.lastStats().totalMs);
@@ -618,6 +641,7 @@ void MapView::followRoute(uint32_t now) {
             following = false;
             headingUp = false;
             arrivedAt = now;
+            haptic.pulse(2);
             scriptLog("Navigation: arrived");
             break;
         case RouteFollower::State::OffRoute:
@@ -638,6 +662,7 @@ void MapView::followRoute(uint32_t now) {
             if (!recalculating && navigator.state() == Navigator::State::Idle &&
                 (!recalculationFailed || now - lastRecalculation >= 5000)) {
                 lastRecalculation = now;
+                haptic.pulse(2);
                 recalculating = navigator.requestRejoin(fix.latitude, fix.longitude, goalLat, goalLon, routeProfile, status.progressM);
                 routeRequested = recalculating;
                 scriptLog("Navigation: off route by %.0f m (acc %.1f m, off %.1f m, rule %s), recalculating", status.distanceFromRouteM,
@@ -659,6 +684,13 @@ void MapView::followRoute(uint32_t now) {
             if (!recalculating) {
                 // Weak GPS: the route is followed by projection, off route is not checked
                 navBar.set(status.nextTurn, instruction, status.weakGps ? "Weak GPS" : remaining);
+                // One pulse as a turn comes near (about 15-20 s ahead at the mode's speed), once per turn
+                const float near = routeProfile == RouteProfile::Car ? 200.0f : (routeProfile == RouteProfile::Bike ? 70.0f : 25.0f);
+                if (!track && status.nextStep >= 0 && status.nextStep != hapticStep && status.nextTurn != Turn::Straight &&
+                    status.toTurnM <= near) {
+                    hapticStep = status.nextStep;
+                    haptic.pulse(1);
+                }
             }
             break;
     }

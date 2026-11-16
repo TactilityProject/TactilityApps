@@ -145,6 +145,58 @@ void formatBytes(uint64_t bytes, char* out, size_t size) {
     }
 }
 
+void formatCount(int64_t value, char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return;
+    }
+    if (value < 0) {
+        value = 0;
+    }
+    if (value >= 1000000) {
+        snprintf(out, size, "%lld,%03lld,%03lld", static_cast<long long>(value / 1000000), static_cast<long long>(value / 1000 % 1000), static_cast<long long>(value % 1000));
+    } else if (value >= 1000) {
+        snprintf(out, size, "%lld,%03lld", static_cast<long long>(value / 1000), static_cast<long long>(value % 1000));
+    } else {
+        snprintf(out, size, "%lld", static_cast<long long>(value));
+    }
+}
+
+void formatTileLine(const char* name, int64_t done, int64_t total, char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return;
+    }
+    char doneText[16];
+    char totalText[16];
+    formatCount(done, doneText, sizeof(doneText));
+    formatCount(total, totalText, sizeof(totalText));
+    if (name != nullptr && name[0] != '\0') {
+        snprintf(out, size, "%s: %s of %s tiles", name, doneText, totalText);
+    } else {
+        snprintf(out, size, "%s of %s tiles", doneText, totalText);
+    }
+}
+
+void formatSizeLine(uint64_t bytes, double bytesPerSecond, int64_t secondsLeft, char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return;
+    }
+    char sizeText[16];
+    formatBytes(bytes, sizeText, sizeof(sizeText));
+    snprintf(out, size, "%s", sizeText);
+    if (bytesPerSecond > 0.0) {
+        char speed[16];
+        formatBytes(static_cast<uint64_t>(bytesPerSecond), speed, sizeof(speed));
+        const size_t used = strlen(out);
+        snprintf(out + used, size - used, ", %s/s", speed);
+    }
+    if (secondsLeft >= 0) {
+        char left[24];
+        formatDuration(secondsLeft, left, sizeof(left));
+        const size_t used = strlen(out);
+        snprintf(out + used, size - used, ", about %s left", left);
+    }
+}
+
 void formatDuration(int64_t seconds, char* out, size_t size) {
     if (out == nullptr || size == 0) {
         return;

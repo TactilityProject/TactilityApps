@@ -18,7 +18,7 @@ namespace maps {
 namespace {
 
 constexpr int MENU_WIDTH = 220;
-constexpr int ABOUT_LINES = 40;
+constexpr int ABOUT_LINES = 56;
 constexpr int ABOUT_LINE_LENGTH = 64;
 
 /** The tiles of the main menu, in grid order (left to right, top to bottom). */
@@ -42,11 +42,21 @@ const MenuEntry MENU_ENTRIES[] = {
 
 const char* const DOWNLOAD_CHOICES[] = { "Choose area", "Choose region" };
 
+/** A paragraph that starts with this character is a section heading. */
+constexpr char ABOUT_HEADING = '#';
+/** Marks a wrapped heading line in the line buffer, so drawAbout() can draw it in the heading style. */
+constexpr char ABOUT_HEADING_LINE = '\x01';
+
+/** A touch-only board gets other words for the scrolling hint, so this one is found again by its address. */
+const char* const ABOUT_SCROLL_HINT = "W/S or drag to scroll. Esc, Backspace, < or a swipe to the right go back.";
+
 const char* const ABOUT_PARAGRAPHS[] = {
-    "Tactility Maps " APP_VERSION,
+    "#Tactility Maps " APP_VERSION,
     "Designed by Adam Szilv\xC3\xA1" "si",
     "Offline vector maps for Tactility.",
     "",
+    "#Map data and licences",
+    "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMap contributors",
     "Map data \xC2\xA9 OpenStreetMap contributors, available under the Open Database Licence (ODbL): openstreetmap.org/copyright",
     "",
     "Vector tiles \xC2\xA9 OpenMapTiles (openmaptiles.org), served by OpenFreeMap (openfreemap.org).",
@@ -55,7 +65,21 @@ const char* const ABOUT_PARAGRAPHS[] = {
     "",
     "Label font: Adwaita Sans (SIL Open Font License 1.1). Place icons: Maki by Mapbox (CC0).",
     "",
-    "W/S or drag to scroll. Esc, Backspace, < or a swipe to the right go back.",
+    "#Elevation",
+    "Terrain (Download terrain in a region's actions; Settings, Terrain) comes from AWS Terrain Tiles (tilezen/joerd, open data on AWS).",
+    "Europe terrain data produced using Copernicus data and information funded by the European Union - EU-DEM layers.",
+    "Austria terrain data \xC2\xA9 offene Daten \xC3\x96sterreichs - Digitales Gel\xC3\xA4ndemodell (DGM) \xC3\x96sterreich.",
+    "United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data courtesy of the U.S. Geological Survey.",
+    "Root certificates of Amazon and Starfield are included to reach the elevation tiles over HTTPS.",
+    "",
+    "#Marked trails",
+    "Hiking and cycling routes (Settings, Marked trails; off unless you turn it on): OpenStreetMap data \xC2\xA9 OpenStreetMap contributors (ODbL), fetched once per region through the Overpass API (overpass-api.de).",
+    "",
+    "#Controls",
+    ABOUT_SCROLL_HINT,
+    "",
+    "#This board",
+    nullptr,  // the screen size and the input kinds, written when the page opens
 };
 
 /** What can be done with a region or a waypoint, the rows of their action popups. */
@@ -65,7 +89,9 @@ enum RegionAction : int {
     REGION_CONTINUE,
     REGION_PAUSE,
     REGION_RENAME,
-    REGION_DELETE
+    REGION_DELETE,
+    REGION_TERRAIN,
+    REGION_TRAILS
 };
 
 } // namespace
@@ -86,7 +112,7 @@ ListView* MapView::activeList() {
         case Screen::Settings:
             return &settingList;
         case Screen::Catalog:
-            return &catalogList;
+            return &catalogBrowser.list();
         case Screen::Waypoints:
             return &waypointList;
         case Screen::GpxFiles:
@@ -509,6 +535,12 @@ void MapView::openRegionActions() {
     } else if (!meta.isComplete()) {
         add("Continue download", REGION_CONTINUE);
     }
+    if (meta.isComplete() && !active && strcmp(meta.name, BROWSE_REGION) != 0) {
+        add("Download terrain", REGION_TERRAIN);
+        if (settings.trails) {
+            add("Download trails", REGION_TRAILS);
+        }
+    }
     if (canType()) {
         add("Rename", REGION_RENAME);
     }
@@ -556,6 +588,26 @@ void MapView::chooseRegionAction(int action) {
             downloader.cancel();
             showToast("Download paused");
             break;
+        case REGION_TERRAIN: {
+            // Elevation for shading and contour lines: its size is asked first (a height file is 128 KB on the card)
+            const int64_t tiles = tileRange(meta.box, TERRAIN_ZOOM).count();
+            char message[128];
+            if (tiles > Downloader::MAX_TERRAIN_TILES) {
+                showToast("Region too large for terrain");
+                break;
+            }
+            snprintf(message, sizeof(message), "Terrain for %s: %d tiles, about %.1f MB download, %.1f MB on the card. Download?",
+                regionTitle(meta), static_cast<int>(tiles), static_cast<double>(tiles) * 0.115, static_cast<double>(tiles) * 0.131);
+            dialogPurpose = DialogPurpose::Terrain;
+            dialog.open(message, "Download", false);
+            dialog.layout(width, height, overlay.font());
+            break;
+        }
+        case REGION_TRAILS:
+            // One query to the Overpass API for the region's box (opt-in: Settings, Marked trails)
+            downloader.downloadTrails(meta.name);
+            showToast("Downloading trails");
+            break;
         case REGION_RENAME:
             askRenameRegion();
             break;
@@ -599,6 +651,10 @@ void MapView::confirmPrompt() {
         renameWaypoint(prompt.text());
         return;
     }
+    if (promptPurpose == PromptPurpose::CatalogSearch) {
+        openCatalogResults(prompt.text());
+        return;
+    }
     if (screen != Screen::Regions || regionList.selected() >= regionCount) {
         return;
     }
@@ -638,6 +694,14 @@ void MapView::confirmDialog() {
         store.removeRegion(cancelRegion);
         pausedRegion[0] = '\0';
         showToast("Download cancelled");
+        return;
+    }
+    if (dialogPurpose == DialogPurpose::Terrain) {
+        if (screen == Screen::Regions && regionList.selected() < regionCount) {
+            const RegionMeta& meta = regions[regionList.selected()];
+            downloader.downloadTerrain(meta.name);
+            showToast("Downloading terrain");
+        }
         return;
     }
     if (dialogPurpose == DialogPurpose::Update) {
@@ -714,33 +778,35 @@ void MapView::openSettings() {
 
 void MapView::fillSettingList() {
     const int selected = settingList.selected();
-    settingList.clear();
-    settingList.setTitle("Settings");
+    // Filled again after each change: the list stays where it was scrolled to
+    const int scrolled = settingList.scrollTop();
+    fillSettingsList(settingList, settings, monochrome);
     setListHint(settingList, "Enter: change  Esc: back", "Tap: change  Swipe right: back");
-    settingList.add("SD card cache", settings.sdCache ? "On" : "Off");
-    settingList.add("Prepared tiles", settings.deflatePrepared ? "Deflated" : "Raw");
-    settingList.add("Smooth zoom", monochrome ? "Off (display)" : (settings.smoothPinch ? "On" : "Off"));
-    settingList.add("Download while browsing", settings.browseDownload ? "On" : "Off");
-    static const char* const POINTER_SPEEDS[] = { "Slow", "Normal", "Fast" };
-    settingList.add("Pointer speed", POINTER_SPEEDS[std::clamp(settings.pointerSpeed, 0, 2)]);
-    static const char* const LABEL_DENSITIES[] = { "Off", "Few", "Normal" };
-    settingList.add("Labels", LABEL_DENSITIES[std::clamp(settings.labels, 0, 2)]);
-    settingList.add("Latin names", settings.latinNames ? "On" : "Off");
-    settingList.add("Route mode", routeProfileName(static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2))));
-    // In the order of SettingItem; each says what the setting does, shown for the highlighted row
-    static const char* const DESCRIPTIONS[] = {
-        "Also keep drawn tiles on the card",
-        "Packed tiles are smaller, raw ones faster",
-        "The map scales while you pinch",
-        "Fetch missing detail on Wi-Fi as you pan",
-        "How fast the trackball moves the cursor",
-        "How many place names show on the map",
-        "Show the Latin name where a place has one",
-        "The mode a new route starts with",
-    };
-    settingList.setDescriptions(DESCRIPTIONS, static_cast<int>(SettingItem::Count));
     settingList.layoutFullScreen(width, height, overlay.font());
+    settingList.restoreScroll(scrolled);
     settingList.select(selected);
+}
+
+void MapView::switchMapStyle() {
+    if (monochrome) {
+        showToast("Not on this display");
+        dirty = true;
+        return;
+    }
+    settings.outdoorStyle = !settings.outdoorStyle;
+    palette = settings.outdoorStyle ? &outdoorPalette() : &colorPalette();
+    theme = uiTheme(*palette, monochrome);
+    worker.setPalette(palette);
+    // Peaks show in the outdoor style only
+    applyLabelSettings();
+    char path[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/settings.txt", rootPath);
+    auto write = [&] { return writeSettings(path, settings); };
+    if (!runOnCard(io, write)) {
+        showToast("Could not save the settings");
+    }
+    showToast(settings.outdoorStyle ? "Map style: Outdoor" : "Map style: Standard");
+    dirty = true;
 }
 
 void MapView::toggleSetting(SettingItem item) {
@@ -771,6 +837,20 @@ void MapView::toggleSetting(SettingItem item) {
             // The mode a new route starts with; the card can switch it for one route
             settings.routeProfile = (settings.routeProfile + 1) % static_cast<int>(RouteProfile::Count);
             break;
+        case SettingItem::WalkTrails:
+            settings.walkTrails = !settings.walkTrails;
+            navigator.setPreferTrails(settings.walkTrails);
+            break;
+        case SettingItem::Trails:
+            settings.trails = !settings.trails;
+            worker.setTrails(settings.trails);
+            downloader.setTrailsWithDownloads(settings.trails);
+            break;
+        case SettingItem::Terrain:
+            settings.terrain = !settings.terrain;
+            worker.setTerrain(settings.terrain);
+            downloader.setTerrainWithDownloads(settings.terrain);
+            break;
         case SettingItem::PointerSpeed:
             settings.pointerSpeed = (settings.pointerSpeed + 1) % PointerAcceleration::SPEEDS;
             pointerAcceleration.setSpeed(settings.pointerSpeed);
@@ -794,6 +874,8 @@ void MapView::toggleSetting(SettingItem item) {
         settings = before;
         worker.setSdCache(settings.sdCache);
         worker.setDeflatePrepared(settings.deflatePrepared);
+        worker.setTerrain(settings.terrain);
+        worker.setTrails(settings.trails);
         pointerAcceleration.setSpeed(settings.pointerSpeed);
         applyLabelSettings();
         showToast("Could not save the settings");
@@ -836,9 +918,12 @@ void MapView::drawAbout() {
     constexpr int padding = 8;
     if (aboutLines == 0) {
         // Wrapped once when the page opens
+        char boardLine[ABOUT_LINE_LENGTH];
+        snprintf(boardLine, sizeof(boardLine), "Screen %d x %d, %s", width, height, input.hasKeyboard() ? "with a keyboard" : "touch only");
         for (const char* paragraph : ABOUT_PARAGRAPHS) {
-            // The last paragraph names keys: a board with only a touch screen gets the touch words
-            if (paragraph == ABOUT_PARAGRAPHS[sizeof(ABOUT_PARAGRAPHS) / sizeof(ABOUT_PARAGRAPHS[0]) - 1] && !input.hasKeyboard()) {
+            if (paragraph == nullptr) {
+                paragraph = boardLine;
+            } else if (paragraph == ABOUT_SCROLL_HINT && !input.hasKeyboard()) {
                 paragraph = "Drag to scroll. < or a swipe to the right goes back.";
             }
             if (aboutLines >= ABOUT_LINES) {
@@ -848,8 +933,19 @@ void MapView::drawAbout() {
                 aboutBuffer[aboutLines++ * ABOUT_LINE_LENGTH] = '\0';
                 continue;
             }
-            aboutLines += wrapText(font, paragraph, width - 2 * padding, aboutBuffer + aboutLines * ABOUT_LINE_LENGTH, ABOUT_LINE_LENGTH,
-                ABOUT_LINES - aboutLines);
+            const bool heading = paragraph[0] == ABOUT_HEADING;
+            const int first = aboutLines;
+            aboutLines += wrapText(font, heading ? paragraph + 1 : paragraph, width - 2 * padding, aboutBuffer + aboutLines * ABOUT_LINE_LENGTH,
+                ABOUT_LINE_LENGTH, ABOUT_LINES - aboutLines);
+            if (heading) {
+                // The marker goes in front of each line; a line that is too long loses its last character
+                for (int i = first; i < aboutLines; i++) {
+                    char* line = aboutBuffer + i * ABOUT_LINE_LENGTH;
+                    memmove(line + 1, line, ABOUT_LINE_LENGTH - 2);
+                    line[0] = ABOUT_HEADING_LINE;
+                    line[ABOUT_LINE_LENGTH - 1] = '\0';
+                }
+            }
         }
     }
     canvas.fillRect(0, 0, width, height, theme.panel);
@@ -859,7 +955,14 @@ void MapView::drawAbout() {
     drawHeader(canvas, font, theme, aboutHeader, "About and licences", false);
     const int visible = (height - top) / lineHeight;
     for (int i = 0; i < visible && aboutScroll + i < aboutLines; i++) {
-        font.drawText(canvas, padding, top + i * lineHeight, aboutBuffer + (aboutScroll + i) * ABOUT_LINE_LENGTH, theme.text);
+        const char* line = aboutBuffer + (aboutScroll + i) * ABOUT_LINE_LENGTH;
+        if (line[0] == ABOUT_HEADING_LINE) {
+            // A heading is the accent colour and drawn twice, one pixel apart, which also reads as bold on a mono display
+            font.drawText(canvas, padding, top + i * lineHeight, line + 1, theme.accent);
+            font.drawText(canvas, padding + 1, top + i * lineHeight, line + 1, theme.accent);
+        } else {
+            font.drawText(canvas, padding, top + i * lineHeight, line, theme.text);
+        }
     }
     if (aboutLines > visible) {
         const int barHeight = std::max(8, (height - top) * visible / aboutLines);
@@ -1026,70 +1129,61 @@ bool MapView::catalogTitle(double lat, double lon, char* out, size_t size) {
     return true;
 }
 
+void MapView::presentCatalog() {
+    ListView& list = catalogBrowser.list();
+    setListHint(list, "Enter: open/choose  Esc: back", "Tap: open/choose  Swipe right: back");
+    list.layoutFullScreen(width, height, overlay.font());
+    list.setHighlighted(false);
+    screen = Screen::Catalog;
+    dirty = true;
+}
+
 void MapView::openCatalog(int parent) {
     if (!loadCatalog()) {
         showToast("The region list is missing, reinstall the app");
         return;
     }
-    catalogParent = parent;
-    catalogList.clear();
-    char name[ListView::TEXT_LENGTH];
-    int rows = 0;
-    if (parent >= 0) {
-        catalog.copyName(parent, name, sizeof(name));
-        catalogList.setTitle(name);
-        char label[ListView::TEXT_LENGTH];
-        snprintf(label, sizeof(label), "All of %s", name);
-        catalogList.add(label);
-        catalogRows[rows++] = parent;
-    } else {
-        catalogList.setTitle("Choose region");
-    }
-    int children[ListView::MAX_ITEMS];
-    const int count = catalog.children(parent, children, ListView::MAX_ITEMS - rows);
-    for (int i = 0; i < count; i++) {
-        catalog.copyName(children[i], name, sizeof(name));
-        catalogList.add(name, catalog.region(children[i]).childCount > 0 ? ">" : "");
-        catalogRows[rows++] = children[i];
-    }
-    setListHint(catalogList, "Enter: open/choose  Esc: back", "Tap: open/choose  Swipe right: back");
-    catalogList.layoutFullScreen(width, height, overlay.font());
-    catalogList.select(0);
-    catalogList.setHighlighted(false);
-    screen = Screen::Catalog;
-    dirty = true;
+    catalogBrowser.showLevel(catalog, parent);
+    presentCatalog();
 }
 
 void MapView::chooseCatalog() {
-    const int row = catalogList.selected();
-    if (row < 0 || row >= catalogList.count()) {
+    int region = -1;
+    switch (catalogBrowser.choose(catalog, region)) {
+        case CatalogBrowser::Choice::Search:
+            promptPurpose = PromptPurpose::CatalogSearch;
+            prompt.open("Region name", "");
+            dirty = true;
+            break;
+        case CatalogBrowser::Choice::Opened:
+            presentCatalog();
+            break;
+        case CatalogBrowser::Choice::Download:
+            planCatalogRegion(region);
+            break;
+        case CatalogBrowser::Choice::None:
+            break;
+    }
+}
+
+void MapView::openCatalogResults(const char* query) {
+    if (!catalogBrowser.showResults(catalog, query)) {
+        showToast("No region with that name");
+        dirty = true;
         return;
     }
-    const int region = catalogRows[row];
-    // A region with parts opens its list; "All of ..." and regions without parts are downloaded
-    if (region != catalogParent && catalog.region(region).childCount > 0) {
-        openCatalog(region);
-        return;
-    }
-    planCatalogRegion(region);
+    presentCatalog();
 }
 
 void MapView::catalogBack() {
-    if (catalogParent < 0) {
+    if (!catalogBrowser.back(catalog)) {
         // Back to the choice it came from
         returnToMenu = false;
         closeScreen();
         openDownloadChoice();
         return;
     }
-    const int child = catalogParent;
-    openCatalog(catalog.region(catalogParent).parent);
-    // Back on the row it came from
-    for (int row = 0; row < catalogList.count(); row++) {
-        if (catalogRows[row] == child) {
-            catalogList.select(row);
-        }
-    }
+    presentCatalog();
 }
 
 void MapView::planCatalogRegion(int index) {

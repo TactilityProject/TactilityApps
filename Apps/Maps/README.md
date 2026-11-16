@@ -48,9 +48,9 @@ circle), the scale bar, and the © mark.
 | Turn the map | Q / E | — | Two fingers |
 | Back to north | N | — | Compass button |
 | Open a row's actions | Enter | Click | Tap the row |
-| Add a waypoint | P | — | Hold ⌖ (your position) or hold the map (that point) |
-| A place or house number | Show the controls, then Enter (nearest the crosshair; Enter again: next) | Click it | Tap it |
-| Menu | M | Long click | ☰ button |
+| Add a waypoint (shows the point's height) | P; or show the controls and hold the click (the crosshair's point) | Hold the click (the pointer's point) | Hold ⌖ (your position) or hold the map (that point) |
+| A place, peak or house number | Show the controls, then Enter (nearest the crosshair; Enter again: next) | Click it | Tap it |
+| Menu | M | Long click with the controls hidden | ☰ button |
 | Download an area | Shift + D | — | Menu → Download |
 | Leave the download frame | Esc | — | The round < in its top left corner |
 | Type a name (waypoint, rename) | Keyboard | — | On-screen keyboard |
@@ -98,7 +98,9 @@ place in idle time, the tiles on screen first; no download is needed.
 **Places and house numbers.** Icons for cafés, shops, stops, stations, pharmacies, hotels, museums and
 about 120 other kinds of places, coloured by kind (food orange, shops purple, transport blue, health red,
 …), from z15 (stations, museums and the most important places from z14, benches and bins from z16), with
-their names next to them from z17 when there is room. House numbers in small grey text from z17. Both
+their names next to them from z17 when there is room. At z18 and z19 every point of interest of the map is shown,
+named or not (shelters, guideposts, benches, bins, bicycle parkings…; gates and bollards at z19 only), and search
+finds the unnamed ones by their kind ("shelter", "bicycle parking"). House numbers in small grey text from z17. Both
 follow Settings → Labels (one zoom level later with Few) and never cover place or street names. Tap or
 click one for a sheet with its name, kind, coordinates, distance and direction, "Save as waypoint" (the
 name filled in) and Close. With keys: show the controls (a small crosshair marks the middle), then Enter
@@ -217,8 +219,19 @@ offline later. Without Wi-Fi a short message says that detail is missing here. O
 are fetched, one at a time.
 
 **Settings:** SD card cache on or off, prepared tiles deflated or raw, smooth zoom on or off, download
-while browsing on or off. Defaults: SD card cache off (switched off, its files are deleted in idle time),
-deflated, on, on. The map opens at ESA ESTEC, Noordwijk, the first time, then where you left it.
+while browsing on or off, pointer speed, labels, Latin names, route mode, **Walk prefers paths** (walking routes
+take paths, tracks and footways over roads; on) **Map style** (Standard or Outdoor; colour displays only), **Terrain** (hillshade and contour lines where heights
+are on the card, and heights with each new download; on) and **Marked trails** (off; see Known limits).
+
+**Terrain (0.9.0):** Maps → a region → Download terrain asks with the size and fetches the region's elevation
+(AWS Terrain Tiles, z12). The map then shows hillshade and contour lines from zoom 12, and a place's sheet its
+height. Elevation credits: About, Elevation.
+Defaults: SD card cache off (switched off, its files are deleted in idle time), deflated, on, on.
+
+**Outdoor style (0.9.0):** Settings → Map style → Outdoor. Paths in red, tracks in brown and cycleways in blue from
+zoom 12 (the standard style shows them from zoom 14), unpaved ones lighter, woods and meadows stronger. Peaks show
+with their height from zoom 10 in both styles. The first time, the tiles of zoom 12 and 13 are prepared again (a
+moment each, as you look at them or in idle time). The map opens at ESA ESTEC, Noordwijk, the first time, then where you left it.
 
 **Updates:** OpenFreeMap rebuilds its map about weekly. A region downloaded from an older build shows
 "outdated" in Downloaded maps. After about 30 s without input the app updates outdated regions quietly, one tile
@@ -277,6 +290,12 @@ app. The tile URL is read from OpenFreeMap's TileJSON. openstreetmap.org tile se
 - 1-bit displays get their own black-and-white style, so far checked only in renders on the PC, not on a 1-bit device.
 - The trackball in mouse mode is only lightly tested.
 - Recording stops when the app closes (background recording would need Tactility support).
+- Long routes on the T-Deck: car routes across Slovakia (about 400 km) work both ways; a bike route of that length
+  needs more memory than the T-Deck has. Between towns the map must be
+  downloaded zoomed out (z10).
+- Marked trails cannot be downloaded yet: overpass-api.de accepts only TLS 1.3, which Tactility's firmware leaves
+  out. Heights and contour lines work (AWS Terrain Tiles).
+- Vibration on turns needs a board with a motor (T-Deck Max, T-LoRa Pager); it was not tried on one.
 
 ## Credits
 
@@ -289,6 +308,10 @@ app. The tile URL is read from OpenFreeMap's TileJSON. openstreetmap.org tile se
 - Built for [Tactility](https://github.com/TactilityProject/Tactility).
 - Label font: Adwaita Sans, under the SIL Open Font License 1.1; see [THIRD_PARTY.md](THIRD_PARTY.md).
 - Place icons: [Maki](https://github.com/mapbox/maki) by Mapbox, CC0 1.0.
+- Elevation: AWS Terrain Tiles (tilezen/joerd). Europe terrain data produced using Copernicus data and information
+  funded by the European Union - EU-DEM layers; Austria terrain data © offene Daten Österreichs - Digitales
+  Geländemodell (DGM) Österreich; United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data
+  courtesy of the U.S. Geological Survey.
 
 ## Attribution
 

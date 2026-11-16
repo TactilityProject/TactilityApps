@@ -2,6 +2,7 @@
 #include "Style.h"
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 
 namespace maps {
@@ -47,12 +48,63 @@ constexpr Palette COLOR_PALETTE = {
     .minor = rgb(0xFFFFFF),
     .minorCasing = rgb(0xB8B4AE),
     .path = rgb(0xC08A5A),
+    .track = rgb(0xC08A5A),
+    .cycleway = rgb(0xC08A5A),
     .rail = rgb(0x707070),
     .pier = rgb(0xF2EFE9),
     .text = rgb(0x202020),
     .halo = rgb(0xFFFFFF),
     .marker = rgb(0x1A73E8),
     .binary = false,
+    .outdoor = false,
+};
+
+/** The colour palette with stronger woods and meadows and paths that stand out: red paths, brown tracks, blue
+ *  cycleways, as outdoor maps draw them. */
+constexpr Palette OUTDOOR_PALETTE = {
+    .background = rgb(0xF4F1E8),
+    .placeholder = rgb(0xE4E1DB),
+    .water = rgb(0x9CCBDD),
+    .wood = rgb(0x95C783),
+    .grass = rgb(0xC3E5A2),
+    .farmland = rgb(0xF0F0D2),
+    .wetland = rgb(0xCCE3C8),
+    .sand = rgb(0xF2E3B8),
+    .ice = rgb(0xDDECEC),
+    .rock = rgb(0xD8D2C8),
+    .residential = rgb(0xE3E0DC),
+    .commercial = rgb(0xF2DAD9),
+    .industrial = rgb(0xEBDBE8),
+    .cemetery = rgb(0xAACBAF),
+    .hospital = rgb(0xFFF0F0),
+    .school = rgb(0xFFFFE5),
+    .pitch = rgb(0xAAE0CB),
+    .military = rgb(0xF3E2E1),
+    .park = rgb(0xB9EBB6),
+    .building = rgb(0xD5CCC4),
+    .aerodrome = rgb(0xE9E7E2),
+    .runway = rgb(0xBBBBCC),
+    .boundary = rgb(0x8D618B),
+    .motorway = rgb(0xE892A2),
+    .motorwayCasing = rgb(0xC24E6B),
+    .trunk = rgb(0xF9B29C),
+    .trunkCasing = rgb(0xC84E2F),
+    .primary = rgb(0xFCD6A4),
+    .primaryCasing = rgb(0xA06B00),
+    .secondary = rgb(0xF7FABF),
+    .secondaryCasing = rgb(0x707D05),
+    .minor = rgb(0xFFFFFF),
+    .minorCasing = rgb(0xB0AAA2),
+    .path = rgb(0xC0392B),
+    .track = rgb(0x8B5A2B),
+    .cycleway = rgb(0x2F6FC0),
+    .rail = rgb(0x707070),
+    .pier = rgb(0xF4F1E8),
+    .text = rgb(0x202020),
+    .halo = rgb(0xFFFFFF),
+    .marker = rgb(0x1A73E8),
+    .binary = false,
+    .outdoor = true,
 };
 
 constexpr Palette MONOCHROME_PALETTE = {
@@ -90,12 +142,15 @@ constexpr Palette MONOCHROME_PALETTE = {
     .minor = rgb(0xFFFFFF),
     .minorCasing = rgb(0x404040),
     .path = rgb(0x303030),
+    .track = rgb(0x303030),
+    .cycleway = rgb(0x303030),
     .rail = rgb(0x000000),
     .pier = rgb(0xFFFFFF),
     .text = rgb(0x000000),
     .halo = rgb(0xFFFFFF),
     .marker = rgb(0x000000),
     .binary = false,
+    .outdoor = false,
 };
 
 /** Every colour is black or white; patterns decide how much black an area gets. */
@@ -134,12 +189,15 @@ constexpr Palette BINARY_PALETTE = {
     .minor = rgb(0x000000),
     .minorCasing = rgb(0xFFFFFF),
     .path = rgb(0x000000),
+    .track = rgb(0x000000),
+    .cycleway = rgb(0x000000),
     .rail = rgb(0x000000),
     .pier = rgb(0x000000),
     .text = rgb(0x000000),
     .halo = rgb(0xFFFFFF),
     .marker = rgb(0x000000),
     .binary = true,
+    .outdoor = false,
 };
 
 enum class RoadKind : uint8_t {
@@ -219,7 +277,9 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
         return false;
     }
     const RoadSpec& spec = ROAD_SPECS[static_cast<int>(kind)];
-    if (zoom < spec.minZoom) {
+    // The outdoor style shows paths and tracks from zoom 12, where the tiles have them
+    const bool outdoorPath = palette.outdoor && kind == RoadKind::Path;
+    if (zoom < (outdoorPath ? 12 : spec.minZoom)) {
         return false;
     }
     if (info.geometryType == GEOMETRY_POLYGON) {
@@ -235,7 +295,7 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
     const bool tunnel = info.brunnel == Value::tunnel;
     float width = std::fmax(0.6f, spec.widthAt14 * zoomScale(zoom));
     if (kind == RoadKind::Path) {
-        width = std::fmin(1.4f, width);
+        width = outdoorPath ? std::fmax(1.0f, std::fmin(2.0f, 1.3f * zoomScale(zoom))) : std::fmin(1.4f, width);
     }
     uint16_t fill;
     uint16_t casing;
@@ -258,7 +318,12 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
             break;
         case RoadKind::Path:
             fill = palette.path;
-            casing = palette.path;
+            if (info.featureClass == Value::track) {
+                fill = palette.track;
+            } else if (info.subclass == Value::cycleway) {
+                fill = palette.cycleway;
+            }
+            casing = fill;
             break;
         case RoadKind::Rail:
             fill = palette.rail;
@@ -285,6 +350,10 @@ bool roadStyle(const FeatureInfo& info, Stage stage, int zoom, const Palette& pa
     uint8_t opacity = tunnel ? 110 : 255;
     if (kind == RoadKind::Path) {
         opacity = zoom < 15 ? 120 : 190;
+        if (outdoorPath) {
+            // Unpaved ways a little lighter: the kind is in the colour, the surface in the strength
+            opacity = info.unpaved ? 200 : 255;
+        }
     }
     style = { cased || kind == RoadKind::Path || kind == RoadKind::Rail ? fill : casing, opacity, width, PATTERN_NONE };
     return true;
@@ -606,12 +675,18 @@ void styleCacheId(const Palette& palette, char* out, size_t size) {
         kind = 'b';
     } else if (&palette == &monochromePalette()) {
         kind = 'm';
+    } else if (palette.outdoor) {
+        kind = 'o';
     }
     snprintf(out, size, "%c%u", kind, static_cast<unsigned>(STYLE_VERSION));
 }
 
 const Palette& colorPalette() {
     return COLOR_PALETTE;
+}
+
+const Palette& outdoorPalette() {
+    return OUTDOOR_PALETTE;
 }
 
 const Palette& monochromePalette() {

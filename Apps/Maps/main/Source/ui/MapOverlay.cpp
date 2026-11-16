@@ -17,6 +17,8 @@ constexpr const char* ATTRIBUTION = "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMa
 constexpr const char* ATTRIBUTION_FIRST = "\xC2\xA9 OpenMapTiles";
 constexpr const char* ATTRIBUTION_SECOND = "\xC2\xA9 OpenStreetMap contributors";
 constexpr const char* ATTRIBUTION_MARK = "\xC2\xA9";
+/** While terrain is drawn: the elevation sources (AWS Terrain Tiles; the full lines are in About). */
+constexpr const char* ATTRIBUTION_TERRAIN = "Terrain: Copernicus EU-DEM, USGS";
 
 } // namespace
 
@@ -24,12 +26,13 @@ const char* MapOverlay::attributionText() {
     return ATTRIBUTION;
 }
 
-void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& boxX, int& boxY, int& boxWidth, int& boxHeight) {
-    // One line when it fits, otherwise the two credits on two lines, never a font under 12 px
+void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& boxX, int& boxY, int& boxWidth, int& boxHeight, bool terrain) {
+    // One line when it fits, otherwise the two credits on two lines, never a font under 12 px; the heights' line below
     const int height = normal->lineHeight();
     const bool fits = normal->textWidth(ATTRIBUTION) + 2 * MARGIN <= canvas.width;
     const char* const lines[] = { ATTRIBUTION_FIRST, ATTRIBUTION_SECOND };
-    const int lineCount = fits ? 1 : 2;
+    const int mapLines = fits ? 1 : 2;
+    const int lineCount = mapLines + (terrain ? 1 : 0);
     int width = 0;
     if (fits) {
         width = normal->textWidth(ATTRIBUTION);
@@ -38,6 +41,9 @@ void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& bo
             const int lineWidth = normal->textWidth(line);
             width = lineWidth > width ? lineWidth : width;
         }
+    }
+    if (terrain) {
+        width = std::max(width, normal->textWidth(ATTRIBUTION_TERRAIN));
     }
     const int y = canvas.height - bottomInset - lineCount * height - 1;
     boxX = 0;
@@ -50,6 +56,9 @@ void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& bo
     } else {
         normal->drawText(canvas, MARGIN, y, lines[0], palette.text);
         normal->drawText(canvas, MARGIN, y + height, lines[1], palette.text);
+    }
+    if (terrain) {
+        normal->drawText(canvas, MARGIN, y + mapLines * height, ATTRIBUTION_TERRAIN, palette.text);
     }
 }
 
@@ -108,16 +117,16 @@ Rect MapOverlay::drawScaleBar(Canvas& canvas, double metresPerPixel, const Palet
     return { boxX, boxY, boxWidth, height + 7 };
 }
 
-Rect MapOverlay::drawPill(Canvas& canvas, const char* text, const Palette& palette) {
+Rect MapOverlay::drawPill(Canvas& canvas, const char* text, const Palette& palette, int top) {
     const int maxText = canvas.width - 8 - 4 * MARGIN;
     Font& font = normal->textWidth(text) > maxText ? *small : *normal;
     const int textWidth = std::min(font.textWidth(text), maxText);
     const int width = textWidth + 4 * MARGIN;
     const int height = normal->lineHeight() + 2;
     const int x = (canvas.width - width) / 2;
-    canvas.fillRoundRect(x, 2, width, height, height / 2, palette.text, 200);
-    drawClippedText(canvas, font, x + 2 * MARGIN, 3 + (normal->lineHeight() - font.lineHeight()) / 2, text, textWidth, palette.halo);
-    return { x, 2, width, height };
+    canvas.fillRoundRect(x, top, width, height, height / 2, palette.text, 200);
+    drawClippedText(canvas, font, x + 2 * MARGIN, top + 1 + (normal->lineHeight() - font.lineHeight()) / 2, text, textWidth, palette.halo);
+    return { x, top, width, height };
 }
 
 Rect MapOverlay::drawToast(Canvas& canvas, const char* text, const UiTheme& theme) {

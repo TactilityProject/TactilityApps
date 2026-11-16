@@ -42,7 +42,7 @@ float pointSegment(float px, float py, const RoutePoint& a, const RoutePoint& b,
 
 } // namespace
 
-bool RouteSearch::addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides) {
+bool RouteSearch::addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides, const GrowArray<uint8_t>* coarse) {
     sides.clear();
     const size_t count = points.size();
     if (count < 2) {
@@ -63,6 +63,15 @@ bool RouteSearch::addSides(GraphSource& source, const GrowArray<RoutePoint>& poi
     GrowArray<Chunk> chunks;
     for (size_t first = 0; first + 1 < count; first += CHUNK_POINTS) {
         const size_t last = std::min(count - 1, first + CHUNK_POINTS);
+        if (coarse != nullptr && coarse->size() == count) {
+            bool allCoarse = true;
+            for (size_t i = first; i <= last && allCoarse; i++) {
+                allCoarse = (*coarse)[i] != 0;
+            }
+            if (allCoarse) {
+                continue;
+            }
+        }
         Chunk chunk { first, last, INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN };
         for (size_t i = first; i <= last; i++) {
             chunk.minX = std::min(chunk.minX, points[i].x);
@@ -114,6 +123,9 @@ bool RouteSearch::addSides(GraphSource& source, const GrowArray<RoutePoint>& poi
         }
     };
     for (size_t i = 0; i < count; i++) {
+        if (coarse != nullptr && coarse->size() == count && (*coarse)[i] != 0) {
+            continue;
+        }
         const RoutePoint& p = points[i];
         for (int oy = -1; oy <= 1; oy++) {
             for (int ox = -1; ox <= 1; ox++) {

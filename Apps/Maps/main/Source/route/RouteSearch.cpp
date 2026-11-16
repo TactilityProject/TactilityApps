@@ -169,6 +169,41 @@ float routeSeconds(RouteProfile profile, uint8_t roadClass, float lengthM) {
     return lengthM * 3.6f / kmh;
 }
 
+float routeCost(RouteProfile profile, uint8_t roadClass, uint8_t flags, float lengthM, bool trails) {
+    const float seconds = routeSeconds(profile, roadClass, lengthM);
+    const auto roadClassIs = [roadClass](RoadClass value) { return roadClass == static_cast<uint8_t>(value); };
+    const bool unpaved = (flags & EDGE_UNPAVED) != 0;
+    if (profile == RouteProfile::Bike) {
+        if ((flags & EDGE_CYCLEWAY) != 0) {
+            return seconds;
+        }
+        float factor = 1.0f;
+        if (roadClassIs(RoadClass::Primary)) {
+            factor = 1.6f;
+        } else if (roadClassIs(RoadClass::Secondary)) {
+            factor = 1.3f;
+        } else if (roadClassIs(RoadClass::Tertiary)) {
+            factor = 1.1f;
+        } else if (roadClassIs(RoadClass::Path)) {
+            factor = (flags & EDGE_STEPS) != 0 ? 6.0f : 1.4f;
+        }
+        return seconds * factor * (unpaved ? 1.4f : 1.0f);
+    }
+    if (profile == RouteProfile::Walk && trails) {
+        float factor = 1.0f;
+        if (roadClassIs(RoadClass::Primary) || roadClassIs(RoadClass::Trunk)) {
+            factor = 2.0f;
+        } else if (roadClassIs(RoadClass::Secondary) || roadClassIs(RoadClass::Tertiary)) {
+            factor = 1.6f;
+        } else if (roadClassIs(RoadClass::Minor) || roadClassIs(RoadClass::Service)) {
+            // Except a footway along it (sidewalk ways have their own class)
+            factor = 1.25f;
+        }
+        return seconds * factor;
+    }
+    return seconds;
+}
+
 const char* routeResultText(RouteResult result) {
     switch (result) {
         case RouteResult::Found:
@@ -242,17 +277,18 @@ RouteSearch::~RouteSearch() {
     end();
 }
 
-bool RouteSearch::begin(size_t memoryBytes) {
+bool RouteSearch::begin(size_t memoryBytes, RouteProfile profile) {
     end();
     // Node states take a quarter of the budget, the queue half as much, the tiles' graphs the rest: on the T-Deck
     // the graphs ran out first with 40 % for the states (device bench, 11 Nov 2026). Any size, not a power of two:
     // rounding down halved the states with 1.8 MB, and car routes of 2 km became "too long" (user, 11 Nov 2026)
-    const uint32_t capacity = static_cast<uint32_t>(std::clamp<size_t>(memoryBytes / 4 / sizeof(Entry), 4096, 1u << 20));
-    table = static_cast<Entry*>(largeAlloc(static_cast<size_t>(capacity) * sizeof(Entry)));
+    const uint32_t capacity = static_cast<uint32_t>(std::clamp<size_t>(memoryBytes / (profile == RouteProfile::Bike ? 4 : 5) / sizeof(Entry), 4096, 1u << 20));
+    // In pages (PagedArray.h): a PSRAM left in pieces by an earlier search still holds them
+    const bool tableReady = table.allocate(capacity);
     queueCapacity = capacity;
-    queue = static_cast<QueueItem*>(largeAlloc(static_cast<size_t>(queueCapacity) * sizeof(QueueItem)));
+    const bool queueReady = queue.allocate(queueCapacity);
     tiles = static_cast<Tile*>(largeAlloc(sizeof(Tile) * MAX_TILES));
-    if (table == nullptr || queue == nullptr || tiles == nullptr) {
+    if (!tableReady || !queueReady || tiles == nullptr) {
         end();
         return false;
     }
@@ -279,11 +315,9 @@ void RouteSearch::end() {
     if (tiles != nullptr) {
         release();
     }
-    largeFree(table);
-    largeFree(queue);
+    table.release();
+    queue.release();
     largeFree(tiles);
-    table = nullptr;
-    queue = nullptr;
     tiles = nullptr;
     fileBuffer.release();
     bodyBuffer.release();
@@ -298,7 +332,7 @@ bool RouteSearch::loadTile(GraphSource& source, const TileKey& tile, Tile& out) 
     const bool read = readTileFile(source, tile);
     loadMs += nowMs() - start;
     GraphHeader header {};
-    if (!read || !readGraphHeader(fileBuffer.begin(), fileBuffer.size(), header) || header.version != GRAPH_FORMAT_VERSION ||
+    if (!read || !readGraphHeader(fileBuffer.begin(), fileBuffer.size(), header) || !isReadableGraphVersion(header.version) ||
         !(header.tile == tile) || GRAPH_HEADER_SIZE + header.storedSize > fileBuffer.size() || header.nodeCount > 65535 ||
         header.edgeCount >= 32768 ||
         header.bodySize != header.nodeCount * GRAPH_NODE_BYTES + header.edgeCount * GRAPH_EDGE_BYTES + header.shapeBytes + header.nameBytes) {
@@ -434,6 +468,9 @@ int RouteSearch::tileSlot(GraphSource& source, const TileKey& tile) {
     }
     // Once the memory or the tile list is full no further tile is read: the search ends as too long
     if (tilesFull || tileCount >= MAX_TILES) {
+        if (!tilesFull) {
+            logInfo("Route: tile list full (%d tiles)", tileCount);
+        }
         tilesFull = true;
         return -2;
     }
@@ -441,6 +478,8 @@ int RouteSearch::tileSlot(GraphSource& source, const TileKey& tile) {
         // Over the budget: the tile counts as missing (never read again), the search goes on around it. Short of
         // memory on the device, or no memory for the tile: the search ends
         if (allocationFailed || source.memoryShort()) {
+            logInfo("Route: no memory for more tiles after %d (%u KB of graphs, budget %u KB)%s", tileCount,
+                static_cast<unsigned>(graphBytes / 1024), static_cast<unsigned>(budget / 1024), allocationFailed ? ", allocation failed" : "");
             tilesFull = true;
             return -2;
         }
@@ -456,7 +495,7 @@ int RouteSearch::tileSlot(GraphSource& source, const TileKey& tile) {
 }
 
 void RouteSearch::resetStates() {
-    memset(static_cast<void*>(table), 0xFF, static_cast<size_t>(tableCapacity) * sizeof(Entry));
+    table.fill(0xFF);
     used = 0;
     maxNodes = tableCapacity / 4 * 3;
     queueSize = 0;
@@ -881,7 +920,7 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
     cancelled = false;
     fileBufferValid = false;
     profile = searchProfile;
-    if (table == nullptr) {
+    if (!table.isAllocated()) {
         return RouteResult::NoMemory;
     }
     release();
@@ -1133,7 +1172,7 @@ RouteResult RouteSearch::find(GraphSource& source, double fromLat, double fromLo
                     continue;
                 }
                 const uint16_t other = backwards ? tile->from[edge] : tile->to[edge];
-                const float cost = routeSeconds(profile, tile->roadClass[edge], tile->length[edge] / 10.0f);
+                const float cost = routeCost(profile, tile->roadClass[edge], tile->flags[edge], tile->length[edge] / 10.0f, preferTrails);
                 relax(keyOf(slot, other), g + cost, item.key, edge, backwards ? VIA_BACKWARDS : 0, goalPoint, weighted);
             }
             // Across a tile side: the neighbour's border node at the same place and level is the same point

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "LabelLayout.h"
 
+#include "PoiTypes.h"
 #include "Raster.h"
 
 #include <algorithm>
@@ -93,10 +94,26 @@ enum Priority : uint8_t {
     PRIORITY_MINOR_ROAD,
     PRIORITY_HAMLET,
     PRIORITY_WATER,
-    PRIORITY_PEAK,
     PRIORITY_POI,
     PRIORITY_HOUSE_NUMBER
 };
+
+/** An icon that has no room shrinks to this dot (alpha, DOT_SIZE x DOT_SIZE). */
+constexpr uint8_t DOT_MASK[LabelLayout::DOT_SIZE * LabelLayout::DOT_SIZE] = {
+    0, 160, 255, 160, 0,
+    160, 255, 255, 255, 160,
+    255, 255, 255, 255, 255,
+    160, 255, 255, 255, 160,
+    0, 160, 255, 160, 0,
+};
+
+/** The first zoom a peak shows at, by its rank in the tile (1 is the highest): the high ones at 10, all from 14. */
+int peakZoom(int32_t rank) {
+    if (rank < 0) {
+        return 14;
+    }
+    return rank <= 2 ? 10 : (rank <= 4 ? 11 : (rank <= 8 ? 12 : (rank <= 15 ? 13 : 14)));
+}
 
 uint32_t nextCodepoint(const char*& text, const char* end) {
     const auto first = static_cast<uint8_t>(*text++);
@@ -340,9 +357,13 @@ bool LabelLayout::wants(const LabelRecord& record, uint8_t& priority, uint8_t& f
             }
             return zoom >= 15 && density == LabelDensity::Normal;
         case LabelKind::Peak:
+            if (!style.peaks) {
+                return false;
+            }
             color = style.peak;
-            priority = PRIORITY_PEAK;
-            return zoom >= 12 + later;
+            // With the POIs: icons before any name, a peak's name only where room is left
+            priority = PRIORITY_POI;
+            return zoom >= peakZoom(record.rank) + later;
         case LabelKind::Poi: {
             PoiAppearance look {};
             if (poiLookup == nullptr || !poiLookup(static_cast<uint8_t>(record.labelClass), look) || look.icon == nullptr) {
@@ -350,6 +371,14 @@ bool LabelLayout::wants(const LabelRecord& record, uint8_t& priority, uint8_t& f
             }
             color = style.binary ? style.place : look.color;
             priority = PRIORITY_POI;
+            if (zoom >= POI_ALL_ZOOM && density == LabelDensity::Normal) {
+                // Nothing is left out here, whatever the type's zoom or the rank; only the barriers wait for the zoom above
+                return look.minZoom < BARRIER_ZOOM || zoom >= BARRIER_ZOOM;
+            }
+            // Below that an unnamed POI shows only if its type is worth it without a name (a bus stop, a toilet)
+            if (record.nameLength == 0 && !poiType(static_cast<uint8_t>(record.labelClass)).unnamedOk) {
+                return false;
+            }
             // From the type's zoom (15 for most); the most important ones (rank 1-2) one level earlier, at least z14
             int first = look.minZoom;
             if (record.rank >= 0 && record.rank <= 2) {
@@ -423,6 +452,17 @@ void LabelLayout::addRecords(const uint8_t* bytes, size_t size, int count, const
         if (!wants(record, candidate.priority, candidate.fontSize, candidate.color)) {
             continue;
         }
+        // A point off screen is dropped before its icon and its name's letters are looked up: at z18 one z14 tile is
+        // about 16 screens, most of its points are elsewhere
+        if (record.pointCount == 1) {
+            const auto u = static_cast<float>(record.points[0]);
+            const auto v = static_cast<float>(record.points[1]);
+            const float x = transform.a * u + transform.b * v + transform.x;
+            const float y = transform.c * u + transform.d * v + transform.y;
+            if (x < -40.0f || y < -20.0f || x > screenWidth + 40.0f || y > screenHeight + 20.0f) {
+                continue;
+            }
+        }
         candidate.kind = record.kind;
         if (record.kind == LabelKind::Poi) {
             PoiAppearance look {};
@@ -430,6 +470,14 @@ void LabelLayout::addRecords(const uint8_t* bytes, size_t size, int count, const
             candidate.poiType = static_cast<uint8_t>(record.labelClass);
             candidate.icon = look.icon;
             candidate.iconSize = static_cast<uint8_t>(look.iconSize);
+        } else if (record.kind == LabelKind::Peak && poiLookup != nullptr) {
+            // A peak, saddle or cliff carries the type of its icon; without one it is a name above its point
+            candidate.poiType = static_cast<uint8_t>(record.labelClass);
+            PoiAppearance look {};
+            if (poiLookup(static_cast<uint8_t>(record.labelClass), look) && look.icon != nullptr) {
+                candidate.icon = look.icon;
+                candidate.iconSize = static_cast<uint8_t>(look.iconSize);
+            }
         }
         // The Latin-script name when asked for, and for names in scripts the label font has no letters for (Japanese,
         // Chinese, Arabic and others)
@@ -475,6 +523,8 @@ void LabelLayout::addRecords(const uint8_t* bytes, size_t size, int count, const
             const auto v = static_cast<float>(record.points[1]);
             candidate.x = transform.a * u + transform.b * v + transform.x;
             candidate.y = transform.c * u + transform.d * v + transform.y;
+            candidate.iconX = candidate.x;
+            candidate.iconY = candidate.y;
             // Points off screen cannot show their label
             if (candidate.x < -40.0f || candidate.y < -20.0f || candidate.x > screenWidth + 40.0f || candidate.y > screenHeight + 20.0f) {
                 continue;
@@ -659,7 +709,7 @@ bool LabelLayout::placePoint(const Candidate& candidate) {
     const float halfHeight = font->lineHeight() / 2.0f + GAP;
     // Peaks get their name above the point, places centred on it
     float centerX = candidate.x;
-    float centerY = candidate.priority == PRIORITY_PEAK ? candidate.y - halfHeight - 3.0f : candidate.y;
+    float centerY = candidate.kind == LabelKind::Peak ? candidate.y - halfHeight - 3.0f : candidate.y;
     if (!gridFree(candidate.x, centerY, halfWidth, halfHeight, 0.0f)) {
         // Countries, cities and towns try just above, below and beside their point before they give up: a capital next
         // to its country's name (Budapest under Magyarorszag) no longer loses to a small city with free space
@@ -689,24 +739,58 @@ bool LabelLayout::placePoint(const Candidate& candidate) {
     return true;
 }
 
-bool LabelLayout::placePoiIcon(const Candidate& candidate) {
+bool LabelLayout::hasIcon(const Candidate& candidate) {
+    return candidate.icon != nullptr && (candidate.kind == LabelKind::Poi || candidate.kind == LabelKind::Peak);
+}
+
+bool LabelLayout::placePoiIcon(Candidate& candidate) {
     if (candidate.icon == nullptr) {
         return false;
     }
-    // Chains repeat names (two shops of the same name a street apart): only a copy right next to it is the same POI
+    // Chains repeat names (two shops of the same name a street apart): only a copy right next to it is the same POI.
+    // Where every POI is drawn only the same spot is a copy (the neighbour tile's own record of it): two waste baskets
+    // or bicycle racks a few pixels apart are two.
     const char* name = texts + candidate.textOffset;
+    const float same = zoom >= POI_ALL_ZOOM && density == LabelDensity::Normal ? 1.5f : 6.0f;
     for (int i = 0; i < pendingCount; i++) {
         const Candidate& other = candidates[pending[i]];
-        if (other.poiType == candidate.poiType && strcmp(texts + other.textOffset, name) == 0 && std::fabs(other.x - candidate.x) < 6.0f &&
-            std::fabs(other.y - candidate.y) < 6.0f) {
+        if (other.poiType == candidate.poiType && strcmp(texts + other.textOffset, name) == 0 && std::fabs(other.x - candidate.x) < same &&
+            std::fabs(other.y - candidate.y) < same) {
             return false;
         }
     }
     const float iconHalf = candidate.iconSize / 2.0f + ICON_GAP;
-    if (!gridFree(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f)) {
+    candidate.iconX = candidate.x;
+    candidate.iconY = candidate.y;
+    candidate.dot = false;
+    if (gridFree(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f)) {
+        gridMark(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f);
+        return true;
+    }
+    if (zoom < POI_ALL_ZOOM || density != LabelDensity::Normal || candidate.kind != LabelKind::Poi) {
         return false;
     }
-    gridMark(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f);
+    // Nothing is left out: the icon takes the nearest free spot within ICON_MOVE_PIXELS, ring by ring (the eight
+    // directions of each, the same order every time, so a view always gives the same picture)
+    static constexpr int DIRECTIONS[8][2] = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }, { 1, -1 } };
+    for (int ring = 2; ring <= ICON_MOVE_PIXELS; ring += 2) {
+        for (const auto& direction : DIRECTIONS) {
+            // The diagonals are as far from the point as the straight ones
+            const float reach = direction[0] != 0 && direction[1] != 0 ? ring * 0.7071f : static_cast<float>(ring);
+            const float x = candidate.x + direction[0] * reach;
+            const float y = candidate.y + direction[1] * reach;
+            if (gridFree(x, y, iconHalf, iconHalf, 0.0f)) {
+                gridMark(x, y, iconHalf, iconHalf, 0.0f);
+                candidate.iconX = x;
+                candidate.iconY = y;
+                return true;
+            }
+        }
+    }
+    // No room: a small dot at the point. It takes no cells, so it never costs a neighbour its place.
+    candidate.icon = DOT_MASK;
+    candidate.iconSize = DOT_SIZE;
+    candidate.dot = true;
     return true;
 }
 
@@ -717,27 +801,29 @@ void LabelLayout::finishPois() {
         const Candidate& candidate = candidates[pending[i]];
         LabelFont* font = fontFor(candidate.fontSize);
         const float iconHalf = candidate.iconSize / 2.0f + ICON_GAP;
-        if (font != nullptr && zoom >= POI_NAME_ZOOM && candidate.textLength > 0) {
+        // POI names wait for the close zoom levels; the name of a peak is what it is shown for. A dot has no name.
+        const bool nameWanted = (zoom >= POI_NAME_ZOOM || candidate.kind == LabelKind::Peak) && candidate.textLength > 0 && !candidate.dot;
+        if (font != nullptr && nameWanted) {
             const int textPixels = candidateWidth(*font, candidate);
             const float contentWidth = candidate.iconSize + 3.0f + textPixels;
-            const float centerX = candidate.x - candidate.iconSize / 2.0f + contentWidth / 2.0f;
+            const float centerX = candidate.iconX - candidate.iconSize / 2.0f + contentWidth / 2.0f;
             const float halfHeight = std::max(iconHalf, font->lineHeight() / 2.0f + GAP);
             // Its own icon's cells are its own: taken out for the test of the icon and name together
-            gridMark(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f, false);
-            if (gridFree(centerX, candidate.y, contentWidth / 2.0f + GAP, halfHeight, 0.0f) &&
-                (!onScreen(centerX, candidate.y, contentWidth / 2.0f, halfHeight) ||
-                    drawSprite(candidate, centerX, candidate.y, 0.0f, textPixels, true))) {
-                gridMark(centerX, candidate.y, contentWidth / 2.0f + GAP, halfHeight, 0.0f);
+            gridMark(candidate.iconX, candidate.iconY, iconHalf, iconHalf, 0.0f, false);
+            if (gridFree(centerX, candidate.iconY, contentWidth / 2.0f + GAP, halfHeight, 0.0f) &&
+                (!onScreen(centerX, candidate.iconY, contentWidth / 2.0f, halfHeight) ||
+                    drawSprite(candidate, centerX, candidate.iconY, 0.0f, textPixels, true))) {
+                gridMark(centerX, candidate.iconY, contentWidth / 2.0f + GAP, halfHeight, 0.0f);
                 continue;
             }
-            gridMark(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f);
+            gridMark(candidate.iconX, candidate.iconY, iconHalf, iconHalf, 0.0f);
         }
-        if (!onScreen(candidate.x, candidate.y, iconHalf, iconHalf)) {
+        if (!onScreen(candidate.iconX, candidate.iconY, iconHalf, iconHalf)) {
             continue;   // in the margin: its place is kept, nothing is drawn
         }
-        if (!drawSprite(candidate, candidate.x, candidate.y, 0.0f, 0, false)) {
+        if (!drawSprite(candidate, candidate.iconX, candidate.iconY, 0.0f, 0, false) && !candidate.dot) {
             // The sprite arena is full: the place is given back
-            gridMark(candidate.x, candidate.y, iconHalf, iconHalf, 0.0f, false);
+            gridMark(candidate.iconX, candidate.iconY, iconHalf, iconHalf, 0.0f, false);
         }
     }
     pendingCount = 0;
@@ -769,11 +855,20 @@ int LabelLayout::placeLine(const Candidate& candidate) {
     if (total < needed || !(total < 200000.0f)) {
         return 0;
     }
+    // The segment search goes on from where the last one ended when the distance grew (the tries walk along the line):
+    // from the line's start each time it was quadratic in the points of a long street
+    int searchFrom = 1;
+    float searchedTo = 0.0f;
     auto pointAt = [&](float distance, float& x, float& y, int& segment) {
-        segment = 1;
+        segment = distance >= searchedTo ? searchFrom : 1;
+        while (segment > 1 && lengths[segment - 1] >= distance) {
+            segment--;
+        }
         while (segment < used - 1 && lengths[segment] < distance) {
             segment++;
         }
+        searchFrom = segment;
+        searchedTo = distance;
         const float span = std::max(1e-3f, lengths[segment] - lengths[segment - 1]);
         const float t = std::clamp((distance - lengths[segment - 1]) / span, 0.0f, 1.0f);
         x = points[2 * segment - 2] + (points[2 * segment] - points[2 * segment - 2]) * t;
@@ -801,19 +896,19 @@ int LabelLayout::placeLine(const Candidate& candidate) {
         const float chordY = y1 - y0;
         const float chord = std::sqrt(chordX * chordX + chordY * chordY);
         bool straight = chord >= needed * 0.92f;
-        // Every segment inside the stretch must run close to the chord's direction
+        // Every segment inside the stretch must run close to the chord's direction: the angle between them at most
+        // MAX_BEND, tested as the cosine (a dot product) instead of an atan2 per segment
         const float angle = std::atan2(chordY, chordX);
+        const float cosMax = std::cos(MAX_BEND);
         for (int i = first; i <= last && straight; i++) {
             const float sx = points[2 * i] - points[2 * i - 2];
             const float sy = points[2 * i + 1] - points[2 * i - 1];
-            if (sx * sx + sy * sy < 4.0f) {
+            const float lengthSquared = sx * sx + sy * sy;
+            if (lengthSquared < 4.0f) {
                 continue;
             }
-            float bend = std::fabs(std::atan2(sy, sx) - angle);
-            if (bend > PI) {
-                bend = 2.0f * PI - bend;
-            }
-            straight = bend <= MAX_BEND;
+            const float dot = sx * chordX + sy * chordY;
+            straight = dot > 0.0f && dot * dot >= cosMax * cosMax * lengthSquared * chord * chord;
         }
         // Upright: text never runs from right to left
         float upright = angle;
@@ -829,6 +924,31 @@ int LabelLayout::placeLine(const Candidate& candidate) {
         }
         return false;
     };
+    // Only the part of the line near the screen is tried: at z18 a street runs far beyond it, and every 16 px of it was
+    // tried (half of placing the labels of a view, 16 Nov)
+    float tryFrom = 0.0f;
+    float tryTo = total;
+    {
+        int firstNear = -1;
+        int lastNear = -1;
+        for (int i = 0; i < used; i++) {
+            const float x = points[2 * i];
+            const float y = points[2 * i + 1];
+            if (x >= -needed && y >= -needed && x <= screenWidth + needed && y <= screenHeight + needed) {
+                if (firstNear < 0) {
+                    firstNear = i;
+                }
+                lastNear = i;
+            }
+        }
+        if (firstNear >= 0) {
+            // From the segment before the first point near the screen to the segment after the last one
+            // On the same 16 px steps as from the line's start, so the labels land where they did
+            tryFrom = std::floor(std::max(0.0f, lengths[std::max(0, firstNear - 1)] - needed) / 16.0f) * 16.0f;
+            tryTo = lengths[std::min(used - 1, lastNear + 1)];
+        }
+        // No point near the screen: a long segment may still cross it, the whole line is tried as before
+    }
     int placedHere = 0;
     // A name that was on screen keeps its stretch while that is still good: otherwise it slid along its street with
     // every pan, to the first stretch on screen, and pushed other labels away
@@ -843,7 +963,7 @@ int LabelLayout::placeLine(const Candidate& candidate) {
             mapToScreen(kept[k].worldX * scale, kept[k].worldY * scale, screenX, screenY);
             const auto nearX = static_cast<float>(screenX);
             const auto nearY = static_cast<float>(screenY);
-            for (float start = 0.0f; start + needed <= total; start += 16.0f) {
+            for (float start = tryFrom; start + needed <= tryTo + needed && start + needed <= total; start += 16.0f) {
                 if (tryAt(start, &nearX, &nearY)) {
                     placedHere++;
                     break;
@@ -851,7 +971,7 @@ int LabelLayout::placeLine(const Candidate& candidate) {
             }
         }
     }
-    for (float start = 0.0f; start + needed <= total && placedCount < MAX_LABELS;) {
+    for (float start = tryFrom; start <= tryTo && start + needed <= total && placedCount < MAX_LABELS;) {
         if (tryAt(start, nullptr, nullptr)) {
             placedHere++;
             start += needed + LINE_REPEAT_PIXELS;
@@ -993,26 +1113,39 @@ bool LabelLayout::drawSprite(const Candidate& candidate, float centerX, float ce
             const int right = std::min(width - 1, static_cast<int>(std::ceil(maxX)) + 1);
             const int top = std::max(0, static_cast<int>(std::floor(minY)) - 1);
             const int bottom = std::min(height - 1, static_cast<int>(std::ceil(maxY)) + 1);
+            // Back into the glyph's mask for each sprite pixel, sampled at its centre with bilinear filtering, in 16.16
+            // fixed point: along a row the mask position moves by (cos, -sin) per pixel. Floats per pixel took about
+            // half of placing the labels of a z18 view (16 Nov).
+            const auto fixed = [](float value) { return static_cast<int32_t>(std::floor(value * 65536.0f + 0.5f)); };
+            const int32_t stepX = fixed(cosine);
+            const int32_t stepY = fixed(-sine);
+            const int glyphWidth = glyph.width;
+            const int glyphHeight = glyph.height;
+            const uint8_t* mask = glyph.alpha;
+            auto at = [mask, glyphWidth, glyphHeight](int px, int py) -> int {
+                return static_cast<unsigned>(px) >= static_cast<unsigned>(glyphWidth) || static_cast<unsigned>(py) >= static_cast<unsigned>(glyphHeight)
+                    ? 0 : mask[py * glyphWidth + px];
+            };
             for (int y = top; y <= bottom; y++) {
-                for (int x = left; x <= right; x++) {
-                    // Back into the glyph's mask, sampled at the pixel centre with bilinear filtering
-                    const float dx = x + 0.5f - spriteCenterX;
-                    const float dy = y + 0.5f - spriteCenterY;
-                    const float gx = dx * cosine + dy * sine - originX - 0.5f;
-                    const float gy = -dx * sine + dy * cosine - originY - 0.5f;
-                    if (gx < -1.0f || gy < -1.0f || gx >= glyph.width || gy >= glyph.height) {
+                const float dy = y + 0.5f - spriteCenterY;
+                const float dx0 = left + 0.5f - spriteCenterX;
+                int32_t gx = fixed(dx0 * cosine + dy * sine - originX - 0.5f);
+                int32_t gy = fixed(-dx0 * sine + dy * cosine - originY - 0.5f);
+                uint8_t* row = textPlane + y * width;
+                for (int x = left; x <= right; x++, gx += stepX, gy += stepY) {
+                    if (gx < -65536 || gy < -65536 || gx >= (glyphWidth << 16) || gy >= (glyphHeight << 16)) {
                         continue;
                     }
-                    const int ix = static_cast<int>(std::floor(gx));
-                    const int iy = static_cast<int>(std::floor(gy));
-                    const float fx = gx - ix;
-                    const float fy = gy - iy;
-                    auto at = [&](int px, int py) -> float {
-                        return px < 0 || py < 0 || px >= glyph.width || py >= glyph.height ? 0.0f : glyph.alpha[py * glyph.width + px];
-                    };
-                    const float value = (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy;
-                    uint8_t& target = textPlane[y * width + x];
-                    target = std::max(target, static_cast<uint8_t>(std::min(255.0f, value + 0.5f)));
+                    const int ix = gx >> 16;
+                    const int iy = gy >> 16;
+                    const int fx = (gx >> 8) & 0xFF;
+                    const int fy = (gy >> 8) & 0xFF;
+                    const int topRow = at(ix, iy) * (256 - fx) + at(ix + 1, iy) * fx;
+                    const int bottomRow = at(ix, iy + 1) * (256 - fx) + at(ix + 1, iy + 1) * fx;
+                    const int value = (topRow * (256 - fy) + bottomRow * fy + 32768) >> 16;
+                    if (value > row[x]) {
+                        row[x] = static_cast<uint8_t>(value > 255 ? 255 : value);
+                    }
                 }
             }
         }
@@ -1172,7 +1305,7 @@ int LabelLayout::place() {
     });
     bool poisOpen = false;
     for (int i = 0; i < candidateCount && placedCount + pendingCount < MAX_LABELS; i++) {
-        if (candidates[i].kind == LabelKind::Poi) {
+        if (hasIcon(candidates[i])) {
             // Icons first, all of them; their names when the last POI had its turn
             poisOpen = true;
             if (placePoiIcon(candidates[i])) {
@@ -1235,12 +1368,17 @@ void LabelLayout::draw(Canvas& canvas, int offsetX, int offsetY, bool lineLabels
     }
 }
 
+bool LabelLayout::selectable(const Placed& label) {
+    // POIs, house numbers and peaks (with their saddles, cliffs and volcanoes): the sheet tells their type and height
+    return label.kind == LabelKind::Poi || label.kind == LabelKind::HouseNumber || (label.kind == LabelKind::Peak && !label.line);
+}
+
 bool LabelLayout::item(int index, PlacedItem& out) const {
     if (index < 0 || index >= placedCount) {
         return false;
     }
     const Placed& label = placed[index];
-    if (label.kind != LabelKind::Poi && label.kind != LabelKind::HouseNumber) {
+    if (!selectable(label)) {
         return false;
     }
     out = { label.kind, label.poiType, texts + label.textOffset, label.anchorX, label.anchorY };
@@ -1252,7 +1390,7 @@ int LabelLayout::pick(int x, int y, int radius, int offsetX, int offsetY) const 
     int bestDistance = radius * radius + 1;
     for (int i = 0; i < placedCount; i++) {
         const Placed& label = placed[i];
-        if (label.kind != LabelKind::Poi && label.kind != LabelKind::HouseNumber) {
+        if (!selectable(label)) {
             continue;
         }
         // Inside the label's box counts as on it; otherwise the distance to its point
@@ -1276,7 +1414,7 @@ int LabelLayout::byDistance(int x, int y, int* out, int max, int offsetX, int of
     const int capacity = max < MAX_LABELS ? max : MAX_LABELS;
     for (int i = 0; i < placedCount && capacity > 0; i++) {
         const Placed& label = placed[i];
-        if (label.kind != LabelKind::Poi && label.kind != LabelKind::HouseNumber) {
+        if (!selectable(label)) {
             continue;
         }
         const int dx = label.anchorX + offsetX - x;

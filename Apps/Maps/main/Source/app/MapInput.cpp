@@ -145,6 +145,9 @@ void MapView::pressControl(Control control) {
         case Control::Search:
             openSearch();
             break;
+        case Control::Style:
+            switchMapStyle();
+            break;
         default:
             break;
     }
@@ -289,6 +292,11 @@ void MapView::handleMapKey(uint32_t key) {
             headingUp = false;
             setBearing(0.0f, true);
             break;
+        case 'l':
+        case 'L':
+            // The map style, as the button under search
+            switchMapStyle();
+            break;
         case 'm':
         case 'M':
             openMenu();
@@ -360,17 +368,27 @@ void MapView::click(bool fromPointer) {
 }
 
 void MapView::longClick() {
-    // The menu opens from the map, a long click elsewhere goes back
-    if (prompt.isOpen()) {
+    // The menu opens from the map, a long click elsewhere goes back: it closes the topmost overlay
+    const InputLayer layer = inputLayer();
+    if (layer == InputLayer::Prompt) {
         prompt.close();
-    } else if (dialog.isOpen()) {
+    } else if (layer == InputLayer::Dialog) {
         dialog.close();
-    } else if (downloadCard.isOpen()) {
+    } else if (layer == InputLayer::Menu) {
+        closeMenu();
+    } else if (layer == InputLayer::DownloadCard) {
         downloadCard.close();
+    } else if (layer == InputLayer::WorkCard) {
+        workCard.close();
+    } else if (layer == InputLayer::SearchSheet) {
+        closeSearch();
     } else if (sheet.isOpen() && screen == Screen::Map) {
         handleSheetButton(WaypointSheet::Button::Cancel);
-    } else if (menuOpen) {
-        closeMenu();
+    } else if (screen == Screen::Map && controls.isVisible() && !cursorShown && !searchSheet.isOpen() && !pickingStart &&
+               !routeCard.isOpen() && !workCard.isOpen()) {
+        // With the crosshair shown, holding the click opens a waypoint sheet for the point under it (its height
+        // with it), as holding the map does on a touch screen; with the controls hidden it opens the menu
+        openNewWaypoint(worldYToLat(centerY, zoom), worldXToLon(centerX, zoom));
     } else if (screen == Screen::Map) {
         openMenu();
     } else {
@@ -462,10 +480,16 @@ void MapView::handleMouse(uint32_t now) {
         mouseDragged = false;
         mouseDragDistance = 0;
         mouseDownAt = now;
+    } else if (pressed && mouseHeld && !mouseLong && !mouseDragged && now - mouseDownAt >= LONG_PRESS_MS && cursorShown &&
+               screen == Screen::Map && !menuOpen && !dialog.isOpen() && !prompt.isOpen() && !searchSheet.isOpen()) {
+        // Holding the button still on the map: as holding it on a touch screen (a waypoint sheet for the point, with
+        // its height; the position button: one where I am)
+        mouseLong = true;
+        handleLongPress(cursorX, cursorY);
     } else if (!pressed && mouseHeld) {
         mouseHeld = false;
-        // Holding the button does nothing by itself, the menu is on the button at the top left
-        if (!mouseDragged && now - mouseDownAt < LONG_PRESS_MS) {
+        // A short click is a tap where the pointer is; a hold did its own thing above
+        if (!mouseDragged && !mouseLong && now - mouseDownAt < LONG_PRESS_MS) {
             click(true);
         }
         mouseDragged = false;
@@ -556,6 +580,28 @@ void MapView::handleTouch(uint32_t now) {
     }
 }
 
+MapView::InputLayer MapView::inputLayer() const {
+    if (prompt.isOpen()) {
+        return InputLayer::Prompt;
+    }
+    if (dialog.isOpen()) {
+        return InputLayer::Dialog;
+    }
+    if (menuOpen) {
+        return InputLayer::Menu;
+    }
+    if (downloadCard.isOpen()) {
+        return InputLayer::DownloadCard;
+    }
+    if (workCard.isOpen()) {
+        return InputLayer::WorkCard;
+    }
+    if (searchSheet.isOpen() && screen == Screen::Map) {
+        return InputLayer::SearchSheet;
+    }
+    return InputLayer::Screen;
+}
+
 void MapView::handleTap(int x, int y) {
     // Taps on something answer at once, taps on the map wait to tell a single from a double tap
     dirty = true;
@@ -569,44 +615,43 @@ void MapView::handleTap(int x, int y) {
         gestures.consumeTap();
         return;
     }
-    if (prompt.isOpen()) {
-        if (prompt.handleTap(x, y) == UiAction::Chosen) {
-            confirmPrompt();
-        }
-        gestures.consumeTap();
-        return;
-    }
-    if (searchSheet.isOpen() && !menuOpen && screen == Screen::Map) {
-        handleSearchEvent(searchSheet.handleTap(x, y));
-        gestures.consumeTap();
-        return;
-    }
-    if (dialog.isOpen()) {
-        if (dialog.handleTap(x, y) == UiAction::Chosen) {
-            confirmDialog();
-        }
-        gestures.consumeTap();
-        return;
-    }
-    if (menuOpen) {
-        if (mainMenuOpen()) {
-            handleMainMenuEvent(menuGrid.handleTap(x, y));
-        } else {
-            handleListAction(menu.handleTap(x, y));
-        }
-        gestures.consumeTap();
-        return;
-    }
-    if (downloadCard.isOpen()) {
-        handleCardButton(downloadCard.handleTap(x, y));
-        gestures.consumeTap();
-        return;
-    }
-    if (workCard.isOpen()) {
-        // Close, or a tap anywhere else: the card only informs
-        workCard.close();
-        gestures.consumeTap();
-        return;
+    // The topmost overlay takes the tap, nothing under it reacts
+    switch (inputLayer()) {
+        case InputLayer::Prompt:
+            if (prompt.handleTap(x, y) == UiAction::Chosen) {
+                confirmPrompt();
+            }
+            gestures.consumeTap();
+            return;
+        case InputLayer::Dialog:
+            if (dialog.handleTap(x, y) == UiAction::Chosen) {
+                confirmDialog();
+            }
+            gestures.consumeTap();
+            return;
+        case InputLayer::Menu:
+            if (mainMenuOpen()) {
+                handleMainMenuEvent(menuGrid.handleTap(x, y));
+            } else {
+                handleListAction(menu.handleTap(x, y));
+            }
+            gestures.consumeTap();
+            return;
+        case InputLayer::DownloadCard:
+            handleCardButton(downloadCard.handleTap(x, y));
+            gestures.consumeTap();
+            return;
+        case InputLayer::WorkCard:
+            // Close, or a tap anywhere else: the card only informs
+            workCard.close();
+            gestures.consumeTap();
+            return;
+        case InputLayer::SearchSheet:
+            handleSearchEvent(searchSheet.handleTap(x, y));
+            gestures.consumeTap();
+            return;
+        case InputLayer::Screen:
+            break;
     }
     if (screen == Screen::Map && workDotShown && workDotTarget(WORK_DOT_X, WORK_DOT_Y).contains(x, y)) {
         workCard.open();
@@ -767,19 +812,20 @@ void MapView::handleGesture(const Gesture& gesture) {
                     }
                 }
             } else if (!dialog.isOpen() && !prompt.isOpen() && std::abs(gesture.dy) >= std::abs(gesture.dx)) {
-                // Lists and the About page scroll with the finger, a row at a time; the highlight stays where it is
+                // Lists follow the finger pixel by pixel, the About page a line at a time; the highlight stays where it is
                 ListView* list = menuOpen ? &menu : activeList();
-                const int rowHeight = list != nullptr ? list->rowHeight() : normalFont.lineHeight();
-                dragRowAccumulator -= gesture.dy;
-                while (std::abs(dragRowAccumulator) >= rowHeight) {
-                    const int step = dragRowAccumulator > 0 ? 1 : -1;
-                    dragRowAccumulator -= step * rowHeight;
-                    if (list != nullptr) {
-                        list->scrollBy(step);
-                    } else {
-                        scrollAbout(step);
-                    }
+                if (list != nullptr) {
+                    list->scrollPixels(-gesture.dy);
                     dirty = true;
+                } else {
+                    const int rowHeight = normalFont.lineHeight();
+                    dragRowAccumulator -= gesture.dy;
+                    while (std::abs(dragRowAccumulator) >= rowHeight) {
+                        const int step = dragRowAccumulator > 0 ? 1 : -1;
+                        dragRowAccumulator -= step * rowHeight;
+                        scrollAbout(step);
+                        dirty = true;
+                    }
                 }
             }
             break;
