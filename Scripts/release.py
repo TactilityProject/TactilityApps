@@ -180,6 +180,7 @@ def manifest_config_to_flat_json(manifest):
     }
 
 PAGE_SIZE = 20
+SIMULATOR_PLATFORMS = ["linux-x86_64", "linux-aarch64", "macos-arm64", "macos-x86_64"]
 
 def get_list_file_name(page, arch=None):
     """All apps: index.json, list_2.json, list_3.json and so on. One architecture: list-[arch]-1.json, list-[arch]-2.json and so on"""
@@ -296,6 +297,6 @@ if __name__ == "__main__":
     write_json(output_json_path, {**output_json, "apps": [{**{k: v for k, v in app.items() if k != "shortDescription"}, "appDescription": app["shortDescription"]} for app in output_json["apps"]]})
     list_header = {key: value for key, value in output_json.items() if key != "apps"}
     write_list_pages(app_directory, list_header, output_json["apps"])
-    architectures = sorted({platform for app in output_json["apps"] for platform in app["targetPlatforms"]})
+    architectures = sorted({platform for app in output_json["apps"] for platform in app["targetPlatforms"]} | set(SIMULATOR_PLATFORMS))
     for arch in architectures:
         write_list_pages(app_directory, list_header, output_json["apps"], arch)
