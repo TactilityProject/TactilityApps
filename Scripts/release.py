@@ -194,37 +194,24 @@ def get_details_file_name(app_id):
 def get_icon_file_name(app_id, mono):
     return f"{app_id}-icon-mono.svg" if mono else f"{app_id}-icon.svg"
 
-def link(href):
-    return {"href": href}
-
 def write_list_pages(app_directory, header, app_jsons, arch=None):
-    """Write the pages of a list. Items only have what a list needs. Links are relative to the file.
+    """Write the pages of a list. Items only have what a list needs, with short keys to keep it small.
+    A page has no links: its number is page and the last one is pageCount, and the file names follow from those.
     With an arch, the list has the apps that support it. Apps without target platforms support every one."""
     items = []
     for app in app_jsons:
         if arch is not None and app["targetPlatforms"] and arch not in app["targetPlatforms"]:
             continue
         items.append({
-            "appId": app["appId"],
-            "appName": app["appName"],
-            "appVersionName": app["appVersionName"],
-            "appVersionCode": app["appVersionCode"],
-            "shortDescription": app["shortDescription"],
+            "id": app["appId"],
+            "name": app["appName"],
+            "version": app["appVersionCode"],
+            "description": app["shortDescription"],
         })
-    items.sort(key=lambda item: item["appName"].lower())
+    items.sort(key=lambda item: item["name"].lower())
     page_count = max(1, -(-len(items) // PAGE_SIZE))
     for page in range(1, page_count + 1):
-        links = {}
-        if page < page_count:
-            links["next"] = link(get_list_file_name(page + 1, arch))
         page_items = items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
-        for item in page_items:
-            app_id = item["appId"]
-            item["_links"] = {
-                "details": link(get_details_file_name(app_id)),
-                "icon": link(get_icon_file_name(app_id, False)),
-                "iconMono": link(get_icon_file_name(app_id, True)),
-            }
         write_json(os.path.join(app_directory, get_list_file_name(page, arch)), {
             **header,
             **({"arch": arch} if arch is not None else {}),
@@ -232,24 +219,16 @@ def write_list_pages(app_directory, header, app_jsons, arch=None):
             "pageCount": page_count,
             "appCount": len(items),
             "apps": page_items,
-            "_links": links,
         })
 
 def write_details(app_directory, app_json, icons):
     """Write [appid].json with the full manifest data, and the icons next to it"""
     app_id = app_json["appId"]
-    links = {
-        "self": link(get_details_file_name(app_id)),
-        "list": link(get_list_file_name(1)),
-        "package": link(app_json["file"]),
-    }
     for mono, name in ((False, "icon.svg"), (True, "icon_mono.svg")):
         if name in icons:
-            file_name = get_icon_file_name(app_id, mono)
-            with open(os.path.join(app_directory, file_name), "wb") as f:
+            with open(os.path.join(app_directory, get_icon_file_name(app_id, mono)), "wb") as f:
                 f.write(icons[name])
-            links["iconMono" if mono else "icon"] = link(file_name)
-    write_json(os.path.join(app_directory, get_details_file_name(app_id)), {**app_json, "_links": links})
+    write_json(os.path.join(app_directory, get_details_file_name(app_id)), app_json)
 
 def write_json(filepath, data):
     text = json.dumps(data)
