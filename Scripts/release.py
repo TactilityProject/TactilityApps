@@ -70,6 +70,15 @@ def get_manifest(appPath):
         print(f"Failed to extract manifest.properties from {appPath}: {e}")
     return None
 
+def get_icons(appPath):
+    """Read icon.svg and icon_mono.svg from the package. Returns a dict of the ones that exist."""
+    icons = {}
+    with tarfile.open(appPath, mode="r:*") as tf:
+        for m in tf.getmembers():
+            if m.isfile() and m.name.lstrip("./") in ("icon.svg", "icon_mono.svg"):
+                icons[os.path.basename(m.name)] = tf.extractfile(m).read()
+    return icons
+
 def get_versioned_file_name(manifest):
     app_id = manifest["id"]
     version_code = manifest["version.code"]
@@ -93,6 +102,8 @@ def check_and_get_sdk_version(manifest_map):
 
 def get_git_commit_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+
+SHORT_DESCRIPTION_MAX_LENGTH = 32
 
 def get_requires_ram(manifest):
     """Parse "requires.ram" (whole megabytes with an "M" suffix, e.g. "2M") into megabytes. Absent means 0."""
@@ -118,6 +129,7 @@ def manifest_config_to_flat_json(manifest):
         target.platforms -> targetPlatforms (comma-separated list)
         requires.device.id -> requiresDeviceId (comma-separated list, optional; default [])
         requires.ram -> requiresRam (megabytes, optional; default 0)
+        description.short -> shortDescription (required)
 
     Unknown/missing values fall back to sensible defaults per requirements.
     """
@@ -127,6 +139,13 @@ def manifest_config_to_flat_json(manifest):
     app_version_code_raw = manifest.get("version.code", "0")
     app_name = manifest.get("name", "")
     app_description = manifest.get("description", "") or ""
+    short_description = manifest.get("description.short", "")
+    if not short_description:
+        print(f"ERROR: Missing description.short in {app_id}")
+        sys.exit(1)
+    if len(short_description) > SHORT_DESCRIPTION_MAX_LENGTH:
+        print(f"ERROR: description.short of {app_id} is {len(short_description)} characters, at most {SHORT_DESCRIPTION_MAX_LENGTH} are allowed")
+        sys.exit(1)
 
     # Coerce version code to int safely
     try:
@@ -152,12 +171,84 @@ def manifest_config_to_flat_json(manifest):
         "appVersionCode": app_version_code,
         "appName": app_name,
         "appDescription": app_description,
+        "shortDescription": short_description,
         "targetSdk": target_sdk,
         "targetPlatforms": target_platforms,
         "requiresDeviceId": requires_device_id,
         "requiresRam": requires_ram,
         "file": filename
     }
+
+PAGE_SIZE = 20
+
+def get_list_file_name(page, arch=None):
+    """All apps: index.json, list_2.json, list_3.json and so on. One architecture: list-[arch]-1.json, list-[arch]-2.json and so on"""
+    if arch is not None:
+        return f"list-{arch}-{page}.json"
+    return "index.json" if page == 1 else f"list_{page}.json"
+
+def get_details_file_name(app_id):
+    return f"{app_id}.json"
+
+def get_icon_file_name(app_id, mono):
+    return f"{app_id}-icon-mono.svg" if mono else f"{app_id}-icon.svg"
+
+def link(href):
+    return {"href": href}
+
+def write_list_pages(app_directory, header, app_jsons, arch=None):
+    """Write the pages of a list. Items only have what a list needs. Links are relative to the file.
+    With an arch, the list has the apps that support it. Apps without target platforms support every one."""
+    items = []
+    for app in app_jsons:
+        if arch is not None and app["targetPlatforms"] and arch not in app["targetPlatforms"]:
+            continue
+        items.append({
+            "appId": app["appId"],
+            "appName": app["appName"],
+            "appVersionName": app["appVersionName"],
+            "appVersionCode": app["appVersionCode"],
+            "shortDescription": app["shortDescription"],
+        })
+    items.sort(key=lambda item: item["appName"].lower())
+    page_count = max(1, -(-len(items) // PAGE_SIZE))
+    for page in range(1, page_count + 1):
+        links = {}
+        if page < page_count:
+            links["next"] = link(get_list_file_name(page + 1, arch))
+        page_items = items[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        for item in page_items:
+            app_id = item["appId"]
+            item["_links"] = {
+                "details": link(get_details_file_name(app_id)),
+                "icon": link(get_icon_file_name(app_id, False)),
+                "iconMono": link(get_icon_file_name(app_id, True)),
+            }
+        write_json(os.path.join(app_directory, get_list_file_name(page, arch)), {
+            **header,
+            **({"arch": arch} if arch is not None else {}),
+            "page": page,
+            "pageCount": page_count,
+            "appCount": len(items),
+            "apps": page_items,
+            "_links": links,
+        })
+
+def write_details(app_directory, app_json, icons):
+    """Write [appid].json with the full manifest data, and the icons next to it"""
+    app_id = app_json["appId"]
+    links = {
+        "self": link(get_details_file_name(app_id)),
+        "list": link(get_list_file_name(1)),
+        "package": link(app_json["file"]),
+    }
+    for mono, name in ((False, "icon.svg"), (True, "icon_mono.svg")):
+        if name in icons:
+            file_name = get_icon_file_name(app_id, mono)
+            with open(os.path.join(app_directory, file_name), "wb") as f:
+                f.write(icons[name])
+            links["iconMono" if mono else "icon"] = link(file_name)
+    write_json(os.path.join(app_directory, get_details_file_name(app_id)), {**app_json, "_links": links})
 
 def write_json(filepath, data):
     text = json.dumps(data)
@@ -194,6 +285,7 @@ if __name__ == "__main__":
         manifest = manifest_map[file_path]
         manifest_json = manifest_config_to_flat_json(manifest)
         output_json["apps"].append(manifest_json)
+        write_details(app_directory, manifest_json, get_icons(file_path))
         release_file_name = get_versioned_file_name(manifest)
         renamed_file_path = os.path.join(app_directory, release_file_name)
         os.rename(file_path, renamed_file_path)
@@ -201,4 +293,9 @@ if __name__ == "__main__":
         any_manifest = manifest
     # Write JSON
     output_json_path = os.path.join(app_directory, "apps.json")
-    write_json(output_json_path, output_json)
+    write_json(output_json_path, {**output_json, "apps": [{**{k: v for k, v in app.items() if k != "shortDescription"}, "appDescription": app["shortDescription"]} for app in output_json["apps"]]})
+    list_header = {key: value for key, value in output_json.items() if key != "apps"}
+    write_list_pages(app_directory, list_header, output_json["apps"])
+    architectures = sorted({platform for app in output_json["apps"] for platform in app["targetPlatforms"]})
+    for arch in architectures:
+        write_list_pages(app_directory, list_header, output_json["apps"], arch)

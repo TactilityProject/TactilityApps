@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import boto3
 
@@ -16,7 +17,10 @@ def print_help():
     print("Usage: python upload-app-files.py [path] [sdkVersion] [cloudflareAccountId] [cloudflareTokenName] [cloudflareTokenValue]")
     print("")
     print("Options:")
-    print("  --index-only                   Upload only apps.json")
+    print("  --index-only                   Upload only apps.json, index.json and the list files")
+
+def is_index_file(file_name: str):
+    return file_name == 'apps.json' or file_name == 'index.json' or re.fullmatch(r'list[_-].*\d+\.json', file_name) is not None
 
 def exit_with_error(message):
     print_error(message)
@@ -34,11 +38,11 @@ def main(path: str, sdk_version: str, cloudflare_account_id, cloudflare_token_na
     )
     files_to_upload = os.listdir(path)
     if index_only:
-        files_to_upload = [f for f in files_to_upload if f == 'apps.json']
+        files_to_upload = [f for f in files_to_upload if is_index_file(f)]
     else:
-        # Ensure apps.json is uploaded last so it never references files that
+        # Ensure the index files are uploaded last so they never reference files that
         # haven't finished uploading yet.
-        files_to_upload.sort(key=lambda f: f == 'apps.json')
+        files_to_upload.sort(key=is_index_file)
     counter = 1
     total = len(files_to_upload)
     for file_name in files_to_upload:
