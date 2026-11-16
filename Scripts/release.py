@@ -191,23 +191,28 @@ def get_list_file_name(page, arch=None):
 def get_details_file_name(app_id):
     return f"{app_id}.json"
 
-def get_icon_file_name(app_id, mono):
-    return f"{app_id}-icon-mono.svg" if mono else f"{app_id}-icon.svg"
+def get_icon_file_name(app_id, version_code, mono):
+    """The version code is in the name, so a new version of an app has a new icon file, which a cache can't confuse with the old one"""
+    return f"{app_id}-{version_code}-icon-mono.svg" if mono else f"{app_id}-{version_code}-icon.svg"
 
-def write_list_pages(app_directory, header, app_jsons, arch=None):
+def write_list_pages(app_directory, header, app_jsons, apps_without_icon, arch=None):
     """Write the pages of a list. Items only have what a list needs, with short keys to keep it small.
     A page has no links: its number is page and the last one is pageCount, and the file names follow from those.
-    With an arch, the list has the apps that support it. Apps without target platforms support every one."""
+    With an arch, the list has the apps that support it. Apps without target platforms support every one.
+    An app has "icon": false when it has no icon. Without the key, an app is assumed to have one."""
     items = []
     for app in app_jsons:
         if arch is not None and app["targetPlatforms"] and arch not in app["targetPlatforms"]:
             continue
-        items.append({
+        item = {
             "id": app["appId"],
             "name": app["appName"],
             "version": app["appVersionCode"],
             "description": app["shortDescription"],
-        })
+        }
+        if app["appId"] in apps_without_icon:
+            item["icon"] = False
+        items.append(item)
     items.sort(key=lambda item: item["name"].lower())
     page_count = max(1, -(-len(items) // PAGE_SIZE))
     for page in range(1, page_count + 1):
@@ -226,7 +231,7 @@ def write_details(app_directory, app_json, icons):
     app_id = app_json["appId"]
     for mono, name in ((False, "icon.svg"), (True, "icon_mono.svg")):
         if name in icons:
-            with open(os.path.join(app_directory, get_icon_file_name(app_id, mono)), "wb") as f:
+            with open(os.path.join(app_directory, get_icon_file_name(app_id, app_json["appVersionCode"], mono)), "wb") as f:
                 f.write(icons[name])
     write_json(os.path.join(app_directory, get_details_file_name(app_id)), app_json)
 
@@ -259,13 +264,17 @@ if __name__ == "__main__":
         "gitCommit": get_git_commit_hash(),
         "apps": []
     }
+    apps_without_icon = set()
     # Rename files and collect manifest data into output json object
     for file_path in manifest_map.keys():
         print(f"Processing {file_path}: {manifest_map[file_path]}")
         manifest = manifest_map[file_path]
         manifest_json = manifest_config_to_flat_json(manifest)
         output_json["apps"].append(manifest_json)
-        write_details(app_directory, manifest_json, get_icons(file_path))
+        icons = get_icons(file_path)
+        if not icons:
+            apps_without_icon.add(manifest_json["appId"])
+        write_details(app_directory, manifest_json, icons)
         release_file_name = get_versioned_file_name(manifest)
         renamed_file_path = os.path.join(app_directory, release_file_name)
         os.rename(file_path, renamed_file_path)
@@ -275,7 +284,7 @@ if __name__ == "__main__":
     output_json_path = os.path.join(app_directory, "apps.json")
     write_json(output_json_path, {**output_json, "apps": [{**{k: v for k, v in app.items() if k != "shortDescription"}, "appDescription": app["shortDescription"]} for app in output_json["apps"]]})
     list_header = {key: value for key, value in output_json.items() if key != "apps"}
-    write_list_pages(app_directory, list_header, output_json["apps"])
+    write_list_pages(app_directory, list_header, output_json["apps"], apps_without_icon)
     architectures = sorted({platform for app in output_json["apps"] for platform in app["targetPlatforms"]} | set(SIMULATOR_PLATFORMS))
     for arch in architectures:
-        write_list_pages(app_directory, list_header, output_json["apps"], arch)
+        write_list_pages(app_directory, list_header, output_json["apps"], apps_without_icon, arch)
