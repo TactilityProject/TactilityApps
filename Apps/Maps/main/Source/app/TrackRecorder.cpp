@@ -49,6 +49,22 @@ void TrackRecorder::closeUnfinished(IoTask& io, const char* root) {
         listDirectory(folder, [](const char* fileName, bool isDirectory, void* data) {
             auto* context = static_cast<Context*>(data);
             const size_t length = strlen(fileName);
+            if (!isDirectory && length > 8 && strcmp(fileName + length - 8, ".gpx.tmp") == 0) {
+                // Left by a power cut while a track was closed: the copy is whole when the track itself is gone (it is
+                // removed only after the copy), else it is a leftover
+                char temporary[PATH_MAX_LENGTH + 8];
+                char original[PATH_MAX_LENGTH + 8];
+                snprintf(temporary, sizeof(temporary), "%s/%s", context->folder, fileName);
+                snprintf(original, sizeof(original), "%s/%.*s", context->folder, static_cast<int>(length - 4), fileName);
+                FILE* exists = fopen(original, "rb");
+                if (exists != nullptr) {
+                    fclose(exists);
+                    remove(temporary);
+                } else if (rename(temporary, original) == 0) {
+                    context->closed++;
+                }
+                return true;
+            }
             if (isDirectory || length < 5 || strcmp(fileName + length - 4, ".gpx") != 0) {
                 return true;
             }
@@ -61,8 +77,9 @@ void TrackRecorder::closeUnfinished(IoTask& io, const char* root) {
             const bool closed = isClosed(track);
             // A crash can only have cut a line in the middle: the last whole point is kept, then the end tags
             long keep = 0;
+            long size = 0;
             if (!closed && fseek(track, 0, SEEK_END) == 0) {
-                const long size = ftell(track);
+                size = ftell(track);
                 const long window = size < 320 ? size : 320;
                 char last[321];
                 if (fseek(track, size - window, SEEK_SET) == 0 && fread(last, 1, static_cast<size_t>(window), track) == static_cast<size_t>(window)) {
@@ -84,6 +101,17 @@ void TrackRecorder::closeUnfinished(IoTask& io, const char* root) {
             }
             fclose(track);
             if (closed || keep <= 0) {
+                return true;
+            }
+            if (keep == size) {
+                // Nothing cut: the end tags are added in place, the track is never away from the card
+                FILE* target = fopen(file, "ab");
+                if (target != nullptr) {
+                    const bool added = fputs(TRACK_END, target) >= 0;
+                    if (fclose(target) == 0 && added) {
+                        context->closed++;
+                    }
+                }
                 return true;
             }
             // Copied up to the last whole point through a .tmp file, then the end tags
@@ -272,22 +300,28 @@ bool TrackRecorder::flush(IoTask& io, const char* closing) {
     if (pendingLength == 0 && closing == nullptr) {
         return true;
     }
+    size_t wrote = 0;
     auto append = [&] {
         FILE* file = fopen(path, "ab");
         if (file == nullptr) {
             return false;
         }
-        bool ok = pendingLength == 0 || fwrite(pending, 1, pendingLength, file) == pendingLength;
+        wrote = pendingLength == 0 ? 0 : fwrite(pending, 1, pendingLength, file);
+        bool ok = wrote == pendingLength;
         if (ok && closing != nullptr) {
             ok = fputs(closing, file) >= 0;
         }
-        fclose(file);
-        return ok;
+        return fclose(file) == 0 && ok;
     };
     const bool ok = runOnCard(io, append, IoPriority::Background);
-    if (ok) {
+    // What reached the file leaves the buffer, also after a short write: the rest follows it next time, nothing twice
+    if (wrote >= pendingLength) {
         pendingLength = 0;
-    } else {
+    } else if (wrote > 0) {
+        memmove(pending, pending + wrote, pendingLength - wrote);
+        pendingLength -= wrote;
+    }
+    if (!ok) {
         logError("Could not write to %s", path);
     }
     return ok;

@@ -36,6 +36,11 @@ namespace maps {
  * A oneway road against its drawing direction (oneway = -1) is stored reversed, so from -> to is always the way to go.
  */
 constexpr uint16_t GRAPH_FORMAT_VERSION = PREPARED_GRAPH_FORMAT_VERSION;
+/** Graphs the search still reads: version 1 has the same layout without the unpaved flag, so routes keep working
+ *  while idle time remakes them. */
+inline bool isReadableGraphVersion(uint16_t version) {
+    return version == GRAPH_FORMAT_VERSION || version == 1;
+}
 constexpr int GRAPH_EXTENT = 4096;
 constexpr size_t GRAPH_HEADER_SIZE = 80;
 constexpr size_t GRAPH_NODE_BYTES = 5;
@@ -56,6 +61,8 @@ enum GraphEdgeFlag : uint8_t {
     EDGE_STEPS = 16,
     EDGE_FOOTWAY = 32,
     EDGE_CYCLEWAY = 64,
+    /** "surface" unpaved (graph version 2): bike and the trail-preferring walk weigh it. */
+    EDGE_UNPAVED = 128,
 };
 
 /** The road class of a transportation feature, Count for features that are not roads to route on. */
@@ -160,7 +167,8 @@ private:
     void clipAndAdd();
     void addPart(const Point* points, size_t count);
     bool indexPoints();
-    void snapJunctions();
+    /** False when memory ran out while the points were rebuilt. */
+    bool snapJunctions();
     bool makeNodes();
     bool makeEdges();
     bool buildNameGrid();

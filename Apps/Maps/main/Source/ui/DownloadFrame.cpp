@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DownloadFrame.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 #include <cstdio>
 
@@ -8,16 +10,19 @@ namespace maps {
 
 namespace {
 
+/** The Download button on the 16 px font; wider with a bigger one. */
 constexpr int BUTTON_WIDTH = 92;
 
 } // namespace
 
 DownloadLayout downloadLayout(int width, int height, int lineHeight) {
     DownloadLayout layout {};
-    const int barHeight = 2 * lineHeight + 10;
+    // A button a finger can hit on boards without a typing keyboard
+    const int barHeight = metrics::touchTargets() ? std::max(2 * lineHeight + 10, metrics::TOUCH_BUTTON_HEIGHT + 10) : 2 * lineHeight + 10;
+    const int buttonWidth = std::min(std::max(BUTTON_WIDTH, lineHeight * 23 / 4), width / 2);
     layout.bar = { 0, height - barHeight, width, barHeight };
-    layout.button = { width - BUTTON_WIDTH - 5, layout.bar.y + 5, BUTTON_WIDTH, barHeight - 10 };
-    layout.mark = { 0, layout.bar.y, 18, barHeight };
+    layout.button = { width - buttonWidth - 5, layout.bar.y + 5, buttonWidth, barHeight - 10 };
+    layout.mark = { 0, layout.bar.y, std::max(18, lineHeight + 2), barHeight };
     const int margin = DownloadLayout::MARGIN;
     layout.frame = { margin, margin, width - 2 * margin, layout.bar.y - 2 * margin };
     layout.back = { margin + 4, margin + 4, 36, 36 };
@@ -68,18 +73,17 @@ void drawDownloadScreen(Canvas& canvas, Font& font, const UiTheme& theme, const 
     // Outside the frame the map stays dimmed, the frame itself never moves
     const Rect& f = layout.frame;
     const Rect& bar = layout.bar;
-    canvas.fillRect(0, 0, canvas.width, f.y, theme.scrim, 110);
-    canvas.fillRect(0, f.y + f.height, canvas.width, bar.y - f.y - f.height, theme.scrim, 110);
-    canvas.fillRect(0, f.y, f.x, f.height, theme.scrim, 110);
-    canvas.fillRect(f.x + f.width, f.y, canvas.width - f.x - f.width, f.height, theme.scrim, 110);
+    canvas.fillRect(0, 0, canvas.width, f.y, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRect(0, f.y + f.height, canvas.width, bar.y - f.y - f.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRect(0, f.y, f.x, f.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRect(f.x + f.width, f.y, canvas.width - f.x - f.width, f.height, theme.scrim, metrics::SCRIM_ALPHA);
     canvas.frameRect(f.x - 2, f.y - 2, f.width + 4, f.height + 4, theme.accent, 2);
     // Back to the map: a round button with the lists' < sign
     const Rect& back = layout.back;
     canvas.fillRoundRect(back.x, back.y, back.width, back.height, back.width / 2, theme.panel, theme.panelOpacity);
     const auto backX = static_cast<float>(back.x + back.width / 2);
     const auto backY = static_cast<float>(back.y + back.height / 2);
-    canvas.line(backX + 3.0f, backY - 7.0f, backX - 4.0f, backY, 2.5f, theme.text);
-    canvas.line(backX - 4.0f, backY, backX + 3.0f, backY + 7.0f, 2.5f, theme.text);
+    metrics::drawBackChevron(canvas, backX, backY, theme.text, 7.0f, 2.5f);
 
     char first[48];
     char second[48];

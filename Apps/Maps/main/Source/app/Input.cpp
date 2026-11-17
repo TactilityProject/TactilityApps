@@ -6,6 +6,7 @@
 #include <tactility/drivers/keyboard.h>
 #include <tactility/drivers/mouse.h>
 #include <tactility/drivers/touch.h>
+#include <tactility/drivers/trackball.h>
 #include <lvgl/devices/keyboard.h>
 
 namespace maps {
@@ -94,7 +95,10 @@ void Input::rescan() {
     // (button-control) say they are not since the software keyboard fix, so they show no key hints
     const bool typingBefore = typingKeyboard;
     typingKeyboard = device_has_active_by_type(&KEYBOARD_TYPE) && lvgl_hardware_keyboard_is_available();
-    if (dropped > 0 || keyboardCount != keyboardsBefore || mouseCount != miceBefore || typingKeyboard != typingBefore) {
+    const bool trackballBefore = trackball;
+    trackball = device_has_active_by_type(&TRACKBALL_TYPE);
+    if (dropped > 0 || keyboardCount != keyboardsBefore || mouseCount != miceBefore || typingKeyboard != typingBefore ||
+        trackball != trackballBefore) {
         devicesChanged = true;
         logInfo("Input: %d keyboards, %d mice, %s", keyboardCount, mouseCount, typingKeyboard ? "typing keyboard" : "no typing keyboard");
     }

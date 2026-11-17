@@ -17,14 +17,6 @@ TwoEleven is a faithful implementation of the popular 2048 game, where you slide
 - **Responsive UI**: Optimized for small screens with clean, modern design.
 - **Thread-Safe**: Proper handling of UI updates to prevent crashes.
 
-## Screenshots
-
-Screenshots taken directly from my Lilygo T-Deck Plus.
-Tested on Lilygo T-Deck Plus and M5Stack Cardputer.
-
-![alt text](images/3x3.png) ![alt text](images/4x4.png) ![alt text](images/5x5.png)
-![alt text](images/6x6.png) ![alt text](images/selection.png)
-
 ## Requirements
 
 - Tactility - obviously...

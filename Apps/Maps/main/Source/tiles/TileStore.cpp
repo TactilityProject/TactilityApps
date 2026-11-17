@@ -37,13 +37,18 @@ void TileStore::setRoot(const char* path) {
 }
 
 bool TileStore::addRegion(const char* name) {
-    if (count >= MAX_REGIONS || !isValidRegionName(name)) {
+    if (!isValidRegionName(name)) {
         return false;
     }
     for (int i = 0; i < count; i++) {
         if (strcmp(regions[i], name) == 0) {
             return true;
         }
+    }
+    if (count >= MAX_REGIONS) {
+        // Not silent: its tiles would otherwise just never show
+        logError("Region %s is left out: the app handles at most %d regions", name, MAX_REGIONS);
+        return false;
     }
     snprintf(regions[count], sizeof(regions[count]), "%s", name);
     versions[count][0] = '\0';

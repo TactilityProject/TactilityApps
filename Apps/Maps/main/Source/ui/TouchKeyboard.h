@@ -15,15 +15,21 @@ namespace maps {
  */
 class TouchKeyboard {
 public:
-    /** Height it takes at the bottom of a screen of this width (4 rows of 30 px, 2 px gaps and edges): 128 px. */
-    static int heightFor(int width);
+    /**
+     * Height it takes at the bottom of a screen: 4 rows of keys with 2 px gaps and edges. Keys are 30 px (128 px in all)
+     * on a 240 px high screen with the 16 px font, taller with a bigger font or a taller screen, and lower on a short
+     * screen so the keyboard never takes more than about half of it. The defaults are the T-Deck's screen.
+     */
+    static int heightFor(int width, int height = 240, int lineHeight = 16);
+    /** The height of one key for that screen (heightFor is four of them plus the gaps). */
+    static int keyHeightFor(int height, int lineHeight);
 
     /** Opens on the letters page, lower case. */
     void open();
     void close() { visible = false; }
     bool isOpen() const { return visible; }
 
-    /** Fills the bottom heightFor(width) pixels of a screen of width x height. */
+    /** Fills the bottom heightFor(width, height, font's line height) pixels of a screen of width x height. */
     void layout(int width, int height, Font& font);
     void draw(Canvas& canvas, Font& font, const UiTheme& theme);
     /** The keyboard's area, false when it is closed. */
@@ -39,6 +45,11 @@ public:
     bool keyCentre(const char* label, int& x, int& y) const;
     /** For tests: the rectangle of that key. */
     bool keyRect(const char* label, Rect& rect) const;
+    /** For tests: the keyboard's area. */
+    const Rect& bounds() const { return area; }
+    /** For tests: how many keys the current page has, and the rectangle of key i. */
+    int keyTotal() const { return keyCount; }
+    const Rect& keyBounds(int index) const { return keys_[index].rect; }
 
 private:
     enum class Page : uint8_t { Letters, Symbols, Accents };
@@ -66,6 +77,7 @@ private:
     Page page = Page::Letters;
     Shift shift = Shift::Off;
     int screenWidth = 0;
+    int keyHeight = 30;
     Rect area {};
     Key keys_[MAX_KEYS] {};
     int keyCount = 0;

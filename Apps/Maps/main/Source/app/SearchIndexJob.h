@@ -3,6 +3,7 @@
 
 #include "IoTask.h"
 
+#include "../search/TextFold.h"
 #include "../tiles/TilePaths.h"
 
 #include <freertos/FreeRTOS.h>
@@ -12,6 +13,9 @@
 #include <cstdint>
 
 namespace maps {
+
+/** The transliteration profile of a region's names: Ukrainian for kyiv, Serbian for belgrade, else Russian. Used to build and to read an index. */
+Translit translitForRegion(const char* region);
 
 /**
  * Builds the offline search indexes in idle time (M6): for every region on the card whose index is missing or older
@@ -53,11 +57,14 @@ public:
     /** One report line at a time for the log (measurements), nullptr when there is none; the line stays until the next call. */
     const char* nextReport();
     /** The lowest free PSRAM seen during the build, in bytes. */
-    uint32_t lowestFreePsram() const { return lowestFree; }
+    uint32_t lowestFreePsram() const { return buildLowestFree; }
 
     /** Called by the builder between steps: waits while paused, false when stopping. */
-    bool keepGoing(int32_t done, int32_t total);
+    bool keepGoing(int32_t done, int32_t total, uint8_t phase = 0);
     void report(const char* format, ...);
+
+    /** For the stack measurements of the debug script. */
+    TaskHandle_t taskHandle() const { return task; }
 
 private:
     static void taskMain(void* context);
@@ -77,6 +84,12 @@ private:
     bool forceBuild = false;
     int written = 0;
     uint32_t lowestFree = 0;
+    /** The lowest of all blocks of this build (lowestFree starts again with each block). */
+    uint32_t buildLowestFree = 0;
+    /** Per build step of the block being built: lowest free PSRAM and smallest largest free block, in bytes. */
+    static constexpr int MEMORY_PHASES = 11;
+    uint32_t phaseFree[MEMORY_PHASES] = {};
+    uint32_t phaseLargest[MEMORY_PHASES] = {};
     /** Report lines: written by the task, read by the map loop (a small ring, guarded by the counters). */
     static constexpr int REPORT_LINES = 24;
     char reports[REPORT_LINES][200] = {};

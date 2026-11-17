@@ -34,6 +34,9 @@ const char* turnPhrase(Turn turn);
  * the route by edgeMarginM while farther than edgeShare * off. triggerFixes away fixes in a row are off route. Above
  * weakAccuracyM nothing triggers ("Weak GPS"). The values can be changed by the "offroute" debug command.
  */
+/** Added to the off-route distance on steps of the main-road layer (ROUTE_STEP_COARSE). */
+constexpr float COARSE_EXTRA_M = 45.0f;
+
 struct OffRouteTuning {
     float accuracyFactor = 1.5f;
     float accuracyAddM = 5.0f;
@@ -60,7 +63,7 @@ struct OffRouteTuning {
     /** The edge rule only with GPS this good: with poor GPS the noise alone puts fixes nearer to side streets. */
     float edgeMaxAccuracyM = 10.0f;
     /** At least this long between two recalculations after the first one. */
-    uint32_t recalculateMs = 10000;
+    uint32_t recalculateMs = 0;   // not used by the app since 0.6.0: a new route is asked for at once
     /** Fixes not checked after a new route, so it settles. */
     int settleFixes = 2;
     /** The heading and edge rules count only past this many metres along a route (device replays: false alarms at the start). */

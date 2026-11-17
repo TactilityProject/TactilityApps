@@ -18,6 +18,22 @@ bool tilePath(char* out, size_t size, const char* root, const char* region, cons
     return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.pbf", root, region, tile.z, tile.x, tile.y), size);
 }
 
+bool terrainPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile) {
+    return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.hgt", root, region, tile.z, tile.x, tile.y), size);
+}
+
+bool terrainTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile) {
+    return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.htm", root, region, tile.z, tile.x, tile.y), size);
+}
+
+bool trailPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile) {
+    return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.trl", root, region, tile.z, tile.x, tile.y), size);
+}
+
+bool trailTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile) {
+    return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.tlm", root, region, tile.z, tile.x, tile.y), size);
+}
+
 bool preparedPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile) {
     return fits(snprintf(out, size, "%s/maps/%s/%d/%d/%d.prt", root, region, tile.z, tile.x, tile.y), size);
 }

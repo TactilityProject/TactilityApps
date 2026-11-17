@@ -26,6 +26,9 @@ public:
     /** The least stack the task has had left, in bytes (for the log). */
     uint32_t stackLeft() const { return task != nullptr ? static_cast<uint32_t>(uxTaskGetStackHighWaterMark(task)) : 0; }
 
+    /** For the stack measurements of the debug script. */
+    TaskHandle_t taskHandle() const { return task; }
+
 private:
     static void taskMain(void* context);
 

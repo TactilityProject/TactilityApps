@@ -55,4 +55,12 @@ inline bool routeAllowsBackwards(RouteProfile profile, uint8_t flags) {
 /** Seconds to travel lengthM metres on a road of this class. */
 float routeSeconds(RouteProfile profile, uint8_t roadClass, float lengthM);
 
+/**
+ * What the search counts for an edge: its time, made larger where the profile would rather not go, never smaller
+ * (the straight-line estimate stays below it). Bike: main roads and unpaved ways cost more, so cycleways, quiet roads
+ * and paved tracks win. trails (Settings, "Walk prefers paths"): walking prefers paths, tracks and footways to roads.
+ * The time shown for the route stays routeSeconds().
+ */
+float routeCost(RouteProfile profile, uint8_t roadClass, uint8_t flags, float lengthM, bool trails);
+
 } // namespace maps

@@ -6,7 +6,10 @@
 
 namespace maps {
 
-/** The map icons for points of interest, from the Maki set (https://github.com/mapbox/maki). */
+/**
+ * The map icons for points of interest: from the Maki set (https://github.com/mapbox/maki, CC0), and guidepost,
+ * map-board, hut, spring, cave, cliff and saddle drawn for this app (host/make_poi_icons.py).
+ */
 #define MAPS_POI_ICONS(X) \
     X(Marker, "marker") X(Cafe, "cafe") X(Restaurant, "restaurant") X(FastFood, "fast-food") X(Bar, "bar") \
     X(Beer, "beer") X(Bus, "bus") X(Rail, "rail") X(RailMetro, "rail-metro") X(Bicycle, "bicycle") \
@@ -29,7 +32,7 @@ namespace maps {
     X(Confectionery, "confectionery") X(Garden, "garden") X(DogPark, "dog-park") X(PicnicSite, "picnic-site") \
     X(Viewpoint, "viewpoint") X(Embassy, "embassy") X(Nightclub, "nightclub") X(Fitness, "fitness-centre") \
     X(Ferry, "ferry") X(Taxi, "taxi") X(Shoe, "shoe") X(Florist, "florist") X(AmusementPark, "amusement-park") \
-    X(Aquarium, "aquarium") X(Recycling, "recycling")
+    X(Aquarium, "aquarium") X(Recycling, "recycling")     X(Shelter, "shelter") X(Guidepost, "guidepost") X(MapBoard, "map-board") X(Hut, "hut") X(Spring, "spring")     X(Cave, "cave") X(Cliff, "cliff") X(Saddle, "saddle") X(Mountain, "mountain") X(Volcano, "volcano")     X(Barrier, "barrier") X(Gate, "gate") X(LiftGate, "lift-gate") X(Telephone, "telephone") X(Prison, "prison")     X(Commercial, "commercial") X(Tennis, "tennis") X(Basketball, "basketball") X(Bbq, "bbq") X(Toll, "toll")     X(Gaming, "gaming") X(Water, "water") X(Suitcase, "suitcase")
 
 enum class PoiIcon : uint8_t {
 #define MAPS_POI_ICON_ENUM(name, file) name,
@@ -53,7 +56,11 @@ struct PoiType {
     /** Plain English words for the sheet. */
     const char* label;
     PoiGroup group;
-    /** The map zoom from which the type is shown: 14 for important, 15 for most, 16 for small things. */
+    /**
+     * The map zoom from which the type is shown: 14 for important, 15 for most, 16 for small things, 17 for the rest.
+     * The types that were added later (every class the tiles have, 0.8.6) start at 18, barriers at 19: from zoom 18 on
+     * every POI is drawn, whatever its type and rank, so this only decides below it.
+     */
     uint8_t minZoom;
     /** Worth showing on the map without a name (a toilet, a bus stop). */
     bool unnamedOk;
@@ -61,9 +68,25 @@ struct PoiType {
 
 /**
  * The type id of a poi feature: the first subclass entry that matches the subclass text, else the class entry
- * that matches the class text. 0 means unknown, never shown. Texts need no terminator, nullptr is fine for none.
+ * that matches the class text. A class that nobody listed gets the generic type (poiGenericType()): a marker, drawn
+ * with its class name when the feature has no name. Never 0. Texts need no terminator, nullptr is fine for none.
  */
 uint8_t poiTypeFor(const char* classText, size_t classLength, const char* subclassText, size_t subclassLength);
+
+/** The type of a POI whose class is not in the table. */
+uint8_t poiGenericType();
+
+/**
+ * The type of a mountain_peak feature from its class (peak, volcano, saddle, cliff); anything else is a peak. Their
+ * icons show next to the name and height.
+ */
+uint8_t poiTypeForPeak(const char* classText, size_t classLength);
+
+/**
+ * Whether a poi class is a barrier (gate, bollard, lift gate, cycle barrier, stile): drawn at zoom 19 only, and not
+ * a place to go to, so the search leaves them out.
+ */
+bool poiClassIsBarrier(const char* classText, size_t classLength);
 
 /** The type of an id from 1 to poiTypeCount(). Id 0 and anything above give an empty "unknown" type. */
 const PoiType& poiType(uint8_t id);

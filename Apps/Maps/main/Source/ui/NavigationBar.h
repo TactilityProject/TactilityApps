@@ -29,6 +29,10 @@ public:
     bool stopHit(int x, int y) const;
     Turn turn() const { return nextTurn; }
 
+    /** For tests: the drawn stop button and the area stopHit() accepts, for a bar of this width. */
+    Rect stopRect(Font& font, int width) const;
+    Rect stopHitRect(Font& font, int width) const;
+
     /** Two text lines and padding; the arrow area is this high and wide. */
     int height(Font& font) const;
     /** A full-width panel at the top of the canvas. */

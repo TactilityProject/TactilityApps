@@ -74,8 +74,14 @@ bool IoTask::run(IoPriority priority, IoJob job, void* context) {
     }
     Request request { job, context, done, false, nowMs(), prefetchGeneration.load() };
     xSemaphoreTake(mutex, portMAX_DELAY);
-    const bool queued = queue.push(&request, priority);
+    // Checked under the mutex: the task's last drain clears it there, so no request is queued after it
+    const bool accepted = runningTask;
+    const bool queued = accepted && queue.push(&request, priority);
     xSemaphoreGive(mutex);
+    if (!accepted) {
+        vSemaphoreDelete(done);
+        return false;
+    }
     if (!queued) {
         vSemaphoreDelete(done);
         logError("I/O queue full");
@@ -148,6 +154,19 @@ void IoTask::loop() {
             xSemaphoreGive(request->done);
         }
         if (stopRequested) {
+            // The last drain: a request queued since the loop above fails here instead of waiting for ever
+            xSemaphoreTake(mutex, portMAX_DELAY);
+            runningTask = false;
+            for (;;) {
+                Request* late = nullptr;
+                queue.pop(late, nullptr);
+                if (late == nullptr) {
+                    break;
+                }
+                late->result = false;
+                xSemaphoreGive(late->done);
+            }
+            xSemaphoreGive(mutex);
             break;
         }
     }

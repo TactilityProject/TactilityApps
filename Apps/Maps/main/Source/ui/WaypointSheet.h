@@ -59,6 +59,11 @@ public:
     void draw(Canvas& canvas, Font& font, const UiTheme& theme);
     bool contains(int x, int y) const { return frame.contains(x, y); }
     const Rect& bounds() const { return frame; }
+    /** For tests: the < area, the name field and the buttons (buttonTotal() of them). */
+    const Rect& backRect() const { return back; }
+    const Rect& fieldRect() const { return field; }
+    const Rect& buttonRect(int index) const { return buttons[index]; }
+    int buttonTotal() const { return buttonCount(); }
 
     /** Typing edits the name of a new waypoint; Enter presses the focused button, Tab and arrows move the focus. */
     Button handleKey(uint32_t key);

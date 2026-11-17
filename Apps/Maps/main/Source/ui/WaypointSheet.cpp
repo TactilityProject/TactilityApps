@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "WaypointSheet.h"
 
+#include "Metrics.h"
+#include "TextEdit.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -9,7 +12,7 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
+using metrics::PADDING;
 
 const char* labelOf(WaypointSheet::Button button) {
     switch (button) {
@@ -29,6 +32,18 @@ const char* labelOf(WaypointSheet::Button button) {
             return "Go";
         default:
             return "";
+    }
+}
+
+/** The shortcuts of a sheet, from handleKey; shown with a typing keyboard. */
+const char* hintOf(WaypointSheet::Mode mode, bool editable) {
+    switch (mode) {
+        case WaypointSheet::Mode::Existing:
+            return "R: rename  X: delete  N: go";
+        case WaypointSheet::Mode::Place:
+            return "N: go  S: save  Esc: close";
+        default:
+            return editable ? "Type a name  Tab: next button" : "Tab: next button  Esc: cancel";
     }
 }
 
@@ -91,31 +106,52 @@ WaypointSheet::Button WaypointSheet::buttonAt(int index) const {
 void WaypointSheet::layout(int width, int height, Font& font, bool compact) {
     compactLayout = compact;
     const int line = font.lineHeight();
-    const int sheetWidth = std::min(width - 8, 300);
-    const int buttonHeight = line + 10;
-    const int sheetHeight = PADDING + (line + 8) + 4 + (compact ? 0 : textLines() * line) + (compact ? 0 : PADDING) + buttonHeight + PADDING;
-    frame = { (width - sheetWidth) / 2, height - sheetHeight - 4, sheetWidth, sheetHeight };
+    const int sheetWidth = metrics::cardWidth(width, height, 8, 300, line);
+    const int buttonHeight = metrics::buttonHeight(line);
+    // With a keyboard one more muted line lists the shortcuts, unless the on-screen keyboard needs the room
+    const int hintHeight = metrics::hasKeyboard() && !compact ? line : 0;
+    const int sheetHeight = PADDING + (line + 8) + 4 + (compact ? 0 : textLines() * line) + (compact ? 0 : PADDING) + hintHeight + buttonHeight + PADDING;
+    // On a very low screen the sheet is cut at the top rather than the screen. Above the on-screen keyboard (compact)
+    // the buttons must stay inside the room given: the gaps shrink to the least that keeps the name field above them.
+    const int tightHeight = PADDING / 2 + 2 + (line + 8) + 2 + buttonHeight + PADDING / 2;
+    const int shownHeight = compact ? std::min(sheetHeight, std::max(tightHeight, height - 4)) : sheetHeight;
+    const int bottomGap = shownHeight < sheetHeight ? PADDING / 2 : PADDING;
+    frame = { (width - sheetWidth) / 2, std::max(0, height - shownHeight - 4), sheetWidth, shownHeight };
     // The < at the left of the name goes back, like in the lists
-    back = { frame.x, frame.y, line + 16, line + 8 + PADDING };
+    back = { frame.x, frame.y, metrics::backWidth(line + 16), metrics::touchTargets() ? std::max(line + 8 + PADDING, metrics::TOUCH_BUTTON_HEIGHT) : line + 8 + PADDING };
     field = { frame.x + back.width, frame.y + PADDING / 2 + 2, sheetWidth - back.width - PADDING, line + 8 };
     const int count = buttonCount();
     const int buttonWidth = (sheetWidth - (count + 1) * PADDING) / count;
-    const int buttonY = frame.y + sheetHeight - PADDING - buttonHeight;
+    const int buttonY = frame.y + frame.height - bottomGap - buttonHeight;
+    // Equal buttons; when a label does not fit its button, the room is shared in proportion to the labels
+    int needed = 0;
+    int labelTotal = 0;
     for (int i = 0; i < count; i++) {
-        buttons[i] = { frame.x + PADDING + i * (buttonWidth + PADDING), buttonY, buttonWidth, buttonHeight };
+        const int w = font.textWidth(labelOf(buttonAt(i))) + 8;
+        needed = std::max(needed, w);
+        labelTotal += w;
+    }
+    const int room = sheetWidth - (count + 1) * PADDING;
+    int x = frame.x + PADDING;
+    for (int i = 0; i < count; i++) {
+        int w = buttonWidth;
+        if (needed > buttonWidth && labelTotal > 0) {
+            w = (font.textWidth(labelOf(buttonAt(i))) + 8) * room / labelTotal;
+        }
+        buttons[i] = { x, buttonY, w, buttonHeight };
+        x += w + PADDING;
     }
 }
 
 void WaypointSheet::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     const int line = font.lineHeight();
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel, theme.panelOpacity);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     const auto backX = static_cast<float>(back.x + back.width / 2);
     const auto backY = static_cast<float>(field.y + field.height / 2);
-    canvas.line(backX + 3.0f, backY - 6.0f, backX - 3.0f, backY, 2.0f, theme.text);
-    canvas.line(backX - 3.0f, backY, backX + 3.0f, backY + 6.0f, 2.0f, theme.text);
+    metrics::drawBackChevron(canvas, backX, backY, theme.text);
     if (editable) {
-        canvas.fillRoundRect(field.x, field.y, field.width, field.height, 4, theme.border);
-        canvas.fillRoundRect(field.x + 1, field.y + 1, field.width - 2, field.height - 2, 3, theme.panel);
+        canvas.fillRoundRect(field.x, field.y, field.width, field.height, metrics::FIELD_RADIUS, theme.border);
+        canvas.fillRoundRect(field.x + 1, field.y + 1, field.width - 2, field.height - 2, metrics::FIELD_RADIUS - 1, theme.panel);
         // The end of a long name stays in view
         const char* shown = value;
         while (*shown != '\0' && font.textWidth(shown) > field.width - 12) {
@@ -145,6 +181,9 @@ void WaypointSheet::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     if (!compactLayout) {
         drawClippedText(canvas, font, frame.x + PADDING, textY, coordinateText, frame.width - 2 * PADDING, theme.muted);
         drawClippedText(canvas, font, frame.x + PADDING, textY + line, distanceText, frame.width - 2 * PADDING, theme.muted);
+        if (metrics::hasKeyboard()) {
+            drawClippedText(canvas, font, frame.x + PADDING, textY + 2 * line, hintOf(kind, editable), frame.width - 2 * PADDING, theme.muted);
+        }
     }
     for (int i = 0; i < buttonCount(); i++) {
         drawButton(canvas, font, theme, buttons[i], labelOf(buttonAt(i)), i == focus, buttonAt(i) == Button::Delete);
@@ -156,23 +195,7 @@ void WaypointSheet::append(uint32_t codepoint) {
         value[0] = '\0';
         selectedAll = false;
     }
-    char bytes[4];
-    int count = 0;
-    if (codepoint < 0x80) {
-        bytes[count++] = static_cast<char>(codepoint);
-    } else if (codepoint < 0x800) {
-        bytes[count++] = static_cast<char>(0xC0 | (codepoint >> 6));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-        bytes[count++] = static_cast<char>(0xE0 | (codepoint >> 12));
-        bytes[count++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-    const size_t length = strlen(value);
-    if (length + static_cast<size_t>(count) < sizeof(value)) {
-        memcpy(value + length, bytes, static_cast<size_t>(count));
-        value[length + static_cast<size_t>(count)] = '\0';
-    }
+    utf8Append(value, sizeof(value), codepoint);
 }
 
 void WaypointSheet::erase() {
@@ -181,14 +204,7 @@ void WaypointSheet::erase() {
         selectedAll = false;
         return;
     }
-    size_t length = strlen(value);
-    while (length > 0 && (static_cast<unsigned char>(value[length - 1]) & 0xC0) == 0x80) {
-        length--;
-    }
-    if (length > 0) {
-        length--;
-    }
-    value[length] = '\0';
+    utf8EraseLast(value);
 }
 
 WaypointSheet::Button WaypointSheet::handleKey(uint32_t key) {
@@ -242,6 +258,10 @@ WaypointSheet::Button WaypointSheet::handleKey(uint32_t key) {
         return key == keys::BACKSPACE ? Button::Cancel : Button::None;
     }
     if (key == keys::BACKSPACE || key == keys::DELETE) {
+        // Backspace deletes while the name has text; on an empty name it cancels, like Esc
+        if (key == keys::BACKSPACE && value[0] == '\0') {
+            return Button::Cancel;
+        }
         erase();
         return Button::None;
     }

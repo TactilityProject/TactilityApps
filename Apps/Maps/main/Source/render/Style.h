@@ -73,6 +73,10 @@ struct Palette {
     uint16_t minor;
     uint16_t minorCasing;
     uint16_t path;
+    /** Tracks (forest and field roads) in the outdoor style; the other styles draw them as paths. */
+    uint16_t track;
+    /** Cycleways in the outdoor style. */
+    uint16_t cycleway;
     uint16_t rail;
     uint16_t pier;
     uint16_t text;
@@ -80,9 +84,13 @@ struct Palette {
     uint16_t marker;
     /** Draw only pure black and white, using patterns instead of greys. */
     bool binary;
+    /** The outdoor style: paths and tracks from zoom 12, by kind, stronger woods and meadows. */
+    bool outdoor;
 };
 
 const Palette& colorPalette();
+/** The colour palette for walking and cycling: paths and tracks from zoom 12, coloured by kind (Settings, Map style). */
+const Palette& outdoorPalette();
 /** High contrast palette for monochrome and grayscale displays. */
 const Palette& monochromePalette();
 /** Pure black and white for 1-bit displays, where anti-aliased greys would turn invisible. */

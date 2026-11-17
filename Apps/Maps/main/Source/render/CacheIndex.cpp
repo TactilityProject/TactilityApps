@@ -139,7 +139,8 @@ bool CacheIndex::load(const uint8_t* data, size_t size) {
     }
     clock = readU32(data + 12);
     const uint8_t* cursor = data + 16;
-    for (uint32_t i = 0; i < stored && count < capacity; i++, cursor += ENTRY_BYTES) {
+    uint32_t visited = 0;
+    for (; visited < stored && count < capacity; visited++, cursor += ENTRY_BYTES) {
         const TileKey tile { cursor[0], static_cast<int>(readU32(cursor + 1)), static_cast<int>(readU32(cursor + 5)) };
         const uint32_t fileSize = readU32(cursor + 9);
         const uint32_t lastUse = readU32(cursor + 13);
@@ -150,7 +151,8 @@ bool CacheIndex::load(const uint8_t* data, size_t size) {
         total += fileSize;
         clock = lastUse > clock ? lastUse : clock;
     }
-    complete = true;
+    // Complete only when every stored entry was looked at; a file with more entries than capacity is not
+    complete = visited == stored;
     return true;
 }
 

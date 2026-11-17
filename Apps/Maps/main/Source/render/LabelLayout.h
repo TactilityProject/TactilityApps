@@ -54,6 +54,11 @@ struct LabelStyle {
     bool binary;
     /** House numbers: small and quiet. */
     uint16_t houseNumber = 0x7BEF;
+    /**
+     * Peaks, saddles, cliffs and volcanoes: only in the outdoor style. They go with the POIs: their icons first, their
+     * names only where room is left.
+     */
+    bool peaks = true;
 };
 
 /** How a POI type looks: its icon (an alpha mask, iconSize x iconSize), colour, and the first zoom it shows at. */
@@ -107,6 +112,17 @@ public:
     static constexpr int NUMBER_CANDIDATE_LIMIT = MAX_CANDIDATES / 2;
     /** POI names show next to their icon from this zoom. */
     static constexpr int POI_NAME_ZOOM = 17;
+    /**
+     * From this zoom nothing is left out: every POI of the tiles on screen is a candidate, named or not, whatever its
+     * rank. Two icons that collide both stay: the later one moves to the nearest free spot within ICON_MOVE_PIXELS,
+     * or shrinks to a dot when there is none. Only names give way. Barriers (types that start at BARRIER_ZOOM) show
+     * from the zoom above.
+     */
+    static constexpr int POI_ALL_ZOOM = 18;
+    static constexpr int BARRIER_ZOOM = 19;
+    static constexpr int ICON_MOVE_PIXELS = 12;
+    /** The dot that stands for an icon that has no room, a small alpha mask. */
+    static constexpr int DOT_SIZE = 5;
     static constexpr int LINE_REPEAT_PIXELS = 300;
     /** Sprite pixels for all labels of a view, two bytes each (text and halo coverage). */
     static constexpr size_t ARENA_BYTES = 192 * 1024;
@@ -127,7 +143,17 @@ public:
     void setPoiLookup(PoiLookup value) { poiLookup = value; }
 
     /** Starts a new placement for a screen of width x height at a view zoom level. */
-    void beginView(int width, int height, int viewZoom);
+    /**
+     * worldLeft and worldTop: the map position of the screen's top left corner in pixels of the view's zoom. With
+     * them the placement is the same wherever the view is panned to; without (0, 0) it is tied to the screen.
+     */
+    void beginView(int width, int height, int viewZoom, double worldLeft = 0.0, double worldTop = 0.0);
+    /**
+     * The same for a turned map: the screen centre's map position and the bearing's cosine and sine (screen offset =
+     * [cos sin; -sin cos] x map offset, as the label transforms). Labels keep their identity and place across pans.
+     */
+    void beginTurnedView(int width, int height, int viewZoom, double worldLeft, double worldTop, double centerX, double centerY,
+        float cosine, float sine);
     /**
      * Adds the labels of one source tile's label section. With cells (a split tile's label file) only the POI and house
      * number cells near the screen are read.
@@ -142,6 +168,8 @@ public:
     void draw(Canvas& canvas, int offsetX, int offsetY, bool lineLabels) const;
     int count() const { return placedCount; }
     int candidateTotal() const { return candidateCount; }
+    /** Tests: the identity (name and map position hash) of candidate i of the last view. */
+    uint32_t candidateOrder(int index) const { return candidates[index].order; }
     /** Records read by the addSection() calls since beginView(), for the log. */
     int recordsRead() const { return recordCount; }
     /** Time the last place() spent drawing sprites, set through setClock(). */
@@ -180,6 +208,15 @@ private:
         uint8_t poiType;
         uint8_t iconSize;
         const uint8_t* icon;
+        /** Where the icon is drawn: the point, or the free spot it moved to (POIs from POI_ALL_ZOOM). */
+        float iconX;
+        float iconY;
+        /** The icon is the dot: no free spot was near, and no name is drawn. */
+        bool dot;
+        /** Order among candidates of the same priority and rank, from the name and the map position: the label's identity. */
+        uint32_t order;
+        /** It was on screen in the last placement. */
+        bool sticky;
     };
     struct Placed {
         uint32_t textOffset;
@@ -195,6 +232,14 @@ private:
         /** The labelled point on screen when placed (for POIs and house numbers). */
         int16_t anchorX;
         int16_t anchorY;
+        /** The candidate's order number. */
+        uint32_t id;
+    };
+    /** A label of the last placement: its identity and its centre on the map (pixels of zoom 24). */
+    struct Kept {
+        uint32_t id;
+        double worldX;
+        double worldY;
     };
 
     bool wants(const LabelRecord& record, uint8_t& priority, uint8_t& fontSize, uint16_t& color) const;
@@ -209,10 +254,20 @@ private:
     };
     static constexpr int WIDTH_ENTRIES = 1024;
     WidthEntry* widths = nullptr;
+    /** The cells a box covers, cut to the grid; false when it lies outside it. */
+    bool gridRange(float cx, float cy, float halfWidth, float halfHeight, int& left, int& top, int& right, int& bottom) const;
+    /** Whether any part of a box is on the screen. */
+    bool onScreen(float cx, float cy, float halfWidth, float halfHeight) const;
     bool gridFree(float cx, float cy, float halfWidth, float halfHeight, float angle) const;
-    void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle);
+    void gridMark(float cx, float cy, float halfWidth, float halfHeight, float angle, bool taken = true);
     bool placePoint(const Candidate& candidate);
-    bool placePoi(const Candidate& candidate);
+    /** Takes the place of a POI's icon; its sprite (with the name where there is room) is drawn by finishPois(). */
+    bool placePoiIcon(Candidate& candidate);
+    /** Whether a placed label can be picked (a tap, Enter): POIs, house numbers, peaks. */
+    static bool selectable(const Placed& label);
+    /** Whether a candidate is placed as an icon with the name beside it: POIs, and peaks that have an icon. */
+    static bool hasIcon(const Candidate& candidate);
+    void finishPois();
     int placeLine(const Candidate& candidate);
     /** Draws text turned by angle (radians) around the centre of a new sprite; false when the arena is full. */
     bool drawSprite(const Candidate& candidate, float centerX, float centerY, float angle, int textPixels, bool withText = true);
@@ -222,6 +277,18 @@ private:
     void (*releaseMemory)(void*) = nullptr;
     uint8_t* arena = nullptr;
     size_t arenaUsed = 0;
+    /**
+     * The sprites of POI icons drawn without a name in this pass: every POI of a kind shows the same icon, so its
+     * sprite (mask and halo) is drawn once and shared (at zoom 17 most labels are such icons).
+     */
+    struct IconSprite {
+        const uint8_t* icon;
+        uint32_t offset;
+        int16_t size;
+    };
+    static constexpr int ICON_SPRITES = 48;
+    IconSprite iconSprites[ICON_SPRITES] = {};
+    int iconSpriteCount = 0;
     char* texts = nullptr;
     size_t textsUsed = 0;
     Candidate* candidates = nullptr;
@@ -230,8 +297,27 @@ private:
     int linePointCount = 0;
     Placed placed[MAX_LABELS] {};
     int placedCount = 0;
-    /** One bit per 8 x 8 pixel cell of the screen. */
-    uint32_t grid[128] {};
+    /** One bit per cell of the screen and a margin around it; the cells are fixed to the map (see gridRange). */
+    uint32_t grid[1024] {};
+    double originX = 0.0;
+    double originY = 0.0;
+    /** The view's turn (cos 1, sin 0 when north is up) and its centre on the map, for screenToMap / mapToScreen. */
+    double viewCenterX = 0.0;
+    double viewCenterY = 0.0;
+    float viewCos = 1.0f;
+    float viewSin = 0.0f;
+    /** Map pixels (of this view's zoom) of a screen point, and back; the same frame for every pan at one bearing. */
+    void screenToMap(double sx, double sy, double& mx, double& my) const;
+    void mapToScreen(double mx, double my, double& sx, double& sy) const;
+    double gridBaseX = 0.0;
+    double gridBaseY = 0.0;
+    /** POIs whose icon has a place, as candidate indexes, until finishPois() draws them. */
+    uint16_t pending[MAX_LABELS] {};
+    int pendingCount = 0;
+    Kept kept[MAX_LABELS] {};
+    /** placeLine's distances along the line it is placing. */
+    float lineLengths[LabelReader::MAX_POINTS] {};
+    int keptCount = 0;
     int gridColumns = 0;
     int gridRows = 0;
     int screenWidth = 0;

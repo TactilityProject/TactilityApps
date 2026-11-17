@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "NavigationBar.h"
 
+#include "Metrics.h"
+
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -9,7 +11,7 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
+using metrics::PADDING;
 constexpr float DEGREES_TO_RADIANS = 3.14159265f / 180.0f;
 constexpr float ARROW_WIDTH = 3.0f;
 
@@ -73,6 +75,16 @@ void NavigationBar::setMessage(const char* message) {
 bool NavigationBar::stopHit(int x, int y) const {
     return stopShown && stopArea.width > 0 && x >= stopArea.x - 6 && x < stopArea.x + stopArea.width + 6 && y >= 0 &&
         y < stopArea.y + stopArea.height + 6;
+}
+
+Rect NavigationBar::stopRect(Font& font, int width) const {
+    const int size = height(font) - 12;
+    return { width - size - 6, (height(font) - size) / 2, size, size };
+}
+
+Rect NavigationBar::stopHitRect(Font& font, int width) const {
+    const Rect r = stopRect(font, width);
+    return { r.x - 6, 0, r.width + 12, r.y + r.height + 6 };
 }
 
 int NavigationBar::height(Font& font) const {
@@ -146,8 +158,8 @@ void NavigationBar::draw(Canvas& canvas, Font& font, const UiTheme& theme, int w
     stopArea = {};
     if (stopShown) {
         // An X on a framed square at the right end
-        const int size = barHeight - 12;
-        stopArea = { width - size - 6, (barHeight - size) / 2, size, size };
+        stopArea = stopRect(font, width);
+        const int size = stopArea.width;
         canvas.fillRoundRect(stopArea.x, stopArea.y, size, size, 6, theme.border);
         canvas.fillRoundRect(stopArea.x + 1, stopArea.y + 1, size - 2, size - 2, 5, theme.panel);
         const float cx = static_cast<float>(stopArea.x) + size / 2.0f;

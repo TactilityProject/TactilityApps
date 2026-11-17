@@ -78,7 +78,9 @@ void scaleView(const uint16_t* source, uint16_t* target, int width, int height, 
 
 AffineView scaledView(double worldX, double worldY, int zoom, float scale, float anchorX, float anchorY, int width, int height,
     float cosine, float sine) {
-    const float inverse = 1.0f / scale;
+    // Two touch points on one pixel give scale 0: never divide by it, and never go below 1/16 (composeAffine's
+    // fixed-point steps take at most 16 source pixels per screen pixel)
+    const float inverse = 1.0f / (scale > 0.0625f ? scale : 0.0625f);
     // The screen centre lies (width / 2 - anchorX, height / 2 - anchorY) screen pixels from the anchor
     const double offsetX = width / 2.0 - anchorX;
     const double offsetY = height / 2.0 - anchorY;
@@ -148,6 +150,21 @@ uint16_t lerpRgb565(uint16_t from, uint16_t to, uint32_t weight) {
 
 int composeAffine(uint16_t* view, int width, int height, const AffineView& transform, TileLookup lookup, void* context, uint16_t placeholder,
     AffineScratch& scratch, bool bilinear, int rowBegin, int rowEnd) {
+    // A degenerate frame (scale near 0 from two touch points on one pixel, or not finite) would overflow the 16.16
+    // steps below: the view gets the placeholder instead. 16 source pixels per screen pixel is far beyond any pinch.
+    constexpr float MAX_STEP = 16.0f;
+    const float steps[4] = { transform.a, transform.b, transform.c, transform.d };
+    for (const float step : steps) {
+        if (!(std::fabs(step) <= MAX_STEP) || !std::isfinite(transform.centerX) || !std::isfinite(transform.centerY)) {
+            const int last = rowEnd < 0 ? height : std::min(rowEnd, height);
+            for (int y = std::max(0, rowBegin); y < last; y++) {
+                for (int x = 0; x < width; x++) {
+                    view[y * width + x] = placeholder;
+                }
+            }
+            return 0;
+        }
+    }
     // The tiles under the four screen corners bound the ones the view needs
     const float halfWidth = width / 2.0f;
     const float halfHeight = height / 2.0f;
