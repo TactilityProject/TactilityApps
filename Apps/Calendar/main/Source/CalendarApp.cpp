@@ -20,6 +20,7 @@
 #include <cstring>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -64,10 +65,26 @@ void showSettings(CalendarContext* context, bool visible) {
 
 void copySettingsFromWidgets(CalendarContext* context) {
     if (context->urlInput != nullptr) {
+        std::lock_guard<std::mutex> lock(context->settingsMutex);
         copyText(context->calendarUrl, sizeof(context->calendarUrl), lv_textarea_get_text(context->urlInput));
         copyText(context->username, sizeof(context->username), lv_textarea_get_text(context->usernameInput));
         copyText(context->password, sizeof(context->password), lv_textarea_get_text(context->passwordInput));
     }
+}
+
+struct SettingsSnapshot {
+    char calendarUrl[sizeof(CalendarContext::calendarUrl)] {};
+    char username[sizeof(CalendarContext::username)] {};
+    char password[sizeof(CalendarContext::password)] {};
+};
+
+SettingsSnapshot getSettingsSnapshot(CalendarContext* context) {
+    std::lock_guard<std::mutex> lock(context->settingsMutex);
+    SettingsSnapshot settings {};
+    copyText(settings.calendarUrl, sizeof(settings.calendarUrl), context->calendarUrl);
+    copyText(settings.username, sizeof(settings.username), context->username);
+    copyText(settings.password, sizeof(settings.password), context->password);
+    return settings;
 }
 
 void onClose(lv_event_t* event) {
@@ -82,9 +99,10 @@ void onOpenSettings(lv_event_t* event) {
 
 void onCancelSettings(lv_event_t* event) {
     auto* context = static_cast<CalendarContext*>(lv_event_get_user_data(event));
-    lv_textarea_set_text(context->urlInput, context->calendarUrl);
-    lv_textarea_set_text(context->usernameInput, context->username);
-    lv_textarea_set_text(context->passwordInput, context->password);
+    const SettingsSnapshot settings = getSettingsSnapshot(context);
+    lv_textarea_set_text(context->urlInput, settings.calendarUrl);
+    lv_textarea_set_text(context->usernameInput, settings.username);
+    lv_textarea_set_text(context->passwordInput, settings.password);
     showSettings(context, false);
 }
 
@@ -255,6 +273,14 @@ bool equalsIgnoreCase(const std::string& left, const char* right) {
         });
 }
 
+bool startsWithIgnoreCase(const std::string& value, const char* prefix) {
+    const size_t length = strlen(prefix);
+    return value.size() >= length &&
+        std::equal(value.begin(), value.begin() + length, prefix, [](char a, char b) {
+            return std::toupper(static_cast<unsigned char>(a)) == std::toupper(static_cast<unsigned char>(b));
+        });
+}
+
 std::string unescapeIcs(const std::string& input) {
     std::string output;
     output.reserve(input.size());
@@ -317,6 +343,7 @@ void parseVEvents(const std::string& calendarData,
     }
 
     bool inEvent = false;
+    size_t componentDepth = 0;
     bool cancelled = false;
     std::string start;
     std::string startParameters;
@@ -328,13 +355,16 @@ void parseVEvents(const std::string& calendarData,
         const std::string line = unfolded.substr(position, end - position);
         position = end + 1;
 
-        if (equalsIgnoreCase(line, "BEGIN:VEVENT")) {
+        if (equalsIgnoreCase(line, "BEGIN:VEVENT") && !inEvent) {
             inEvent = true;
+            componentDepth = 1;
             cancelled = false;
             start.clear();
             startParameters.clear();
             summary.clear();
-        } else if (inEvent && equalsIgnoreCase(line, "END:VEVENT")) {
+        } else if (inEvent && startsWithIgnoreCase(line, "BEGIN:")) {
+            ++componentDepth;
+        } else if (inEvent && equalsIgnoreCase(line, "END:VEVENT") && componentDepth == 1) {
             if (!cancelled && !start.empty()) {
                 CalendarEvent event {};
                 formatStart(start, startParameters, event.start, sizeof(event.start));
@@ -351,14 +381,16 @@ void parseVEvents(const std::string& calendarData,
                     ++count;
                     events[insertion] = event;
                 } else if (insertion < events.size()) {
-                    for (size_t i = events.size() - 1; i > insertion; --i) {
-                        events[i] = events[i - 1];
-                    }
                     events[insertion] = event;
                 }
             }
             inEvent = false;
-        } else if (inEvent) {
+            componentDepth = 0;
+        } else if (inEvent && startsWithIgnoreCase(line, "END:")) {
+            if (componentDepth > 1) {
+                --componentDepth;
+            }
+        } else if (inEvent && componentDepth == 1) {
             const size_t colon = line.find(':');
             if (colon == std::string::npos) continue;
             const size_t semicolon = line.find(';');
@@ -382,31 +414,54 @@ void parseVEvents(const std::string& calendarData,
 
 bool parseCalendarResponse(const std::string& xml,
                            std::array<CalendarEvent, CalendarContext::MAX_EVENTS>& events, size_t& count) {
-    size_t searchPosition = 0;
+    size_t position = 0;
     bool foundData = false;
-    while (true) {
-        const size_t namePosition = xml.find("calendar-data", searchPosition);
-        if (namePosition == std::string::npos) break;
-        const size_t openStart = xml.rfind('<', namePosition);
-        const size_t openEnd = xml.find('>', namePosition);
-        if (openStart == std::string::npos || openEnd == std::string::npos) return false;
-        const size_t tagEnd = xml.find_first_of(" \t\r\n/>", openStart + 1);
-        if (tagEnd == std::string::npos || tagEnd <= namePosition) return false;
-        const std::string tagName = xml.substr(openStart + 1, tagEnd - openStart - 1);
+    while ((position = xml.find('<', position)) != std::string::npos) {
+        if (xml.compare(position, 4, "<!--") == 0) {
+            const size_t commentEnd = xml.find("-->", position + 4);
+            if (commentEnd == std::string::npos) return false;
+            position = commentEnd + 3;
+            continue;
+        }
+        if (xml.compare(position, 9, "<![CDATA[") == 0) {
+            const size_t cdataEnd = xml.find("]]>", position + 9);
+            if (cdataEnd == std::string::npos) return false;
+            position = cdataEnd + 3;
+            continue;
+        }
+        const char marker = position + 1 < xml.size() ? xml[position + 1] : '\0';
+        if (marker == '/' || marker == '!' || marker == '?') {
+            const size_t tagEnd = xml.find('>', position + 1);
+            if (tagEnd == std::string::npos) return false;
+            position = tagEnd + 1;
+            continue;
+        }
+
+        const size_t nameStart = position + 1;
+        const size_t nameEnd = xml.find_first_of(" \t\r\n/>", nameStart);
+        if (nameEnd == std::string::npos || nameEnd == nameStart) return false;
+        const std::string tagName = xml.substr(nameStart, nameEnd - nameStart);
+        const size_t openEnd = xml.find('>', nameEnd);
+        if (openEnd == std::string::npos) return false;
         const size_t namespaceSeparator = tagName.rfind(':');
         const std::string localName = tagName.substr(
             namespaceSeparator == std::string::npos ? 0 : namespaceSeparator + 1
         );
         if (localName != "calendar-data") {
-            searchPosition = namePosition + strlen("calendar-data");
+            position = openEnd + 1;
             continue;
         }
+        foundData = true;
+        if (openEnd > nameEnd && xml[openEnd - 1] == '/') {
+            position = openEnd + 1;
+            continue;
+        }
+
         const std::string closeTag = "</" + tagName + ">";
         const size_t closeStart = xml.find(closeTag, openEnd + 1);
         if (closeStart == std::string::npos) return false;
         parseVEvents(decodeXml(xml.substr(openEnd + 1, closeStart - openEnd - 1)), events, count);
-        foundData = true;
-        searchPosition = closeStart + closeTag.size();
+        position = closeStart + closeTag.size();
     }
     return foundData || xml.find("multistatus") != std::string::npos;
 }
@@ -461,10 +516,10 @@ bool makeReport(char* report, size_t size, char* error, size_t errorSize) {
     return true;
 }
 
-bool syncCalendar(CalendarContext* context, char* message, size_t messageSize,
+bool syncCalendar(const SettingsSnapshot& settings, char* message, size_t messageSize,
                   std::array<CalendarEvent, CalendarContext::MAX_EVENTS>& events, size_t& count) {
-    if (strncmp(context->calendarUrl, "https://", 8) != 0 ||
-        strpbrk(context->calendarUrl, "\r\n ") != nullptr) {
+    if (strncmp(settings.calendarUrl, "https://", 8) != 0 ||
+        strpbrk(settings.calendarUrl, "\r\n ") != nullptr) {
         copyText(message, messageSize, "Enter a valid HTTPS calendar collection URL in Settings.");
         return false;
     }
@@ -475,9 +530,9 @@ bool syncCalendar(CalendarContext* context, char* message, size_t messageSize,
     HttpResponse response;
     response.body.reserve(4096);
     esp_http_client_config_t config {};
-    config.url = context->calendarUrl;
-    config.username = context->username;
-    config.password = context->password;
+    config.url = settings.calendarUrl;
+    config.username = settings.username;
+    config.password = settings.password;
     config.auth_type = HTTP_AUTH_TYPE_BASIC;
     config.timeout_ms = HTTP_TIMEOUT_MS;
     config.buffer_size = 2048;
@@ -536,6 +591,7 @@ bool syncCalendar(CalendarContext* context, char* message, size_t messageSize,
 }
 
 void saveSettings(CalendarContext* context) {
+    const SettingsSnapshot settings = getSettingsSnapshot(context);
     char path[256];
     if (!getSettingsPath(path, sizeof(path))) {
         setStatus(context, "Could not locate app storage; settings were not saved.");
@@ -546,9 +602,9 @@ void saveSettings(CalendarContext* context) {
         setStatus(context, "Could not open app storage; settings were not saved.");
         return;
     }
-    preferences_put_string(preferences, "calendarUrl", context->calendarUrl);
-    preferences_put_string(preferences, "username", context->username);
-    preferences_put_string(preferences, "password", context->password);
+    preferences_put_string(preferences, "calendarUrl", settings.calendarUrl);
+    preferences_put_string(preferences, "username", settings.username);
+    preferences_put_string(preferences, "password", settings.password);
     preferences_close(preferences);
     setStatus(context, "Calendar settings saved.");
 }
@@ -583,6 +639,7 @@ void calendarLoadSettings(CalendarContext* context) {
 
 void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* context = static_cast<CalendarContext*>(userData);
+    const SettingsSnapshot settingsSnapshot = getSettingsSnapshot(context);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollable(parent, false);
 
@@ -629,11 +686,11 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_width(hint, LV_PCT(100));
     lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_WRAP);
 
-    addInput(context->settingsPanel, "HTTPS calendar URL", "https://server/.../calendar/", context->calendarUrl,
+    addInput(context->settingsPanel, "HTTPS calendar URL", "https://server/.../calendar/", settingsSnapshot.calendarUrl,
              sizeof(context->calendarUrl) - 1, false, &context->urlInput);
-    addInput(context->settingsPanel, "Username", "CalDAV username", context->username,
+    addInput(context->settingsPanel, "Username", "CalDAV username", settingsSnapshot.username,
              sizeof(context->username) - 1, false, &context->usernameInput);
-    addInput(context->settingsPanel, "Password", "CalDAV password", context->password,
+    addInput(context->settingsPanel, "Password", "CalDAV password", settingsSnapshot.password,
              sizeof(context->password) - 1, true, &context->passwordInput);
 
     createButton(context->settingsPanel, "Save", onSaveSettings, context);
@@ -661,10 +718,11 @@ void calendarProcessRequests(CalendarContext* context) {
     }
     if ((requests & REQUEST_SYNC) != 0) {
         setStatus(context, "Syncing CalDAV calendar...");
+        const SettingsSnapshot settings = getSettingsSnapshot(context);
         auto events = std::make_unique<std::array<CalendarEvent, CalendarContext::MAX_EVENTS>>();
         size_t count = 0;
         char message[sizeof(context->status)] {};
-        if (syncCalendar(context, message, sizeof(message), *events, count)) {
+        if (syncCalendar(settings, message, sizeof(message), *events, count)) {
             updateAgenda(context, *events, count);
         }
         setStatus(context, message);

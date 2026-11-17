@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 struct CalendarEvent {
     char start[48] {};
@@ -24,6 +25,7 @@ struct CalendarContext {
     uint32_t requestBit = 0;
     std::atomic<uint32_t> requests {0};
 
+    std::mutex settingsMutex;
     char calendarUrl[256] {};
     char username[96] {};
     char password[96] {};
