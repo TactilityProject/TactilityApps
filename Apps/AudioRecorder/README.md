@@ -23,13 +23,6 @@ Records WAV audio from the device's microphone and plays the recordings back.
 - **Refresh** (toolbar): rescans the recordings folder.
 - **Close** (toolbar): exits the app.
 
-## Screenshots
-
-| Device | Recordings | Fold-out player |
-| --- | --- | --- |
-| T-Deck Plus (320x240) | ![alt text](images/tdeck-recordings.png) | ![alt text](images/tdeck-player.png) |
-| Tab5 (720x1280) | ![alt text](images/tab5-recordings.png) | ![alt text](images/tab5-player.png) |
-
 ## Storage
 
 Recordings are saved as `.wav` files in the app's user data directory. The toolbar delete button removes the selected file.

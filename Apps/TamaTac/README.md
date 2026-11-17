@@ -235,15 +235,6 @@ One properties file per concern under the app's user-data path:
 | `cemetery.properties` | `valid0..4`, `pers0..4`, `stage0..4`, `age0..4` |
 | `achievements.properties` | `bits` (uint16 bitfield), `cleanCnt` |
 
-## Screenshots
-
-| | | | |
-|:-:|:-:|:-:|:-:|
-| ![Main](images/screenshot-one.tactility.tamatac.png) | ![Main with poops](images/screenshot-12.png) | ![Teen](images/screenshot-11.png) | ![Sleeping](images/screenshot-16.png) |
-| Main View | Poops! | Teen | Sleeping |
-| ![Menu](images/screenshot-13.png) | ![Stats](images/screenshot-14.png) | ![Settings](images/screenshot-15.png) | ![Achievements](images/screenshot-1.png) |
-| Menu | Stats | Settings | Achievements |
-
 ## Known Issues
 
 - **Offline time not tracked across reboots**: `lastSaveTime` uses uptime milliseconds (`tt::kernel::getMillis()`), which resets to 0 on device reboot. This means stat decay during power-off periods is not applied. A proper fix would require RTC or epoch-based timestamps, which are not currently available on all Tactility devices.

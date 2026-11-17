@@ -17,14 +17,6 @@ Snake is a faithful implementation of the classic arcade game where you control 
 - **Responsive UI**: Automatically adapts grid size to available screen space.
 - **Non-Square Grids**: Takes advantage of the full display area.
 
-## Screenshots
-
-Screenshots taken directly from my Lilygo T-Deck Plus.
-Tested on Lilygo T-Deck Plus and M5Stack Cardputer.
-
-![alt text](images/easy.png) ![alt text](images/medium.png) ![alt text](images/hardhell.png)
-![alt text](images/selection.png)
-
 ## Requirements
 
 - Tactility
