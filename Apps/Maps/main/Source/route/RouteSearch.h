@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "PagedArray.h"
 #include "../mvt/InflateReader.h"
 #include "GrowArray.h"
 #include "RouteGraph.h"
@@ -24,6 +25,9 @@ void routePointTo(const RoutePoint& point, double& lat, double& lon);
 double routeMetresPerUnit(int32_t y);
 
 /** One stretch of a route on one road: where it starts in the route's points, its name and class. */
+/** In RouteStep::flags (next to the edge's EDGE_ flags): the step runs on the main-road layer, its line is coarse. */
+constexpr uint8_t ROUTE_STEP_COARSE = 128;
+
 struct RouteStep {
     uint32_t point;
     /** Offset into Route::names, the name's length (0: no name). */
@@ -53,6 +57,8 @@ struct Route {
     GrowArray<RouteSide> sides;
     float lengthM = 0.0f;
     float seconds = 0.0f;
+    /** Made from a GPX track (RouteTrack.h), not found by the search: no turns, and off it no new route is searched. */
+    bool track = false;
 
     void clear();
     bool isEmpty() const { return points.size() < 2; }
@@ -70,7 +76,7 @@ public:
     virtual bool memoryShort() { return false; }
 };
 
-enum class RouteResult : uint8_t { Found, NoRoadNearStart, NoRoadNearGoal, NoPath, TooLong, NoMemory, Cancelled };
+enum class RouteResult : uint8_t { Found, NoRoadNearStart, NoRoadNearGoal, NoPath, TooLong, NoMemory, Cancelled, NoTrack };
 const char* routeResultText(RouteResult result);
 
 struct RouteStats {
@@ -80,10 +86,14 @@ struct RouteStats {
     uint32_t discovered;
     uint32_t tilesRead;
     uint32_t tilesMissing;
+    /** Metres from start to goal in a straight line. */
+    uint32_t straightM;
     uint32_t peakBytes;
     uint32_t graphBytes;
     /** 2 when the first pass ran out of node states and a second, goal-directed pass ran (see RouteSearch::find). */
     uint32_t passes;
+    /** The route was found on two levels: local roads near both ends, the main-road layer between. */
+    bool layered;
 };
 
 /**
@@ -107,9 +117,11 @@ public:
 
     /**
      * Takes up to memoryBytes of large memory for the search: the node states, the queue and the tiles' graphs. Returns
-     * false when not even a small search fits.
+     * false when not even a small search fits. Bike routes settle the most states and get a quarter of the memory
+     * for them, walk and car a fifth (their long routes ran out of graph memory first: Kosice - Bratislava by car on
+     * the T-Deck, 15 Nov 2026; 50 Bratislava pairs at 2 MB: walk 48 -> 50 found, bike stays at 49 with a quarter).
      */
-    bool begin(size_t memoryBytes);
+    bool begin(size_t memoryBytes, RouteProfile profile = RouteProfile::Car);
     /** Gives the memory back. */
     void end();
 
@@ -119,7 +131,12 @@ public:
      * Fills sides from the graphs of the tiles along a route's points: road segments within SIDE_METRES of it that are
      * not part of it and not parallel to it (a separately drawn pavement is no other road). Needs no search memory.
      */
-    bool addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides);
+    /** coarse (optional, one per point): points on steps of the main-road layer. Stretches made only of them get no
+     *  sides (the follower uses no edge rule there) and their tiles are not read: on a 400 km route that walked 250
+     *  tiles that are not on the card, 0.3 s each. */
+    /** Walking prefers paths and tracks to roads (routeCost); for the searches that follow. */
+    void setPreferTrails(bool value) { preferTrails = value; }
+    bool addSides(GraphSource& source, const GrowArray<RoutePoint>& points, GrowArray<RouteSide>& sides, const GrowArray<uint8_t>* coarse = nullptr);
     static constexpr float SIDE_METRES = 60.0f;
     static constexpr size_t MAX_SIDES = 8000;
     /** Makes a running find() return Cancelled soon. */
@@ -156,10 +173,23 @@ private:
 
     int tileSlot(GraphSource& source, const TileKey& tile);
     bool loadTile(GraphSource& source, const TileKey& tile, Tile& out);
-    bool snap(GraphSource& source, const RoutePoint& point, RouteProfile profile, Snap& out);
+    /**
+     * Reads a tile's graph file into fileBuffer, unless it is the file that is in there: snapping needs the file of a
+     * tile right after the tile was loaded from it, and every read is 0.5 to 2 s on a busy card.
+     */
+    bool readTileFile(GraphSource& source, const TileKey& tile);
+    /**
+     * `zoom` GRAPH_MAIN_ZOOM: the nearest road of the main-road layer instead (further away, LAYER_SNAP_M), for a
+     * start or goal where no local roads are on the card (between two downloaded towns).
+     */
+    bool snap(GraphSource& source, const RoutePoint& point, RouteProfile profile, Snap& out, int zoom = 14);
     bool isIsland(const Tile& tile, uint16_t edge, RouteProfile islandProfile) const;
     /** The node a tile's node joins across one side; limit when the next tile could not be read. */
     bool joinAcross(GraphSource& source, int slot, uint16_t node, int side, uint32_t& joined, bool& limit);
+    /** The main-road node of the other level (toZoom) at a point; limit when its tile could not be read for memory. */
+    /** level: the source node's (brunnel and layer); only a node on the same level is linked, so a bridge never joins
+     *  the road under it (z10 and z14 tiles carry the same brunnel / layer values). */
+    bool linkAcross(GraphSource& source, const RoutePoint& at, uint8_t level, int toZoom, uint32_t& linked, bool& limit);
     /**
      * Whether the roads around a snapped point reach fewer than COMPONENT_NODES nodes (the states mark them), driving
      * away from it, or towards it for a goal.
@@ -178,11 +208,12 @@ private:
 
     Tile* tiles = nullptr;
     int tileCount = 0;
-    Entry* table = nullptr;
+    PagedArray<Entry> table;
+    bool preferTrails = false;
     uint32_t tableCapacity = 0;
     uint32_t used = 0;
     uint32_t maxNodes = 0;
-    QueueItem* queue = nullptr;
+    PagedArray<QueueItem> queue;
     uint32_t queueSize = 0;
     uint32_t queueCapacity = 0;
     size_t budget = 0;
@@ -192,7 +223,11 @@ private:
     /** snap() leaves out edges with a state at either end (the small piece found by smallComponent()). */
     bool excludeSeen = false;
     bool budgetHit = false;
+    /** A tile's graph could not be allocated (not the budget): the search is out of memory, not short of roads. */
+    bool allocationFailed = false;
     GrowArray<uint8_t> fileBuffer;
+    TileKey fileBufferTile {};
+    bool fileBufferValid = false;
     GrowArray<uint8_t> bodyBuffer;
     InflateReader inflater;
     bool inflaterReady = false;

@@ -5,6 +5,8 @@
 #include "../tiles/TileMath.h"
 #include "Raster.h"
 #include "Style.h"
+#include "TerrainOverlay.h"
+#include "Trails.h"
 
 #include <atomic>
 #include <cstddef>
@@ -50,6 +52,14 @@ public:
 
     /** The decoder, lent to a TileConverter so a lane needs only one decompressor. */
     MvtDecoder& tileDecoder() { return decoder; }
+
+    /** Hillshade and contours drawn into the next tiles while it holds a patch (the lane fills it before each tile). */
+    void setTerrain(TerrainOverlay* overlay) { terrain = overlay; }
+    /** The .trl file of the next tile's z12 tile, drawn over everything (nullptr: none). */
+    void setTrails(const uint8_t* file, size_t size) {
+        trailFile = file;
+        trailSize = size;
+    }
 
     /** A flag that stops the running render when set, which then returns false. */
     void setCancelFlag(const std::atomic<bool>* flag) { cancelFlag = flag; }
@@ -106,6 +116,9 @@ private:
     size_t bodyCapacity = 0;
     LabelHook labelHook = nullptr;
     void* labelContext = nullptr;
+    TerrainOverlay* terrain = nullptr;
+    const uint8_t* trailFile = nullptr;
+    size_t trailSize = 0;
     const std::atomic<bool>* cancelFlag = nullptr;
     bool cancelled = false;
 };

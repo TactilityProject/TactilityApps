@@ -77,6 +77,8 @@ public:
     void draw(Canvas& canvas, Font& font, const UiTheme& theme);
     bool hitClose(int x, int y) const;
     Rect closeButton() const;
+    /** For tests: the card. */
+    const Rect& bounds() const { return frame; }
 
 private:
     bool visible = false;

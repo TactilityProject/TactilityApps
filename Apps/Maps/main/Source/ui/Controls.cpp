@@ -1,15 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Controls.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 
 namespace maps {
 
+int Controls::sizeFor(int width, int height) {
+    const int shortSide = std::min(width, height);
+    int result = std::clamp(shortSide / 10, SIZE, MAX_SIZE);
+    // A low screen: the zoom pair, the position button and the menu pair must fit one above the other
+    if (height < 200) {
+        result = std::max(20, std::min(result, height / 6));
+    } else if (metrics::touchTargets()) {
+        // A finger-sized button on touch boards
+        result = std::max(result, metrics::TOUCH_BUTTON_HEIGHT);
+    }
+    return result;
+}
+
 void Controls::layout(int width, int height, int scaleBarTop, int top) {
     // The zoom pair sits on the right edge around the middle, the position button above the scale bar
+    size = sizeFor(width, height);
+    const int SIZE = size;
     rects[static_cast<int>(Control::Menu)] = { EDGE, top + EDGE, SIZE, SIZE };
     rects[static_cast<int>(Control::ZoomIn)] = { width - EDGE - SIZE, height / 2 - SIZE - 3, SIZE, SIZE };
     rects[static_cast<int>(Control::ZoomOut)] = { width - EDGE - SIZE, height / 2 + 3, SIZE, SIZE };
+    rects[static_cast<int>(Control::Search)] = { EDGE, top + EDGE + SIZE + EDGE, SIZE, SIZE };
+    rects[static_cast<int>(Control::Style)] = styleButton ? Rect { EDGE, top + EDGE + 2 * (SIZE + EDGE), SIZE, SIZE } : Rect {};
     const int positionTop = std::max(height / 2 + SIZE + 12, scaleBarTop - EDGE - SIZE);
     rects[static_cast<int>(Control::Position)] = { width - EDGE - SIZE, positionTop, SIZE, SIZE };
 }
@@ -34,6 +53,9 @@ Control Controls::hit(int x, int y) const {
     // A few pixels of slack around each button, fingers are wider than 32 px
     for (int i = 0; i < static_cast<int>(Control::Count); i++) {
         const Rect& r = rects[i];
+        if (r.width == 0) {
+            continue;
+        }
         if (x >= r.x - 4 && y >= r.y - 3 && x < r.x + r.width + 4 && y < r.y + r.height + 3) {
             return static_cast<Control>(i);
         }
@@ -51,6 +73,10 @@ char Controls::keyOf(Control control) {
             return 'O';
         case Control::Position:
             return 'G';
+        case Control::Search:
+            return '/';
+        case Control::Style:
+            return 'L';
         default:
             return 0;
     }
@@ -70,6 +96,11 @@ Control Controls::controlForKey(uint32_t key) {
         case 'g':
         case 'G':
             return Control::Position;
+        case '/':
+            return Control::Search;
+        case 'l':
+        case 'L':
+            return Control::Style;
         default:
             return Control::None;
     }
@@ -77,44 +108,66 @@ Control Controls::controlForKey(uint32_t key) {
 
 void Controls::moveFocus(int steps) {
     const int count = static_cast<int>(Control::Count);
-    const int next = ((static_cast<int>(focus) + steps) % count + count) % count;
+    int next = ((static_cast<int>(focus) + steps) % count + count) % count;
+    if (!styleButton && static_cast<Control>(next) == Control::Style) {
+        // Not shown: skipped
+        next = ((next + (steps < 0 ? -1 : 1)) % count + count) % count;
+    }
     focus = static_cast<Control>(next);
 }
 
 void Controls::drawIcon(Canvas& canvas, Control control, const Rect& r, uint16_t color, PositionButton position, const UiTheme& theme) {
     const float cx = static_cast<float>(r.x) + r.width / 2.0f;
     const float cy = static_cast<float>(r.y) + r.height / 2.0f;
+    // The icons are drawn for 32 px buttons and scaled to the real size
+    const float k = static_cast<float>(r.width) / 32.0f;
     switch (control) {
         case Control::Menu:
             for (int i = -1; i <= 1; i++) {
-                canvas.line(cx - 7.0f, cy + i * 5.0f, cx + 7.0f, cy + i * 5.0f, 2.2f, color);
+                canvas.line(cx - 7.0f * k, cy + i * 5.0f * k, cx + 7.0f * k, cy + i * 5.0f * k, 2.2f * k, color);
             }
             break;
         case Control::ZoomIn:
-            canvas.line(cx - 7.0f, cy, cx + 7.0f, cy, 2.4f, color);
-            canvas.line(cx, cy - 7.0f, cx, cy + 7.0f, 2.4f, color);
+            canvas.line(cx - 7.0f * k, cy, cx + 7.0f * k, cy, 2.4f * k, color);
+            canvas.line(cx, cy - 7.0f * k, cx, cy + 7.0f * k, 2.4f * k, color);
             break;
         case Control::ZoomOut:
-            canvas.line(cx - 7.0f, cy, cx + 7.0f, cy, 2.4f, color);
+            canvas.line(cx - 7.0f * k, cy, cx + 7.0f * k, cy, 2.4f * k, color);
             break;
         case Control::Position:
-            canvas.ring(cx, cy, 6.0f, 2.0f, color);
-            canvas.line(cx, cy - 11.0f, cx, cy - 7.0f, 2.0f, color);
-            canvas.line(cx, cy + 7.0f, cx, cy + 11.0f, 2.0f, color);
-            canvas.line(cx - 11.0f, cy, cx - 7.0f, cy, 2.0f, color);
-            canvas.line(cx + 7.0f, cy, cx + 11.0f, cy, 2.0f, color);
+            canvas.ring(cx, cy, 6.0f * k, 2.0f * k, color);
+            canvas.line(cx, cy - 11.0f * k, cx, cy - 7.0f * k, 2.0f * k, color);
+            canvas.line(cx, cy + 7.0f * k, cx, cy + 11.0f * k, 2.0f * k, color);
+            canvas.line(cx - 11.0f * k, cy, cx - 7.0f * k, cy, 2.0f * k, color);
+            canvas.line(cx + 7.0f * k, cy, cx + 11.0f * k, cy, 2.0f * k, color);
             if (position == PositionButton::Following) {
-                canvas.fillCircle(cx, cy, 3.0f, color);
+                canvas.fillCircle(cx, cy, 3.0f * k, color);
             } else if (position == PositionButton::FollowingHeading) {
                 // A pointer to the top: the direction of travel is up
-                canvas.line(cx, cy - 4.0f, cx - 3.0f, cy + 3.0f, 2.2f, color);
-                canvas.line(cx, cy - 4.0f, cx + 3.0f, cy + 3.0f, 2.2f, color);
+                canvas.line(cx, cy - 4.0f * k, cx - 3.0f * k, cy + 3.0f * k, 2.2f * k, color);
+                canvas.line(cx, cy - 4.0f * k, cx + 3.0f * k, cy + 3.0f * k, 2.2f * k, color);
             } else if (position == PositionButton::Unavailable) {
                 // Crossed out, with a gap in the panel colour so the slash reads on the icon
-                canvas.line(cx - 10.0f, cy + 10.0f, cx + 10.0f, cy - 10.0f, 4.5f, theme.panel);
-                canvas.line(cx - 10.0f, cy + 10.0f, cx + 10.0f, cy - 10.0f, 2.0f, color);
+                canvas.line(cx - 10.0f * k, cy + 10.0f * k, cx + 10.0f * k, cy - 10.0f * k, 4.5f * k, theme.panel);
+                canvas.line(cx - 10.0f * k, cy + 10.0f * k, cx + 10.0f * k, cy - 10.0f * k, 2.0f * k, color);
             }
             break;
+        case Control::Search:
+            // A magnifier: a lens ring and a handle towards the bottom right
+            canvas.ring(cx - 2.0f * k, cy - 2.0f * k, 5.5f * k, 2.2f * k, color);
+            canvas.line(cx + 2.0f * k, cy + 2.0f * k, cx + 8.0f * k, cy + 8.0f * k, 2.6f * k, color);
+            break;
+        case Control::Style: {
+            // Layers: two flat diamonds, one above the other
+            for (const float dy : { -3.0f, 3.0f }) {
+                const float y = cy + dy * k;
+                canvas.line(cx - 8.0f * k, y, cx, y - 4.0f * k, 2.0f * k, color);
+                canvas.line(cx, y - 4.0f * k, cx + 8.0f * k, y, 2.0f * k, color);
+                canvas.line(cx + 8.0f * k, y, cx, y + 4.0f * k, 2.0f * k, color);
+                canvas.line(cx, y + 4.0f * k, cx - 8.0f * k, y, 2.0f * k, color);
+            }
+            break;
+        }
         default:
             break;
     }
@@ -128,6 +181,9 @@ void Controls::draw(Canvas& canvas, Font& font, const UiTheme& theme, PositionBu
     for (int i = 0; i < static_cast<int>(Control::Count); i++) {
         const auto control = static_cast<Control>(i);
         const Rect& r = rects[i];
+        if (r.width == 0) {
+            continue;
+        }
         const bool filled = control == Control::Position && (position == PositionButton::Following || position == PositionButton::FollowingHeading);
         const bool focusedNow = (usesFocus() && control == focus) || control == hover;
         canvas.fillRoundRect(r.x, r.y, r.width, r.height, 7, filled ? theme.accent : theme.panel, filled ? 255 : theme.controlOpacity);

@@ -299,6 +299,19 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
     const float segmentMetres = route.distances[segment + 1] - route.distances[segment];
     const float progress = route.distances[segment] + t * segmentMetres;
     current.distanceFromRouteM = distance;
+    // On the main-road layer the route's line is the z10 tile's: up to some tens of metres beside the real road.
+    // There only a larger distance counts as away, and the heading and edge rules (made for the map's own lines)
+    // are left out
+    bool coarse = false;
+    for (const RouteStep& step : route.steps) {
+        if (step.point > segment) {
+            break;
+        }
+        coarse = (step.flags & ROUTE_STEP_COARSE) != 0;
+    }
+    const float offHere = coarse ? off + COARSE_EXTRA_M : off;
+    const float matchLimitHere = std::max(matchLimit, offHere);
+    current.offM = offHere;
 
     // The direction of travel against the route's at the matched segment
     const RoutePoint& a = route.points[segment];
@@ -356,8 +369,8 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
     if (!weak) {
         const float edgeMargin = std::max(tuning.edgeMarginM, 0.3f * acc);
         // Near the start the route was snapped from one position: only the distance counts there
-        const bool pastStart = progress > tuning.startGuardM;
-        if (distance > off) {
+        const bool pastStart = progress > tuning.startGuardM && !coarse;
+        if (distance > offHere) {
             rule = OffRouteRule::Distance;
         } else if (pastStart && std::isfinite(current.headingDifference) && std::isfinite(speedMps) && speedMps > tuning.headingSpeed &&
             current.headingDifference > tuning.headingDegrees && distance > tuning.headingShare * off) {
@@ -384,7 +397,7 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
 
     // Weak GPS only stops the off-route rule: a fix further than the match limit (accuracy + MATCH_METRES), beyond the
     // goal say, moves neither the progress nor makes an arrival
-    if (rule == OffRouteRule::None && distance <= matchLimit) {
+    if (rule == OffRouteRule::None && distance <= matchLimitHere) {
         // On the route (in weak GPS too, followed by projection)
         lastSegment = segment;
         current.progressM = progress;
@@ -399,6 +412,10 @@ const RouteFollower::Status& RouteFollower::update(const Route& route, double la
         } else if (current.state != State::OffRoute) {
             current.state = State::Away;
         }
+    } else if (current.state == State::OffRoute) {
+        // Weak GPS (or settling) with a fix beyond the match limit: nothing says off route any more, so the state must
+        // not keep asking for a new route. The progress stays where it was.
+        current.state = State::Away;
     }
     // Arrival: close to the goal, or the end of the route reached on it
     const RoutePoint& goal = route.points[route.points.size() - 1];

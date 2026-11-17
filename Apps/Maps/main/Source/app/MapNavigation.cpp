@@ -35,8 +35,15 @@ double worldOfUnits(int32_t units, int zoom) {
 bool ReplaySource::load(const char* text, size_t size) {
     count = 0;
     next = 0;
-    const char* cursor = text;
-    const char* end = text + size;
+    // strstr and strtod need an end: the file's bytes have none, so the text is copied with one
+    char* copy = static_cast<char*>(largeAlloc(size + 1));
+    if (copy == nullptr) {
+        return false;
+    }
+    memcpy(copy, text, size);
+    copy[size] = '\0';
+    const char* cursor = copy;
+    const char* end = copy + size;
     while (cursor < end && count < MAX_POINTS) {
         const char* at = strstr(cursor, "<trkpt");
         if (at == nullptr || at >= end) {
@@ -55,6 +62,7 @@ bool ReplaySource::load(const char* text, size_t size) {
         }
         cursor = close + 1;
     }
+    largeFree(copy);
     setNoise(0.0f, 0.0f, 0);
     return count > 1;
 }
@@ -144,6 +152,32 @@ void MapView::navigateTo(double lat, double lon, RouteProfile profile, bool ask)
     } else {
         openRouteStartChoice();
     }
+}
+
+void MapView::followGpxFile(const char* path) {
+    if (!navigator.requestTrack(path)) {
+        showToast("A route is being searched already");
+        return;
+    }
+    // Back on the map: the card of the route comes when the file is read, as for a searched route
+    stopNavigation();
+    screen = Screen::Map;
+    returnToMenu = false;
+    sheet.close();
+    recalculating = false;
+    routeRequested = true;
+    restartRoute = false;
+    startFromPosition = true;
+    trackLoading = true;
+    trackModePending = false;
+    // A track is shown as Walk until it is read: the mode kept here must say the same, or choosing the mode that was
+    // last used (Bike, say) would look like no change
+    routeProfile = RouteProfile::Walk;
+    routeCard.open("", nullptr);
+    routeCard.setMode(static_cast<int>(RouteProfile::Walk));
+    routeCard.setBusy(true);
+    routeCard.layout(width, height, sheetFont());
+    dirty = true;
 }
 
 void MapView::requestRoute(double fromLat, double fromLon, bool fromPosition, const char* toast) {
@@ -244,6 +278,18 @@ void MapView::drawPickStart() {
     pickBar.draw(canvas, sheetFont(), theme, width);
 }
 
+void MapView::pollElevation() {
+    if (elevationJob.state() != ElevationJob::State::Done) {
+        return;
+    }
+    elevationJob.acknowledge();
+    if (routeCard.isOpen()) {
+        routeCard.setElevation(&elevationJob.profile());
+        routeCard.layout(width, height, sheetFont());
+        dirty = true;
+    }
+}
+
 void MapView::fillRouteCard() {
     navigator.lock();
     const Route& route = navigator.route();
@@ -252,18 +298,49 @@ void MapView::fillRouteCard() {
     formatDistance(route.lengthM, distance, sizeof(distance));
     formatDuration(route.seconds, time, sizeof(time));
     const RouteProfile profile = route.profile;
+    const bool track = route.track;
+    if (track) {
+        // Another mode chosen on the card searches a road route to the track's end; without a fix it starts at the
+        // track's start, not at the start of some earlier route
+        routePointTo(route.to, goalLat, goalLon);
+        routePointTo(route.points[0], startLat, startLon);
+        routeProfile = profile;
+    }
     navigator.unlock();
     char summary[64];
-    snprintf(summary, sizeof(summary), "%s \xC2\xB7 %s \xC2\xB7 %s", distance, time, routeProfileName(profile));
-    routeCard.open(summary, profile == RouteProfile::Car ? CAR_NOTE : nullptr);
+    snprintf(summary, sizeof(summary), "%s \xC2\xB7 %s \xC2\xB7 %s", distance, time, track ? "GPX track" : routeProfileName(profile));
+    routeCard.open(summary, track ? "Follows the track as it is: no turns are announced" : (profile == RouteProfile::Car ? CAR_NOTE : nullptr));
     routeCard.setMode(static_cast<int>(profile));
+    // The profile comes a moment later, read from the terrain files in the background
+    routeCard.setElevation(nullptr);
+    if (settings.terrain) {
+        navigator.lock();
+        elevationJob.start(worker, navigator.route());
+        navigator.unlock();
+    } else {
+        elevationJob.cancel();
+    }
     routeCard.layout(width, height, sheetFont());
+    // A mode chosen while the track was read: applied now that the track's end is known
+    if (track && trackModePending) {
+        trackModePending = false;
+        if (pendingTrackMode != profile) {
+            chooseRouteMode(pendingTrackMode);
+        }
+    }
 }
 
 void MapView::chooseRouteMode(RouteProfile next) {
     routeProfile = next;
     routeCard.setMode(static_cast<int>(next));
     dirty = true;
+    if (trackLoading) {
+        // The track goes on loading: cancelling it would route to the goal of an earlier route
+        pendingTrackMode = next;
+        trackModePending = true;
+        routeCard.setBusy(true);
+        return;
+    }
     if (navigator.state() == Navigator::State::Searching) {
         // The running search stops; the new one starts when it has (updateNavigation)
         navigator.cancel();
@@ -361,7 +438,16 @@ void MapView::startNavigation() {
     navigator.unlock();
     navigating = true;
     arrivedAt = 0;
+    hapticStep = -2;
     lastRecalculation = 0;
+    recalculationFailed = false;
+    {
+        navigator.lock();
+        const Route& started = navigator.route();
+        scriptLog("Navigation: started, %s, %.0f m, %u points%s", routeProfileName(started.profile), started.lengthM,
+            static_cast<unsigned>(started.points.size()), started.track ? ", GPX track" : "");
+        navigator.unlock();
+    }
     navBar.showStop(true);
     layoutControls();
     char instruction[NavigationBar::INSTRUCTION_LENGTH];
@@ -384,7 +470,42 @@ void MapView::startNavigation() {
     dirty = true;
 }
 
+void MapView::flushNavLog() {
+    if (navLogUsed == 0) {
+        return;
+    }
+    char path[PATH_MAX_LENGTH];
+    char older[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/navlog.txt", rootPath);
+    snprintf(older, sizeof(older), "%s/navlog.old", rootPath);
+    auto append = [&]() {
+        // Two files of at most 512 KB: the trip before stays readable, the card never fills
+        uint32_t size = 0;
+        if (fileSize(path, size) && size > 512 * 1024) {
+            remove(older);
+            rename(path, older);
+        }
+        FILE* file = fopen(path, "a");
+        if (file == nullptr) {
+            return false;
+        }
+        const bool ok = fwrite(navLog, 1, navLogUsed, file) == navLogUsed;
+        return fclose(file) == 0 && ok;
+    };
+    // The lines are kept when the write failed (a busy or full card) and tried again with the next ones; after a few
+    // failures in a row they are dropped, so a card that never takes them does not make every line a write
+    if (runOnCard(io, append, IoPriority::Background) || ++navLogFailures >= 3) {
+        navLogUsed = 0;
+        navLogFailures = 0;
+    }
+    navLogFlushedAt = nowMs();
+}
+
 void MapView::stopNavigation() {
+    if (navigating) {
+        scriptLog("Navigation: stopped");
+        flushNavLog();
+    }
     navigating = false;
     follower.end();
     headingUp = false;
@@ -410,6 +531,12 @@ void MapView::updateNavigation(uint32_t now) {
         const RouteResult result = navigator.takeResult();
         const bool asked = routeRequested;
         routeRequested = false;
+        // A track's result: a mode chosen meanwhile is applied by fillRouteCard (only when the track was found)
+        const bool trackResult = trackLoading;
+        trackLoading = false;
+        if (trackResult && result != RouteResult::Found) {
+            trackModePending = false;
+        }
         if (restartRoute) {
             // Another mode was chosen while it searched
             restartRoute = false;
@@ -420,7 +547,12 @@ void MapView::updateNavigation(uint32_t now) {
             if (recalculating && navigating) {
                 navigator.lock();
                 follower.begin(navigator.route());
+                const float newLength = navigator.route().lengthM;
                 navigator.unlock();
+                hapticStep = -2;
+                recalculationFailed = false;
+                scriptLog("Navigation: new route, %.0f m%s, %u ms", newLength, navigator.lastWasRejoin() ? " (back to the old route)" : "",
+                    navigator.lastStats().totalMs);
                 navBar.setMessage("New route");
             } else {
                 fillRouteCard();
@@ -428,13 +560,17 @@ void MapView::updateNavigation(uint32_t now) {
             }
         } else {
             if (recalculating && navigating) {
+                recalculationFailed = true;
+                scriptLog("Navigation: no new route: %s", routeResultText(result));
                 navBar.setMessage(routeResultText(result));
             } else {
                 // The card stays with the reason, so another mode can be tried
                 routeCard.setBusy(false);
                 routeCard.setCanStart(false);
                 routeCard.setSummary(routeResultText(result));
-                routeCard.setNote(nullptr);
+                // Between two towns the way is over the main roads of the zoomed-out map, which must be on the card
+                const bool far = (result == RouteResult::NoPath || result == RouteResult::TooLong) && navigator.lastStats().straightM > 15000;
+                routeCard.setNote(far ? "For the way between two towns, download the area between them once, zoomed out." : nullptr);
                 routeCard.layout(width, height, sheetFont());
                 if (!routeCard.isOpen()) {
                     showToast(routeResultText(result));
@@ -443,6 +579,9 @@ void MapView::updateNavigation(uint32_t now) {
         }
         recalculating = false;
         dirty = true;
+    }
+    if (navigating && navLogUsed > 0 && now - navLogFlushedAt >= 30000) {
+        flushNavLog();
     }
     // No fix for 2 s (a GPS that stopped sending): the last one counts again, so standing still off the route is noticed
     if (navigating && static_cast<int32_t>(now - lastFollowAt) >= 2000) {
@@ -479,14 +618,21 @@ void MapView::followRoute(uint32_t now) {
     lastFollowFixMs = fix.timeMs;
     const RouteFollower::Status status = follower.update(route, fix.latitude, fix.longitude, fix.accuracy, now, fix.course, fix.speed, newFix);
     // One line per fix while navigating, for tuning the off-route rule (0.4.1)
-    scriptLog("Follow: route %.1f m, acc %.1f m (fix %.1f), off %.1f m, heading %.0f, side %.1f m, %.1f m/s, away %u%s%s%s, replay %d",
+    // Formatted here, written after the unlock: the log is an SD write and the route lock must not wait for it
+    char logLine[224];
+    snprintf(logLine, sizeof(logLine), "Follow: route %.1f m, acc %.1f m (fix %.1f), off %.1f m, heading %.0f, side %.1f m, %.1f m/s, away %u%s%s%s, replay %d",
         status.distanceFromRouteM, status.accuracyM, fix.accuracy, status.offM, status.headingDifference, status.sideM, fix.speed,
         static_cast<unsigned>(status.awayFixes), status.awayRule != OffRouteRule::None ? " by " : "",
         status.awayRule != OffRouteRule::None ? offRouteRuleName(status.awayRule) : "", status.weakGps ? ", weak GPS" : "",
         replaying ? replay.pointIndex() : -1);
     char instruction[NavigationBar::INSTRUCTION_LENGTH];
     follower.instruction(route, instruction, sizeof(instruction));
+    const bool track = route.track;
+    if (track) {
+        snprintf(instruction, sizeof(instruction), "Follow the track");
+    }
     navigator.unlock();
+    scriptLog("%s", logLine);
     char remaining[NavigationBar::REMAINING_LENGTH];
     follower.remaining(remaining, sizeof(remaining));
     switch (status.state) {
@@ -495,24 +641,56 @@ void MapView::followRoute(uint32_t now) {
             following = false;
             headingUp = false;
             arrivedAt = now;
+            haptic.pulse(2);
             scriptLog("Navigation: arrived");
             break;
         case RouteFollower::State::OffRoute:
-            // The first recalculation at once, then at least recalculateMs apart
-            if (!recalculating && (lastRecalculation == 0 || now - lastRecalculation >= offRouteTuning().recalculateMs) &&
-                navigator.state() == Navigator::State::Idle) {
+            if (track) {
+                // A track is followed as it is: no other way to it is searched, the bar says how far it is
+                char away[NavigationBar::INSTRUCTION_LENGTH];
+                char distance[16];
+                formatDistance(status.distanceFromRouteM, distance, sizeof(distance));
+                snprintf(away, sizeof(away), "Off the track \xC2\xB7 %s", distance);
+                navBar.set(status.nextTurn, away, remaining);
+                break;
+            }
+            // A new route at once, every time the route is left, and always from the position itself (decided
+            // 14 Nov: no waiting between new routes, no start ahead of the position). What keeps this from running
+            // in circles is that the search is short: back to the old route ahead (Navigator::requestRejoin).
+            // Only a search that found no way is not repeated before 5 s: it would fail the same way every second
+            // and keep the card and the tile cache's memory busy
+            if (!recalculating && navigator.state() == Navigator::State::Idle &&
+                (!recalculationFailed || now - lastRecalculation >= 5000)) {
                 lastRecalculation = now;
-                recalculating = navigator.request(fix.latitude, fix.longitude, goalLat, goalLon, routeProfile);
+                haptic.pulse(2);
+                recalculating = navigator.requestRejoin(fix.latitude, fix.longitude, goalLat, goalLon, routeProfile, status.progressM);
                 routeRequested = recalculating;
                 scriptLog("Navigation: off route by %.0f m (acc %.1f m, off %.1f m, rule %s), recalculating", status.distanceFromRouteM,
                     status.accuracyM, status.offM, offRouteRuleName(status.firedRule));
             }
-            navBar.setMessage("Off route \xE2\x80\x94 recalculating");
+            if (recalculating) {
+                navBar.setMessage("Off route \xE2\x80\x94 recalculating");
+            } else {
+                // Not searching (the navigator is busy with something else, or the last search found no way): the bar
+                // says what is true, how far the route is
+                char away[NavigationBar::INSTRUCTION_LENGTH];
+                char distance[16];
+                formatDistance(status.distanceFromRouteM, distance, sizeof(distance));
+                snprintf(away, sizeof(away), recalculationFailed ? "Off route \xC2\xB7 %s \xC2\xB7 no new route yet" : "Off route \xC2\xB7 %s", distance);
+                navBar.set(status.nextTurn, away, remaining);
+            }
             break;
         default:
             if (!recalculating) {
                 // Weak GPS: the route is followed by projection, off route is not checked
                 navBar.set(status.nextTurn, instruction, status.weakGps ? "Weak GPS" : remaining);
+                // One pulse as a turn comes near (about 15-20 s ahead at the mode's speed), once per turn
+                const float near = routeProfile == RouteProfile::Car ? 200.0f : (routeProfile == RouteProfile::Bike ? 70.0f : 25.0f);
+                if (!track && status.nextStep >= 0 && status.nextStep != hapticStep && status.nextTurn != Turn::Straight &&
+                    status.toTurnM <= near) {
+                    hapticStep = status.nextStep;
+                    haptic.pulse(1);
+                }
             }
             break;
     }

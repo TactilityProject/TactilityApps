@@ -14,6 +14,11 @@ constexpr size_t REGION_NAME_MAX = 8;
 /** Writes "<root>/maps/<region>/<z>/<x>/<y>.pbf". Returns false when the path does not fit. */
 bool tilePath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
 
+/** Writes "<root>/maps/<region>/<z>/<x>/<y>.trl", the marked trails of a z12 tile (render/Trails.h). */
+bool trailPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
+/** Writes "<root>/maps/<region>/<z>/<x>/<y>.tlm", where a trail file is written before it is renamed. */
+bool trailTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
+
 /** Writes "<root>/maps/<region>/<z>/<x>/<y>.prt", the prepared copy next to the original. */
 bool preparedPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
 /** Writes "<root>/maps/<region>/<z>/<x>/<y>.ptm", where a prepared tile is written before it is renamed. */
@@ -26,6 +31,11 @@ constexpr int PREPARED_FILE_COUNT = 3;
 bool preparedFilePath(char* out, size_t size, const char* root, const char* region, const TileKey& tile, PreparedFile file);
 /** Where that file is written before it is renamed: ".ptm", ".plm" or ".pgm". */
 bool preparedFileTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile, PreparedFile file);
+
+/** Writes "<root>/maps/<region>/12/<x>/<y>.hgt", the height file of a z12 tile (render/TerrainOverlay.h). */
+bool terrainPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
+/** Where it is written before it is renamed: ".htm". */
+bool terrainTempPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);
 
 /** Writes "<root>/maps/<region>/<z>/<x>", the folder of a tile column. */
 bool tileFolderPath(char* out, size_t size, const char* root, const char* region, const TileKey& tile);

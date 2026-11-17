@@ -15,7 +15,7 @@ for downloading maps. Tested on Tactility 0.8.0-dev (main, November 2026) on a L
 1. Install "Maps" from Tactility's App Hub. Or copy the `.app` file to the SD card, open it in the Files app and
    confirm "Install".
 2. Start "Maps" from the app list. The first time it opens at ESA ESTEC in Noordwijk with no map data yet: move
-   to your area, open the menu (M or ☰) and choose Download map.
+   to your area, open the menu (M or ☰) and choose Download.
 
 ## How it works
 
@@ -48,10 +48,10 @@ circle), the scale bar, and the © mark.
 | Turn the map | Q / E | — | Two fingers |
 | Back to north | N | — | Compass button |
 | Open a row's actions | Enter | Click | Tap the row |
-| Add a waypoint | P | — | Hold ⌖ (your position) or hold the map (that point) |
-| A place or house number | Show the controls, then Enter (nearest the crosshair; Enter again: next) | Click it | Tap it |
-| Menu | M | Long click | ☰ button |
-| Download an area | Shift + D | — | Menu → Download map |
+| Add a waypoint (shows the point's height) | P; or show the controls and hold the click (the crosshair's point) | Hold the click (the pointer's point) | Hold ⌖ (your position) or hold the map (that point) |
+| A place, peak or house number | Show the controls, then Enter (nearest the crosshair; Enter again: next) | Click it | Tap it |
+| Menu | M | Long click with the controls hidden | ☰ button |
+| Download an area | Shift + D | — | Menu → Download |
 | Leave the download frame | Esc | — | The round < in its top left corner |
 | Type a name (waypoint, rename) | Keyboard | — | On-screen keyboard |
 | Credits | — | Click © | Tap ©, tap again for About and licences |
@@ -98,7 +98,9 @@ place in idle time, the tiles on screen first; no download is needed.
 **Places and house numbers.** Icons for cafés, shops, stops, stations, pharmacies, hotels, museums and
 about 120 other kinds of places, coloured by kind (food orange, shops purple, transport blue, health red,
 …), from z15 (stations, museums and the most important places from z14, benches and bins from z16), with
-their names next to them from z17 when there is room. House numbers in small grey text from z17. Both
+their names next to them from z17 when there is room. At z18 and z19 every point of interest of the map is shown,
+named or not (shelters, guideposts, benches, bins, bicycle parkings…; gates and bollards at z19 only), and search
+finds the unnamed ones by their kind ("shelter", "bicycle parking"). House numbers in small grey text from z17. Both
 follow Settings → Labels (one zoom level later with Few) and never cover place or street names. Tap or
 click one for a sheet with its name, kind, coordinates, distance and direction, "Save as waypoint" (the
 name filled in) and Close. With keys: show the controls (a small crosshair marks the middle), then Enter
@@ -176,9 +178,14 @@ takes about 5 minutes on a T-Deck; it is made again when the region's tiles are 
 z14 tiles get one index per block of 15 x 15 tiles. Until a region's index is ready, search doesn't find anything in
 it. The PC tool `host/search_build --tiles` makes the same file.
 
-**Menu:** Download map, Downloaded maps, Waypoints, Add waypoint, Record track, GPX files, Location, Settings, About and
-licences, Exit. W/S, trackball or finger to move; Enter, click or tap to choose; Esc, Backspace or tap
-outside to close.
+**Menu (0.6.0):** a grid of nine tiles: Search, Download (choose an area on the map or a region from the list), Maps (the
+downloaded maps), Waypoints (the list; its first row adds one at the map's centre), Track (record, pause, stop,
+recorded tracks), GPX (files to show), Location (switches on and off in place; the tile says On or Off), Settings,
+About. W A S D, the arrows or the trackball move from tile to tile, Enter or a click opens, a tap opens directly;
+Esc, Backspace, M, a swipe to the right or the arrow at the top left close it. The menu opens on the tile you used
+last. While a download runs or a route exists, a strip above the tiles shows it: the download with its progress
+(opens the download card), Show route or Stop, and Clear route. Exit is the small button at the top right.
+With the controls shown there is also a search button under the menu button (key /).
 
 **Lists and actions.** Enter or a tap on a row opens its actions; lists have a back arrow and a check
 mark in their header; swipe right or the back arrow goes back, and dragging a list scrolls it. Lists open
@@ -212,8 +219,19 @@ offline later. Without Wi-Fi a short message says that detail is missing here. O
 are fetched, one at a time.
 
 **Settings:** SD card cache on or off, prepared tiles deflated or raw, smooth zoom on or off, download
-while browsing on or off. Defaults: SD card cache off (switched off, its files are deleted in idle time),
-deflated, on, on. The map opens at ESA ESTEC, Noordwijk, the first time, then where you left it.
+while browsing on or off, pointer speed, labels, Latin names, route mode, **Walk prefers paths** (walking routes
+take paths, tracks and footways over roads; on) **Map style** (Standard or Outdoor; colour displays only), **Terrain** (hillshade and contour lines where heights
+are on the card, and heights with each new download; on) and **Marked trails** (off; see Known limits).
+
+**Terrain (0.9.0):** Maps → a region → Download terrain asks with the size and fetches the region's elevation
+(AWS Terrain Tiles, z12). The map then shows hillshade and contour lines from zoom 12, and a place's sheet its
+height. Elevation credits: About, Elevation.
+Defaults: SD card cache off (switched off, its files are deleted in idle time), deflated, on, on.
+
+**Outdoor style (0.9.0):** Settings → Map style → Outdoor. Paths in red, tracks in brown and cycleways in blue from
+zoom 12 (the standard style shows them from zoom 14), unpaved ones lighter, woods and meadows stronger. Peaks show
+with their height from zoom 10 in both styles. The first time, the tiles of zoom 12 and 13 are prepared again (a
+moment each, as you look at them or in idle time). The map opens at ESA ESTEC, Noordwijk, the first time, then where you left it.
 
 **Updates:** OpenFreeMap rebuilds its map about weekly. A region downloaded from an older build shows
 "outdated" in Downloaded maps. After about 30 s without input the app updates outdated regions quietly, one tile
@@ -227,7 +245,7 @@ not updated.
 Tactility's location service on or off, with a message. If it's off, the ⌖ button is crossed out and
 pressing it says how to enable it in Tactility's settings.
 
-**Waypoints:** P, or holding ⌖, saves a waypoint at your position; Menu → Add waypoint saves one at the
+**Waypoints:** P, or holding ⌖, saves a waypoint at your position; Menu → Waypoints → Add waypoint here saves one at the
 map centre; on touch screens holding the map saves one where you hold. A sheet asks for the name of a
 new waypoint; typing replaces the suggested name. Waypoints are named WP 001, WP 002, …; they show as
 pins at every zoom level, all the same size. Tap a pin for its card: name, coordinates and distance and
@@ -235,7 +253,7 @@ direction from you. Esc closes the card. Menu → Waypoints lists them by distan
 there, R renames (keyboard), Del or hold deletes after asking. They are kept in `waypoints.gpx` (GPX 1.1)
 in the app's folder on the card.
 
-**Track recording:** Menu → Record track → Start recording. A red ● with the time shows top right (with
+**Track recording:** Menu → Track → Start recording. A red ● with the time shows top right (with
 the controls shown also the distance). The same menu entry pauses, resumes and stops. Points are taken
 from the position when you moved more than 5 m (or more than the GPS accuracy), or every 30 s while
 moving; approximate positions (from the network) are skipped. The track is drawn on the map as a red
@@ -272,6 +290,12 @@ app. The tile URL is read from OpenFreeMap's TileJSON. openstreetmap.org tile se
 - 1-bit displays get their own black-and-white style, so far checked only in renders on the PC, not on a 1-bit device.
 - The trackball in mouse mode is only lightly tested.
 - Recording stops when the app closes (background recording would need Tactility support).
+- Long routes on the T-Deck: car routes across Slovakia (about 400 km) work both ways; a bike route of that length
+  needs more memory than the T-Deck has. Between towns the map must be
+  downloaded zoomed out (z10).
+- Marked trails cannot be downloaded yet: overpass-api.de accepts only TLS 1.3, which Tactility's firmware leaves
+  out. Heights and contour lines work (AWS Terrain Tiles).
+- Vibration on turns needs a board with a motor (T-Deck Max, T-LoRa Pager); it was not tried on one.
 
 ## Credits
 
@@ -284,6 +308,10 @@ app. The tile URL is read from OpenFreeMap's TileJSON. openstreetmap.org tile se
 - Built for [Tactility](https://github.com/TactilityProject/Tactility).
 - Label font: Adwaita Sans, under the SIL Open Font License 1.1; see [THIRD_PARTY.md](THIRD_PARTY.md).
 - Place icons: [Maki](https://github.com/mapbox/maki) by Mapbox, CC0 1.0.
+- Elevation: AWS Terrain Tiles (tilezen/joerd). Europe terrain data produced using Copernicus data and information
+  funded by the European Union - EU-DEM layers; Austria terrain data © offene Daten Österreichs - Digitales
+  Geländemodell (DGM) Österreich; United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data
+  courtesy of the U.S. Geological Survey.
 
 ## Attribution
 

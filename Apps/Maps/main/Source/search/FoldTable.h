@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Made by tools/make_fold_table.py from fold.py and Python's unicodedata 13.0.0; don't edit.
+// Made by host/search/make_fold_table.py from fold.py and Python's unicodedata 13.0.0; don't edit.
 #pragma once
 
 #include <cstdint>

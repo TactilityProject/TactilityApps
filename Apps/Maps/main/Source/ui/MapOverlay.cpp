@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "MapOverlay.h"
 
+#include "Metrics.h"
+
 #include "../render/Raster.h"
 
 #include <algorithm>
@@ -15,6 +17,8 @@ constexpr const char* ATTRIBUTION = "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMa
 constexpr const char* ATTRIBUTION_FIRST = "\xC2\xA9 OpenMapTiles";
 constexpr const char* ATTRIBUTION_SECOND = "\xC2\xA9 OpenStreetMap contributors";
 constexpr const char* ATTRIBUTION_MARK = "\xC2\xA9";
+/** While terrain is drawn: the elevation sources (AWS Terrain Tiles; the full lines are in About). */
+constexpr const char* ATTRIBUTION_TERRAIN = "Terrain: AWS Terrain Tiles";
 
 } // namespace
 
@@ -22,12 +26,13 @@ const char* MapOverlay::attributionText() {
     return ATTRIBUTION;
 }
 
-void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& boxX, int& boxY, int& boxWidth, int& boxHeight) {
-    // One line when it fits, otherwise the two credits on two lines, never a font under 12 px
+void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& boxX, int& boxY, int& boxWidth, int& boxHeight, bool terrain) {
+    // One line when it fits, otherwise the two credits on two lines, never a font under 12 px; the heights' line below
     const int height = normal->lineHeight();
     const bool fits = normal->textWidth(ATTRIBUTION) + 2 * MARGIN <= canvas.width;
     const char* const lines[] = { ATTRIBUTION_FIRST, ATTRIBUTION_SECOND };
-    const int lineCount = fits ? 1 : 2;
+    const int mapLines = fits ? 1 : 2;
+    const int lineCount = mapLines + (terrain ? 1 : 0);
     int width = 0;
     if (fits) {
         width = normal->textWidth(ATTRIBUTION);
@@ -36,6 +41,9 @@ void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& bo
             const int lineWidth = normal->textWidth(line);
             width = lineWidth > width ? lineWidth : width;
         }
+    }
+    if (terrain) {
+        width = std::max(width, normal->textWidth(ATTRIBUTION_TERRAIN));
     }
     const int y = canvas.height - bottomInset - lineCount * height - 1;
     boxX = 0;
@@ -49,25 +57,34 @@ void MapOverlay::drawAttribution(Canvas& canvas, const Palette& palette, int& bo
         normal->drawText(canvas, MARGIN, y, lines[0], palette.text);
         normal->drawText(canvas, MARGIN, y + height, lines[1], palette.text);
     }
+    if (terrain) {
+        normal->drawText(canvas, MARGIN, y + mapLines * height, ATTRIBUTION_TERRAIN, palette.text);
+    }
 }
 
 void MapOverlay::drawAttributionMark(Canvas& canvas, const Palette& palette) {
-    const int y = canvas.height - bottomInset - MARK_SIZE;
-    canvas.fillRect(0, y, MARK_SIZE, MARK_SIZE, palette.halo, 190);
+    const int size = markSize();
+    const int y = canvas.height - bottomInset - size;
+    canvas.fillRect(0, y, size, size, palette.halo, 190);
     const int markWidth = normal->textWidth(ATTRIBUTION_MARK);
-    normal->drawText(canvas, (MARK_SIZE - markWidth) / 2, y + (MARK_SIZE - normal->lineHeight()) / 2, ATTRIBUTION_MARK, palette.text);
+    normal->drawText(canvas, (size - markWidth) / 2, y + (size - normal->lineHeight()) / 2, ATTRIBUTION_MARK, palette.text);
 }
 
 bool MapOverlay::hitsAttributionMark(const Canvas& canvas, int x, int y) const {
-    return x < MARK_SIZE + 12 && y > canvas.height - bottomInset - MARK_SIZE - 12 && y < canvas.height - bottomInset + 4;
+    return x < markSize() + 12 && y > canvas.height - bottomInset - markSize() - 12 && y < canvas.height - bottomInset + 4;
 }
 
 int MapOverlay::scaleBarTop(const Canvas& canvas) const {
     return canvas.height - bottomInset - normal->lineHeight() - 8;
 }
 
-void MapOverlay::drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette) {
-    constexpr int maxBarPixels = 70;
+int MapOverlay::markSize() const {
+    return std::max(MARK_SIZE, normal->lineHeight() + 2);
+}
+
+Rect MapOverlay::drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette) {
+    // 70 px with the 16 px font, longer with a bigger one
+    const int maxBarPixels = 70 * std::max(16, normal->lineHeight()) / 16;
     const double maxMetres = metresPerPixel * maxBarPixels;
     double niceMetres = 1.0;
     while (niceMetres * 10.0 <= maxMetres) {
@@ -97,22 +114,23 @@ void MapOverlay::drawScaleBar(Canvas& canvas, double metresPerPixel, const Palet
     canvas.fillRect(barX, barY, barPixels, 2, palette.text);
     canvas.fillRect(barX, barY - 3, 1, 5, palette.text);
     canvas.fillRect(barX + barPixels - 1, barY - 3, 1, 5, palette.text);
+    return { boxX, boxY, boxWidth, height + 7 };
 }
 
-Rect MapOverlay::drawPill(Canvas& canvas, const char* text, const Palette& palette) {
+Rect MapOverlay::drawPill(Canvas& canvas, const char* text, const Palette& palette, int top) {
     const int maxText = canvas.width - 8 - 4 * MARGIN;
     Font& font = normal->textWidth(text) > maxText ? *small : *normal;
     const int textWidth = std::min(font.textWidth(text), maxText);
     const int width = textWidth + 4 * MARGIN;
     const int height = normal->lineHeight() + 2;
     const int x = (canvas.width - width) / 2;
-    canvas.fillRoundRect(x, 2, width, height, height / 2, palette.text, 200);
-    drawClippedText(canvas, font, x + 2 * MARGIN, 3 + (normal->lineHeight() - font.lineHeight()) / 2, text, textWidth, palette.halo);
-    return { x, 2, width, height };
+    canvas.fillRoundRect(x, top, width, height, height / 2, palette.text, 200);
+    drawClippedText(canvas, font, x + 2 * MARGIN, top + 1 + (normal->lineHeight() - font.lineHeight()) / 2, text, textWidth, palette.halo);
+    return { x, top, width, height };
 }
 
-void MapOverlay::drawToast(Canvas& canvas, const char* text, const UiTheme& theme) {
-    constexpr int padding = 8;
+Rect MapOverlay::drawToast(Canvas& canvas, const char* text, const UiTheme& theme) {
+    constexpr int padding = metrics::PADDING;
     char lines[2][80];
     const int maxWidth = canvas.width - 4 * padding;
     const int count = wrapText(*normal, text, maxWidth, &lines[0][0], sizeof(lines[0]), 2);
@@ -124,12 +142,13 @@ void MapOverlay::drawToast(Canvas& canvas, const char* text, const UiTheme& them
     const int boxWidth = width + 2 * padding;
     const int boxHeight = count * lineHeight + padding;
     const int x = (canvas.width - boxWidth) / 2;
-    // Above the scale bar and the buttons along the bottom
-    const int y = canvas.height - bottomInset - boxHeight - lineHeight - 50;
+    // Above the scale bar and the buttons along the bottom, but not off the top of a low screen
+    const int y = std::max(0, canvas.height - bottomInset - boxHeight - lineHeight - 50);
     canvas.fillRoundRect(x, y, boxWidth, boxHeight, 6, theme.text, 230);
     for (int i = 0; i < count; i++) {
         normal->drawText(canvas, x + padding, y + padding / 2 + i * lineHeight, lines[i], theme.panel);
     }
+    return { x, y, boxWidth, boxHeight };
 }
 
 void MapOverlay::drawAccuracyCircle(Canvas& canvas, int x, int y, float radius, const Palette& palette) {

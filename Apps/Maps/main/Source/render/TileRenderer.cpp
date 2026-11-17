@@ -118,6 +118,13 @@ bool TileRenderer::render(ByteInput* input, const TileKey& source, const TileKey
         }
         sweeps++;
     }
+    // An original is drawn in sweeps by file order: the terrain goes on top (until the tile is prepared)
+    if (terrain != nullptr && terrain->hasPatch()) {
+        terrain->draw(pixels, target.z, *palette, raster);
+    }
+    if (trailFile != nullptr) {
+        drawTrails(trailFile, trailSize, target, *palette, raster, pixels);
+    }
 
     finishStats(stats, start, scanned, sweeps);
     if (stats != nullptr) {
@@ -218,6 +225,10 @@ bool TileRenderer::renderPrepared(const uint8_t* data, size_t size, const TileKe
     begin(header.tile, target, tilePalette, out);
     for (int i = 0; i < static_cast<int>(Stage::Count); i++) {
         const auto drawStage = static_cast<Stage>(i);
+        if (drawStage == Stage::Water && terrain != nullptr && terrain->hasPatch()) {
+            // Shade and contours over land cover and parks, under water, roads and buildings
+            terrain->draw(pixels, target.z, *palette, raster);
+        }
         const int section = static_cast<int>(preparedSection(drawStage));
         if (sectionData[section] != nullptr && !playSection(sectionData[section], sectionEnd[section], drawStage)) {
             if (!cancelled) {
@@ -228,6 +239,10 @@ bool TileRenderer::renderPrepared(const uint8_t* data, size_t size, const TileKe
         }
     }
     preparedExtent = 0;
+    // Marked trails over roads and paths
+    if (trailFile != nullptr) {
+        drawTrails(trailFile, trailSize, target, *palette, raster, pixels);
+    }
     finishStats(stats, start, inflated, 1);
     if (stats != nullptr) {
         stats->decompressedBytes = header.bodySize;
@@ -249,6 +264,7 @@ bool TileRenderer::playSection(const uint8_t* data, const uint8_t* end, Stage dr
         info.geometryType = flags & 3;
         info.maritime = (flags & (1 << 2)) != 0;
         info.ramp = (flags & (1 << 3)) != 0;
+        info.unpaved = (flags & (1 << 7)) != 0;
         uint64_t value;
         if (!readVarint(data, end, value)) {
             return false;

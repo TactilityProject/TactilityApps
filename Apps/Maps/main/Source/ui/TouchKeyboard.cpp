@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TouchKeyboard.h"
 
+#include "TextEdit.h"
+
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -43,24 +46,22 @@ uint32_t upperCase(uint32_t code) {
 
 /** Writes a code point as UTF-8 into out (at least 5 bytes). */
 void encode(uint32_t code, char* out) {
-    int n = 0;
-    if (code < 0x80) {
-        out[n++] = static_cast<char>(code);
-    } else if (code < 0x800) {
-        out[n++] = static_cast<char>(0xC0 | (code >> 6));
-        out[n++] = static_cast<char>(0x80 | (code & 0x3F));
-    } else {
-        out[n++] = static_cast<char>(0xE0 | (code >> 12));
-        out[n++] = static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-        out[n++] = static_cast<char>(0x80 | (code & 0x3F));
-    }
-    out[n] = '\0';
+    out[0] = '\0';
+    utf8Append(out, 5, code);
 }
 
 } // namespace
 
-int TouchKeyboard::heightFor(int /*width*/) {
-    return GAP + ROWS * KEY_HEIGHT + (ROWS - 1) * GAP;
+int TouchKeyboard::keyHeightFor(int height, int lineHeight) {
+    // Wanted: a key a finger can hit, growing with the font and the screen but never beyond 3 lines of text
+    const int wanted = std::min(std::max({ KEY_HEIGHT, lineHeight * 7 / 4, height / 10 }), std::max(KEY_HEIGHT, lineHeight * 3));
+    // Room: the keyboard takes at most 8/15 of the screen, which is 128 of 240 px
+    const int room = (height * 8 / 15 - GAP - (ROWS - 1) * GAP) / ROWS;
+    return std::max(14, std::min(wanted, room));
+}
+
+int TouchKeyboard::heightFor(int /*width*/, int height, int lineHeight) {
+    return GAP + ROWS * keyHeightFor(height, lineHeight) + (ROWS - 1) * GAP;
 }
 
 void TouchKeyboard::open() {
@@ -70,15 +71,16 @@ void TouchKeyboard::open() {
     build();
 }
 
-void TouchKeyboard::layout(int width, int height, Font& /*font*/) {
+void TouchKeyboard::layout(int width, int height, Font& font) {
     screenWidth = width;
-    const int keyboardHeight = heightFor(width);
+    keyHeight = keyHeightFor(height, font.lineHeight());
+    const int keyboardHeight = heightFor(width, height, font.lineHeight());
     area = { 0, height - keyboardHeight, width, keyboardHeight };
     build();
 }
 
 void TouchKeyboard::beginRow(int row, int offsetUnits) {
-    rowY = area.y + GAP + row * (KEY_HEIGHT + GAP);
+    rowY = area.y + GAP + row * (keyHeight + GAP);
     rowCursor = offsetUnits;
 }
 
@@ -91,7 +93,7 @@ void TouchKeyboard::add(Kind kind, uint32_t code, const char* label, int units) 
     const int left = GAP + rowCursor * span / ROW_UNITS;
     const int right = GAP + (rowCursor + units) * span / ROW_UNITS - GAP;
     Key& key = keys_[keyCount++];
-    key.rect = { left, rowY, right - left, KEY_HEIGHT };
+    key.rect = { left, rowY, right - left, keyHeight };
     key.kind = kind;
     key.code = code;
     snprintf(key.label, sizeof(key.label), "%s", label);

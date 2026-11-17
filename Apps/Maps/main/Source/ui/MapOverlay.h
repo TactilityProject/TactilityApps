@@ -24,21 +24,25 @@ public:
     void setBottomInset(int inset) { bottomInset = inset; }
 
     /** The full attribution along the bottom edge. Returns its box, which opens About and licences when tapped. */
-    void drawAttribution(Canvas& canvas, const Palette& palette, int& boxX, int& boxY, int& boxWidth, int& boxHeight);
+    /** terrain adds the line of the elevation sources (while hillshade and contours are drawn). */
+    void drawAttribution(Canvas& canvas, const Palette& palette, int& boxX, int& boxY, int& boxWidth, int& boxHeight, bool terrain = false);
     /** The collapsed attribution, a small © mark in the bottom left corner. */
     void drawAttributionMark(Canvas& canvas, const Palette& palette);
     /** Whether a screen position hits the © mark, a little larger than drawn so a finger finds it. */
     bool hitsAttributionMark(const Canvas& canvas, int x, int y) const;
     /** The top of the scale bar box, buttons above it keep clear of it. */
     int scaleBarTop(const Canvas& canvas) const;
-    void drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette);
+    /** Returns its box. */
+    Rect drawScaleBar(Canvas& canvas, double metresPerPixel, const Palette& palette);
     /**
      * A small rounded message at the top of the screen, for progress. Text too wide for the screen uses the small font
      * and is cut. Returns where the pill is, so a tap on it can open the details.
      */
-    Rect drawPill(Canvas& canvas, const char* text, const Palette& palette);
+    /** top: where the pill starts (below the navigation bar while navigating). */
+    Rect drawPill(Canvas& canvas, const char* text, const Palette& palette, int top = 2);
     /** A short message of up to two lines above the bottom edge. */
-    void drawToast(Canvas& canvas, const char* text, const UiTheme& theme);
+    /** Returns its box. */
+    Rect drawToast(Canvas& canvas, const char* text, const UiTheme& theme);
     void drawMarker(Canvas& canvas, int x, int y, bool hasCourse, float courseDegrees, const Palette& palette);
     /** A translucent disc with a thin rim, how far off the position may be. */
     void drawAccuracyCircle(Canvas& canvas, int x, int y, float radius, const Palette& palette);
@@ -49,6 +53,8 @@ public:
     void drawApproximateMarker(Canvas& canvas, int x, int y, float accuracyMetres, const Palette& palette);
 
     static constexpr int MARK_SIZE = 18;
+    /** The � mark box: MARK_SIZE, or the font's line height plus 2 when that is more. */
+    int markSize() const;
     static constexpr int MARGIN = 3;
 
 private:

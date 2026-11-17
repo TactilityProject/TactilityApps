@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DownloadProgress.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -9,7 +11,7 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
+using metrics::PADDING;
 constexpr int BUTTON_COUNT = 3;
 
 int characterLength(unsigned char leading) {
@@ -143,6 +145,58 @@ void formatBytes(uint64_t bytes, char* out, size_t size) {
     }
 }
 
+void formatCount(int64_t value, char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return;
+    }
+    if (value < 0) {
+        value = 0;
+    }
+    if (value >= 1000000) {
+        snprintf(out, size, "%lld,%03lld,%03lld", static_cast<long long>(value / 1000000), static_cast<long long>(value / 1000 % 1000), static_cast<long long>(value % 1000));
+    } else if (value >= 1000) {
+        snprintf(out, size, "%lld,%03lld", static_cast<long long>(value / 1000), static_cast<long long>(value % 1000));
+    } else {
+        snprintf(out, size, "%lld", static_cast<long long>(value));
+    }
+}
+
+void formatTileLine(const char* name, int64_t done, int64_t total, char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return;
+    }
+    char doneText[16];
+    char totalText[16];
+    formatCount(done, doneText, sizeof(doneText));
+    formatCount(total, totalText, sizeof(totalText));
+    if (name != nullptr && name[0] != '\0') {
+        snprintf(out, size, "%s: %s of %s tiles", name, doneText, totalText);
+    } else {
+        snprintf(out, size, "%s of %s tiles", doneText, totalText);
+    }
+}
+
+void formatSizeLine(uint64_t bytes, double bytesPerSecond, int64_t secondsLeft, char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return;
+    }
+    char sizeText[16];
+    formatBytes(bytes, sizeText, sizeof(sizeText));
+    snprintf(out, size, "%s", sizeText);
+    if (bytesPerSecond > 0.0) {
+        char speed[16];
+        formatBytes(static_cast<uint64_t>(bytesPerSecond), speed, sizeof(speed));
+        const size_t used = strlen(out);
+        snprintf(out + used, size - used, ", %s/s", speed);
+    }
+    if (secondsLeft >= 0) {
+        char left[24];
+        formatDuration(secondsLeft, left, sizeof(left));
+        const size_t used = strlen(out);
+        snprintf(out + used, size - used, ", about %s left", left);
+    }
+}
+
 void formatDuration(int64_t seconds, char* out, size_t size) {
     if (out == nullptr || size == 0) {
         return;
@@ -182,10 +236,12 @@ void DownloadCard::set(const char* titleText, const char* const* detailLines, in
 }
 
 void DownloadCard::layout(int width, int height, Font& font) {
-    const int cardWidth = std::min(width - 16, 300);
     const int line = font.lineHeight();
-    const int buttonHeight = line + 12;
-    const int cardHeight = PADDING + (1 + lineCount) * line + PADDING + buttonHeight + PADDING;
+    const int cardWidth = metrics::cardWidth(width, height, 16, 300, line);
+    const int buttonHeight = metrics::buttonHeight(line, 12);
+    // With a keyboard one more muted line lists the keys
+    const int hintHeight = metrics::hasKeyboard() ? line : 0;
+    const int cardHeight = PADDING + (1 + lineCount) * line + hintHeight + PADDING + buttonHeight + PADDING;
     frame = { (width - cardWidth) / 2, (height - cardHeight) / 2, cardWidth, cardHeight };
     const int buttonWidth = (cardWidth - (BUTTON_COUNT + 1) * PADDING) / BUTTON_COUNT;
     const int buttonY = frame.y + cardHeight - PADDING - buttonHeight;
@@ -195,8 +251,8 @@ void DownloadCard::layout(int width, int height, Font& font) {
 }
 
 void DownloadCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
-    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 110);
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel);
+    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     const int left = frame.x + PADDING;
     const int textWidth = frame.width - 2 * PADDING;
     int y = frame.y + PADDING;
@@ -205,6 +261,9 @@ void DownloadCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     for (int i = 0; i < lineCount; i++) {
         drawClippedText(canvas, font, left, y, lines[i], textWidth, theme.muted);
         y += font.lineHeight();
+    }
+    if (metrics::hasKeyboard()) {
+        drawClippedText(canvas, font, left, y, closeOnly ? "Enter or Esc: close" : "A/D: choose  Enter: press", textWidth, theme.muted);
     }
     if (!closeOnly) {
         drawButton(canvas, font, theme, buttons[0], paused ? "Resume" : "Pause", focus == 0);

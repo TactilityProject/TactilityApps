@@ -9,8 +9,9 @@
 namespace maps {
 
 /**
- * Poi labels (format 4): labelClass holds the type id of PoiTypes.h, not a Value. HouseNumber labels: the name is the
- * house number, labelClass is 0 and rank -1.
+ * Poi labels (format 4): labelClass holds the type id of PoiTypes.h, not a Value. Peak labels (format 3 of the .prl
+ * file): the same, the type of the peak, saddle, cliff or volcano, and the name ends with the height ("Vysoka 754 m").
+ * HouseNumber labels: the name is the house number, labelClass is 0 and rank -1.
  */
 enum class LabelKind : uint8_t { Place, Road, Water, Waterway, Peak, Poi, HouseNumber };
 

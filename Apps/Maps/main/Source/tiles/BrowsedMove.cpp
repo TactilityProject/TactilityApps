@@ -63,7 +63,9 @@ BrowsedMove moveBrowsedFiles(const char* root, const char* region, const TileKey
     if (tileVersion[0] == '\0' && browsedVersion != nullptr) {
         snprintf(tileVersion, sizeof(tileVersion), "%s", browsedVersion);
     }
-    if (version != nullptr && version[0] != '\0' && tileVersion[0] != '\0' && strcmp(version, tileVersion) != 0) {
+    // The tile's version is at most PREPARED_VERSION_LENGTH characters, the region's can be longer
+    if (version != nullptr && version[0] != '\0' && tileVersion[0] != '\0' &&
+        strncmp(version, tileVersion, PREPARED_VERSION_LENGTH) != 0) {
         return BrowsedMove::Stale;
     }
     char folder[PATH_MAX_LENGTH];

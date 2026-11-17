@@ -185,6 +185,15 @@ int parseQuery(const char* query, QueryReading out[3]) {
         while (*cur && !std::isspace((unsigned char)*cur) && start < 31) {
             toks[tok_count][start++] = *cur++;
         }
+        if (*cur && !std::isspace((unsigned char)*cur)) {
+            // Over-long word: cut on a UTF-8 character boundary and skip the rest of the word,
+            // so the rest cannot turn into a token of its own (a house number, say)
+            if (((unsigned char)*cur & 0xC0) == 0x80) {
+                while (start > 0 && ((unsigned char)toks[tok_count][start - 1] & 0xC0) == 0x80) start--;
+                if (start > 0) start--;
+            }
+            while (*cur && !std::isspace((unsigned char)*cur)) cur++;
+        }
         toks[tok_count][start] = 0;
         tok_count++;
     }

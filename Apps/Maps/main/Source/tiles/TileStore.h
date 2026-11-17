@@ -22,7 +22,8 @@ struct TileFile {
 /** Finds tile files in the region folders under <root>/maps. */
 class TileStore {
 public:
-    static constexpr int MAX_REGIONS = 16;
+    /** 32: a card with 20 regions (15 Nov) had its newest downloads left out at 16. */
+    static constexpr int MAX_REGIONS = 32;
     /** How many zoom levels a tile may be magnified from an ancestor when its own file is missing. */
     static constexpr int MAX_OVERZOOM = 6;
 

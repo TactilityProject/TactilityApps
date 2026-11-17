@@ -40,6 +40,16 @@ private:
 void formatBytes(uint64_t bytes, char* out, size_t size);
 void formatDuration(int64_t seconds, char* out, size_t size);
 
+/** "1,100": a whole number with a comma between thousands. */
+void formatCount(int64_t value, char* out, size_t size);
+/** "Bratislava: 240 of 1,100 tiles"; without a name "240 of 1,100 tiles". */
+void formatTileLine(const char* name, int64_t done, int64_t total, char* out, size_t size);
+/**
+ * "12.4 MB, 160 KB/s, about 4 min left": the size so far, then the speed when bytesPerSecond > 0, then the time left
+ * when secondsLeft >= 0. Parts that are not known are left out.
+ */
+void formatSizeLine(uint64_t bytes, double bytesPerSecond, int64_t secondsLeft, char* out, size_t size);
+
 /** Details of the download running now, opened by tapping the progress pill. */
 class DownloadCard {
 public:
@@ -68,6 +78,9 @@ public:
     Button handleKey(uint32_t key);
     /** A button, Close for a tap outside the card, None inside it. */
     Button handleTap(int x, int y);
+    /** For tests: the card and its buttons (Pause or Resume, Cancel, Close). */
+    const Rect& bounds() const { return frame; }
+    const Rect& buttonRect(int index) const { return buttons[index]; }
 
 private:
     Button buttonAt(int index) const;

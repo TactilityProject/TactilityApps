@@ -39,7 +39,7 @@ enum class Layer : uint8_t {
     X(busway) X(bus_guideway) X(ferry) X(rail) X(transit) X(cable_car) X(gondola) X(pier) X(bridge) \
     X(tunnel) X(ford) X(aerodrome) X(heliport) X(runway) X(helipad) X(taxiway) X(apron) X(gate) \
     X(city) X(town) X(village) X(hamlet) X(isolated_dwelling) X(continent) X(country) X(state) \
-    X(province) X(island) X(peak) X(volcano) X(saddle) X(sea) X(bay) X(strait) X(lagoon)
+    X(province) X(island) X(peak) X(volcano) X(saddle) X(sea) X(bay) X(strait) X(lagoon) X(cycleway) X(footway)
 
 /** String values the style needs. Value::None means a string that is not in this list. */
 enum class Value : uint16_t {
@@ -64,6 +64,8 @@ struct FeatureInfo {
     int8_t oneway = 0;
     /** "layer" of the transportation layer (bridges, tunnels), 0 when absent. */
     int8_t layerNumber = 0;
+    /** "surface" of the transportation layer is "unpaved". */
+    bool unpaved = false;
     /** UTF-8 name of the feature from "name", not null-terminated, nullptr when absent. Valid during beginFeature(). */
     const char* name = nullptr;
     uint16_t nameLength = 0;
@@ -73,10 +75,15 @@ struct FeatureInfo {
     /** The same from "name_en" (or "name:en"), nullptr when absent; the search uses it for places, parks, water, peaks. */
     const char* nameEn = nullptr;
     uint16_t nameEnLength = 0;
+    /** The same from "name_int" (the international name): some streets have only this one. */
+    const char* nameInt = nullptr;
+    uint16_t nameIntLength = 0;
     /** nameEn came from "name_en" (which wins over "name:en" on the same feature). */
     bool nameEnPreferred = false;
     /** "rank" as an integer, -1 when absent (place, mountain_peak and poi layers). */
     int32_t rank = -1;
+    /** "ele" of the mountain_peak layer in metres, INT32_MIN when absent. */
+    int32_t elevation = INT32_MIN;
     /** The raw "class" and "subclass" strings of any layer, nullptr when absent. Valid during beginFeature(). */
     const char* classText = nullptr;
     uint16_t classTextLength = 0;

@@ -79,6 +79,8 @@ public:
     /** Boards with a typing keyboard show key hints and highlight the selection from the start. */
     void setTypingKeyboard(bool value);
     bool hasTypingKeyboard() const { return typing; }
+    /** Whether the board has a trackball: the footer then says "Roll" for moving through the rows, else "Tab". */
+    void setTrackball(bool value) { trackball = value; }
 
     const char* text() const { return value; }
     /** Replaces the text without an event (for example a recent search). */
@@ -111,6 +113,8 @@ public:
     void draw(Canvas& canvas, Font& font, const UiTheme& theme);
     const Rect& bounds() const { return frame; }
     const Rect& fieldBounds() const { return field; }
+    /** For tests: the < area. */
+    const Rect& backRect() const { return backButton; }
     bool fieldFocused() const { return focusField; }
 
     Event handleKey(uint32_t key);
@@ -165,6 +169,7 @@ private:
 
     bool visible = false;
     bool typing = false;
+    bool trackball = true;
     bool compact = false;
     bool focusField = true;
     bool highlighted = false;
