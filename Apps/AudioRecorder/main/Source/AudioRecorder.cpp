@@ -788,14 +788,17 @@ void recorderRefreshFromState(Context* ctx) {
     uint32_t curSec = ctx->audio.currentTimeSec.load();
     uint32_t totSec = ctx->audio.totalTimeSec.load();
 
-    // The audio task publishes completion, so it can't be missed between polls
-    const RecordingResult result = ctx->audio.recordingResult.exchange(RecordingResult::None);
+    // The audio task publishes the result and its path together, so they stay consistent
+    RecordingResult result;
+    std::string recorded;
+    {
+        std::lock_guard lg(ctx->audio.pathMutex);
+        result = ctx->audio.recordingResult;
+        recorded = ctx->audio.completedRecordingPath;
+        ctx->audio.recordingResult = RecordingResult::None;
+        ctx->audio.completedRecordingPath.clear();
+    }
     if (result != RecordingResult::None) {
-        std::string recorded;
-        {
-            std::lock_guard lg(ctx->audio.pathMutex);
-            recorded = ctx->audio.activeFilepath;
-        }
         if (result == RecordingResult::Success && !recorded.empty()) {
             {
                 std::lock_guard lg(ctx->recordingsMutex);

@@ -71,9 +71,11 @@ struct RecorderAudioState {
     std::string requestedPlaybackPath; // set by UI before posting StartPlayback
     std::string activeFilepath;        // path currently recording/playing (published by task)
 
-    // Set by the audio task when a recording finishes, so the poll timer can
-    // rescan, select, or report a failure without the task touching lv_obj.
-    std::atomic<RecordingResult> recordingResult{RecordingResult::None};
+    // Published together by the audio task and consumed together by the poll timer, so
+    // the completed path can't change between publishing the result and reading it.
+    // Both are guarded by pathMutex.
+    RecordingResult recordingResult = RecordingResult::None;
+    std::string completedRecordingPath;
 
     // Written by the audio task when it finishes, read by teardown while it waits.
     std::atomic<TaskHandle_t> task{nullptr};

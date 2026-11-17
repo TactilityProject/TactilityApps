@@ -110,6 +110,13 @@ void publishActivePath(RecorderAudioState* audio, const std::string& path) {
     audio->activeFilepath = path;
 }
 
+/** Publishes the result and its finalized path together, so the poll can consume a stable pair */
+void publishRecordingResult(RecorderAudioState* audio, RecordingResult result, const std::string& path) {
+    std::lock_guard lg(audio->pathMutex);
+    audio->recordingResult = result;
+    audio->completedRecordingPath = path;
+}
+
 void doRecord(RecorderAudioState* audio, const std::string& tempFilepath, const std::string& finalFilepath) {
     LOG_I(TAG, "Starting recording to: %s", finalFilepath.c_str());
 
@@ -118,7 +125,7 @@ void doRecord(RecorderAudioState* audio, const std::string& tempFilepath, const 
     if (fp == nullptr) {
         LOG_E(TAG, "Failed to create audio file: %s", tempFilepath.c_str());
         unlink(tempFilepath.c_str());
-        audio->recordingResult.store(RecordingResult::Failure);
+        publishRecordingResult(audio, RecordingResult::Failure, "");
         return;
     }
 
@@ -214,7 +221,11 @@ void doRecord(RecorderAudioState* audio, const std::string& tempFilepath, const 
 
     audio->currentTimeSec.store(header.byte_rate > 0 ? totalPcmBytes / header.byte_rate : 0);
     audio->totalTimeSec.store(audio->currentTimeSec.load());
-    audio->recordingResult.store(success ? RecordingResult::Success : RecordingResult::Failure);
+    if (success) {
+        publishRecordingResult(audio, RecordingResult::Success, finalFilepath);
+    } else {
+        publishRecordingResult(audio, RecordingResult::Failure, "");
+    }
 
     LOG_I(TAG, "Recording %s: %u bytes (%u sec)", success ? "finished" : "failed", (unsigned)totalPcmBytes,
           (unsigned)audio->currentTimeSec.load());
@@ -417,7 +428,7 @@ void recorderTaskEntry(void* param) {
                 char finalPath[256];
                 char tempPath[260];
                 if (!reserveRecordingFiles(dir, finalPath, sizeof(finalPath), tempPath, sizeof(tempPath))) {
-                    audio->recordingResult.store(RecordingResult::Failure);
+                    publishRecordingResult(audio, RecordingResult::Failure, "");
                     audio->state.store(RecorderState::Idle);
                     break;
                 }
