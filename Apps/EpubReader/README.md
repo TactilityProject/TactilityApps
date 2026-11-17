@@ -15,12 +15,6 @@ An EPUB and plain-text reader for Tactility devices.
 - **Inline styling** - bold and italic runs within paragraphs are rendered correctly
 - **Paragraph alignment** - center and right alignment from the EPUB source is preserved
 
-## Screenshots
-
-![alt text](images/read_view_t_deck.png) ![alt text](images/shelf_view_t_deck.png)
-
-![alt text](images/read_view_paper.png) ![alt text](images/shelf_view_paper.png)
-
 ## Requirements
 
 - **PSRAM is required.** The epub parser, font binaries, and LVGL allocations all live in PSRAM. The app will show an error and exit on devices without it.
