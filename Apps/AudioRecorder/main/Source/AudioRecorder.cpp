@@ -457,6 +457,24 @@ void scrollPlayerPanelIntoView(Context* ctx) {
     lv_obj_scroll_to_y(ctx->main_container, target, LV_ANIM_ON);
 }
 
+/** Updates the inline player's progress bar and time from the current playback values */
+void updatePlaybackProgress(Context* ctx, uint32_t curSec, uint32_t totSec) {
+    if (ctx->play_time_label != nullptr) {
+        char curTime[16];
+        char totTime[16];
+        char text[48];
+        formatTimeMmSs(curSec, curTime, sizeof(curTime));
+        formatTimeMmSs(totSec, totTime, sizeof(totTime));
+        snprintf(text, sizeof(text), "%s / %s", curTime, totTime);
+        lv_label_set_text(ctx->play_time_label, text);
+    }
+    if (ctx->play_bar != nullptr) {
+        int32_t percent = (totSec > 0) ? (int32_t)(curSec * 100 / totSec) : 0;
+        percent = std::min<int32_t>(percent, 100);
+        lv_bar_set_value(ctx->play_bar, percent, LV_ANIM_OFF);
+    }
+}
+
 /** Applies everything that only changes with the recorder's state, not with its timer */
 void syncStateUi(Context* ctx) {
     const RecorderState state = ctx->audio.state.load();
@@ -605,11 +623,12 @@ void recorderEnsureBackendStarted(Context* ctx) {
     }
     ctx->backendStarted = true;
 
-    BaseType_t ok = xTaskCreate(&recorderTaskEntry, "audio_rec", 8192, &ctx->audio, tskIDLE_PRIORITY + 3,
-                                &ctx->audio.task);
+    TaskHandle_t handle = nullptr;
+    BaseType_t ok = xTaskCreate(&recorderTaskEntry, "audio_rec", 8192, &ctx->audio, tskIDLE_PRIORITY + 3, &handle);
     if (ok != pdPASS) {
         LOG_E(TAG, "Failed to create audio task");
-        ctx->audio.task = nullptr;
+    } else {
+        ctx->audio.task.store(handle);
     }
 }
 
@@ -741,6 +760,23 @@ void recorderRenderList(Context* ctx) {
     }
 
     syncStateUi(ctx);
+
+    // A rebuilt panel starts at zero: restore the progress of paused/playing playback
+    const RecorderState state = ctx->audio.state.load();
+    if (state == RecorderState::Playing || state == RecorderState::Paused) {
+        std::string activePath;
+        {
+            std::lock_guard lg(ctx->audio.pathMutex);
+            activePath = ctx->audio.activeFilepath;
+        }
+        if (!selectedPath.empty() && activePath == selectedPath) {
+            const uint32_t curSec = ctx->audio.currentTimeSec.load();
+            const uint32_t totSec = ctx->audio.totalTimeSec.load();
+            updatePlaybackProgress(ctx, curSec, totSec);
+            ctx->lastRenderedSecond = curSec;
+            ctx->lastRenderedTotal = totSec;
+        }
+    }
 }
 
 void recorderRefreshFromState(Context* ctx) {
@@ -752,14 +788,15 @@ void recorderRefreshFromState(Context* ctx) {
     uint32_t curSec = ctx->audio.currentTimeSec.load();
     uint32_t totSec = ctx->audio.totalTimeSec.load();
 
-    // A finished recording becomes the selection, so it can be played and deleted right away
-    if (ctx->lastRenderedState == RecorderState::Recording && state != RecorderState::Recording) {
+    // The audio task publishes completion, so it can't be missed between polls
+    const RecordingResult result = ctx->audio.recordingResult.exchange(RecordingResult::None);
+    if (result != RecordingResult::None) {
         std::string recorded;
         {
             std::lock_guard lg(ctx->audio.pathMutex);
             recorded = ctx->audio.activeFilepath;
         }
-        if (!recorded.empty()) {
+        if (result == RecordingResult::Success && !recorded.empty()) {
             {
                 std::lock_guard lg(ctx->recordingsMutex);
                 ctx->selectedPath = recorded;
@@ -768,6 +805,8 @@ void recorderRefreshFromState(Context* ctx) {
                 std::lock_guard lg(ctx->audio.pathMutex);
                 ctx->audio.requestedPlaybackPath = recorded;
             }
+        } else if (result == RecordingResult::Failure) {
+            LOG_W(TAG, "Recording failed");
         }
         recorderScanDirectory(ctx);
         recorderRenderList(ctx);
@@ -788,20 +827,7 @@ void recorderRefreshFromState(Context* ctx) {
                 lv_label_set_text(ctx->rec_time_label, time);
             }
         } else if (state == RecorderState::Playing || state == RecorderState::Paused) {
-            char curTime[16];
-            char totTime[16];
-            char text[48];
-            formatTimeMmSs(curSec, curTime, sizeof(curTime));
-            formatTimeMmSs(totSec, totTime, sizeof(totTime));
-            snprintf(text, sizeof(text), "%s / %s", curTime, totTime);
-            if (ctx->play_time_label != nullptr) {
-                lv_label_set_text(ctx->play_time_label, text);
-            }
-            if (ctx->play_bar != nullptr) {
-                int32_t percent = (totSec > 0) ? (int32_t)(curSec * 100 / totSec) : 0;
-                percent = std::min<int32_t>(percent, 100);
-                lv_bar_set_value(ctx->play_bar, percent, LV_ANIM_OFF);
-            }
+            updatePlaybackProgress(ctx, curSec, totSec);
         }
         ctx->lastRenderedSecond = curSec;
         ctx->lastRenderedTotal = totSec;
@@ -866,7 +892,7 @@ void audiorecorderTeardown(Context* ctx) {
 
     ctx->audio.stopRequested.store(true);
     ctx->audio.shutdown.store(true);
-    while (ctx->audio.task != nullptr) {
+    while (ctx->audio.task.load() != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 

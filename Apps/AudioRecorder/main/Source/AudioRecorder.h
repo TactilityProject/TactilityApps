@@ -40,6 +40,13 @@ enum class RecorderRequest : uint8_t {
     StartPlayback,
 };
 
+/** Outcome of the audio task's last recording, consumed by the poll timer */
+enum class RecordingResult : uint8_t {
+    None,
+    Success,
+    Failure,
+};
+
 struct RecordingItem {
     std::string filename;
     std::string fullpath;
@@ -65,10 +72,11 @@ struct RecorderAudioState {
     std::string activeFilepath;        // path currently recording/playing (published by task)
 
     // Set by the audio task when a recording finishes, so the poll timer can
-    // rescan the directory without the task touching lv_obj directly.
-    std::atomic<bool> recordingFinished{false};
+    // rescan, select, or report a failure without the task touching lv_obj.
+    std::atomic<RecordingResult> recordingResult{RecordingResult::None};
 
-    TaskHandle_t task = nullptr;
+    // Written by the audio task when it finishes, read by teardown while it waits.
+    std::atomic<TaskHandle_t> task{nullptr};
 };
 
 struct Context {
