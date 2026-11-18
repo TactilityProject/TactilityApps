@@ -26,7 +26,8 @@ bool saveBmp(const char* path, const uint16_t* pixels, int width, int height);
  * Search (M6): "searchindex [force [region]]" starts building the search indexes now ("force" also rebuilds current
  * ones, of that region only when one is named),
  * "waitsearchindex" waits until the build is over, "filecheck <path>" logs the size and CRC-32 of a file under the
- * app's folder (to compare an index built on the device with the PC's).
+ * app's folder (to compare an index built on the device with the PC's). "terrain <region>" (or "heights") downloads the region's
+ * elevation now (Download heights), "trails <region>" its marked trails.
  */
 class DebugScript {
 public:
@@ -48,7 +49,17 @@ public:
         OffRoute,
         SearchIndex,
         WaitSearchIndex,
-        FileCheck
+        FileCheck,
+        Heights,
+        Trails,
+        /** "pointer <x> <y>": shows the trackball pointer there, as if rolled to it ("key c" clicks). */
+        Pointer,
+        /** "memory <label>": logs free memory and the stack left of every task of the app. */
+        Memory,
+        /** "restart": restarts the board. */
+        Restart,
+        /** "followgpx <file>": follows the track of a GPX file in the app's folder. */
+        FollowGpx
     };
 
     enum class TouchKind : uint8_t { Tap, Hold, Drag, Pinch, Twist };
@@ -56,7 +67,7 @@ public:
     struct Step {
         Action action;
         uint32_t key;
-        char name[32];
+        char name[48];
         double lat;
         double lon;
         int zoom;

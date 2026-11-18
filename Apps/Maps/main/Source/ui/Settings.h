@@ -30,6 +30,14 @@ struct Settings {
     bool latinNames = false;
     /** The mode new routes start with (Settings, "Route mode"): 0 walk, 1 bike, 2 car (RouteProfile). */
     int routeProfile = 0;
+    /** Walking routes prefer paths, tracks and footways to roads (a hiking profile; routeCost). */
+    bool walkTrails = true;
+    /** The outdoor map style (paths and tracks from zoom 12, by kind) instead of the standard one. Colour displays only. */
+    bool outdoorStyle = false;
+    /** Hillshade and contour lines where the heights were downloaded (Terrain in the region's actions). */
+    bool terrain = true;
+    /** Marked hiking and cycling routes from OpenStreetMap through the Overpass API: opt-in, off by default. */
+    bool trails = false;
     /** Developer options, only in settings.txt: the monochrome palette on any display, and stall probes. */
     bool devMonochrome = false;
     bool devProbe = false;

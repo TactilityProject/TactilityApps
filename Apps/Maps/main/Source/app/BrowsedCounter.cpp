@@ -41,6 +41,7 @@ bool countJob(IoTask& io, void* context) {
     auto* job = static_cast<CountJob*>(context);
     job->count = 0;
     job->complete = false;
+    bool truncated = false;
     for (int z = job->plan.minZoom; z <= job->plan.maxZoom; z++) {
         const TileRange range = tileRange(job->plan.box, z);
         char folder[220];
@@ -64,7 +65,8 @@ bool countJob(IoTask& io, void* context) {
             }
         }
         closedir(columns);
-        (void)more;
+        // Columns beyond the list are not counted, so the result must not pass as complete
+        truncated = truncated || more;
         for (int i = 0; i < insideCount; i++) {
             // Tiles on screen come first: give the card back and say the count is not complete
             if (io.shouldYield()) {
@@ -84,6 +86,10 @@ bool countJob(IoTask& io, void* context) {
             }
             closedir(files);
         }
+    }
+    // Still complete: an incomplete count is counted again without end. The number is then too low; say so in the log.
+    if (truncated) {
+        logError("Browsed tiles: more than 96 columns in a zoom level, the count is too low");
     }
     job->complete = true;
     return true;

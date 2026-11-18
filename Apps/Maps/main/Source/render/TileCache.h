@@ -28,8 +28,11 @@ public:
 
     /** A slot for a new tile, which is not findable until commit() and is not reused until commit() or release(). */
     uint16_t* reserve(const TileKey& tile);
-    /** sourceZoom is the zoom level of the vector tile the pixels were drawn from. Replaces a stale copy. */
-    void commit(const TileKey& tile, int sourceZoom);
+    /**
+     * sourceZoom is the zoom level of the vector tile the pixels were drawn from; shaded: drawn with hillshade (its
+     * light depends on the map's turn). Replaces a stale copy.
+     */
+    void commit(const TileKey& tile, int sourceZoom, bool shaded = false);
     void release(const TileKey& tile);
 
     void clear();
@@ -43,6 +46,16 @@ public:
      * from, or that were drawn from an arrived tile that replaced an older version (an update).
      */
     void dropMagnified(const TileKey* arrived, int count);
+    /** Marks the tiles drawn with hillshade as stale (the light turned with the map); they show until drawn again. */
+    void dropShaded();
+    /**
+     * Marks the tiles of zoom 12 and deeper that new z12 height or trail files touch as stale: inside such a file's
+     * tile, and those around it whose patch margin reaches into it (terrainFilesNeeded()). count -1:
+     * every tile of zoom 12 and deeper. They show until drawn again, so the map does not blink.
+     */
+    void dropTerrain(const TileKey* files, int fileCount);
+    /** Marks one tile as stale. */
+    void markStale(const TileKey& tile);
     /** The number of tiles it can hold now: slots given back with freeSlot() do not count. */
     int slotCount() const { return count - freed; }
     /**
@@ -62,6 +75,7 @@ private:
         bool valid;
         bool stale;
         bool reserved;
+        bool shaded;
         int8_t sourceZoom;
         uint16_t* pixels;
     };

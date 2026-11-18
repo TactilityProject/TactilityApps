@@ -35,6 +35,10 @@ bool parseDouble(const char* text, double& out) {
     if (*end != '\0') {
         return false;
     }
+    // strtod also reads "inf" and "nan"; neither is a number a file can mean here
+    if (!std::isfinite(value)) {
+        return false;
+    }
     out = value;
     return true;
 }
@@ -133,6 +137,27 @@ bool parseTimeText(const char* text, int64_t& out) {
     const int64_t days = daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
     out = days * 86400 + hour * 3600 + minute * 60 + second - offset;
     return true;
+}
+
+// Length of text without a UTF-8 sequence that was cut off at the end
+size_t completeUtf8Length(const char* text, size_t length) {
+    size_t start = length;
+    while (start > 0 && length - start < 3 && (static_cast<unsigned char>(text[start - 1]) & 0xC0) == 0x80) {
+        start--;
+    }
+    if (start == 0) {
+        return length;
+    }
+    const unsigned char lead = static_cast<unsigned char>(text[start - 1]);
+    size_t need = 1;
+    if (lead >= 0xF0) {
+        need = 4;
+    } else if (lead >= 0xE0) {
+        need = 3;
+    } else if (lead >= 0xC0) {
+        need = 2;
+    }
+    return length - (start - 1) < need ? start - 1 : length;
 }
 
 void appendCodePoint(char* out, size_t size, size_t& used, uint32_t code) {
@@ -236,6 +261,8 @@ void decodeEntities(const char* in, char* out, size_t size) {
         }
         index++;
     }
+    // Where the output was full a multi-byte character can be cut; leave it out whole
+    used = completeUtf8Length(out, used);
     out[used] = '\0';
 }
 
@@ -590,7 +617,7 @@ void GpxReader::finishStartTag(bool selfClosing) {
         rootSeen_ = true;
     }
     if (depth_ >= kMaxDepth) {
-        fail("The file is incomplete");
+        fail("The file is nested too deep");
         return;
     }
     const Role parent = depth_ > 0 ? stack_[depth_ - 1].role : Role::None;
@@ -772,6 +799,8 @@ void GpxReader::decodeText(char* out, size_t size) {
     while (end > begin && isSpace(text_[end - 1])) {
         end--;
     }
+    // The text buffer is short, so a long text can end in the middle of a character
+    end = begin + completeUtf8Length(text_ + begin, end - begin);
     text_[end] = '\0';
     decodeEntities(text_ + begin, out, size);
 }

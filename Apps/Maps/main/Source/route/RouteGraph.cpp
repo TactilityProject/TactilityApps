@@ -171,7 +171,7 @@ bool GraphBuilder::beginFeature(const FeatureInfo& info) {
         (textIs(info.subclassText, info.subclassTextLength, "footway") || textIs(info.subclassText, info.subclassTextLength, "pedestrian") ?
                 EDGE_FOOTWAY :
                 0) |
-        (textIs(info.subclassText, info.subclassTextLength, "cycleway") ? EDGE_CYCLEWAY : 0));
+        (textIs(info.subclassText, info.subclassTextLength, "cycleway") ? EDGE_CYCLEWAY : 0) | (info.unpaved ? EDGE_UNPAVED : 0));
     current.oneway = info.oneway;
     current.level = levelOf(info.brunnel, info.layerNumber);
     scale = static_cast<float>(GRAPH_EXTENT) / static_cast<float>(decoderExtent);
@@ -276,10 +276,17 @@ void GraphBuilder::clipAndAdd() {
     }
 }
 
+/** The sides of the GRAPH_ZOOM tiles inside a tile of the main-road layer, in its units. */
+constexpr int LAYER_GRID = GRAPH_EXTENT >> (GRAPH_ZOOM - GRAPH_MAIN_ZOOM);
+
 void GraphBuilder::addPart(const Point* points, size_t count) {
     // Half-open ownership: a segment lying on the x = 4096 or y = 4096 side belongs to the neighbour tile
     size_t start = 0;
     for (size_t i = 0; i + 1 <= count; i++) {
+        if (wayPoints.failed() || ways.failed()) {
+            // Out of memory: the build fails (finish() checks), nothing more is added
+            return;
+        }
         const bool last = i + 1 == count;
         const bool onFar = !last && ((points[i].x == GRAPH_EXTENT && points[i + 1].x == GRAPH_EXTENT) ||
             (points[i].y == GRAPH_EXTENT && points[i + 1].y == GRAPH_EXTENT));
@@ -290,10 +297,47 @@ void GraphBuilder::addPart(const Point* points, size_t count) {
         if (end - start >= 2) {
             Way way = current;
             way.first = static_cast<uint32_t>(wayPoints.size());
-            way.count = static_cast<uint32_t>(end - start);
-            for (size_t j = start; j < end; j++) {
-                wayPoints.push(points[j]);
+            if (tile.z == GRAPH_MAIN_ZOOM) {
+                // The main-road layer gets a point wherever a road crosses a side of a GRAPH_ZOOM tile (makeNodes()
+                // makes it a node): there the local graphs have their border nodes, so the two levels can be joined
+                // on every main road every tile, not only at the junctions of two main roads (a village on one
+                // road through a valley has none for many kilometres)
+                wayPoints.push(points[start]);
+                for (size_t j = start + 1; j < end && !wayPoints.failed(); j++) {
+                    const Point a = points[j - 1];
+                    const Point b = points[j];
+                    float crossings[40];
+                    int crossingCount = 0;
+                    for (int axis = 0; axis < 2; axis++) {
+                        const int from = axis == 0 ? a.x : a.y;
+                        const int to = axis == 0 ? b.x : b.y;
+                        if (from == to) {
+                            continue;
+                        }
+                        const int low = std::min(from, to);
+                        const int high = std::max(from, to);
+                        for (int line = (low / LAYER_GRID + 1) * LAYER_GRID; line < high && crossingCount < 40; line += LAYER_GRID) {
+                            crossings[crossingCount++] = static_cast<float>(line - from) / static_cast<float>(to - from);
+                        }
+                    }
+                    std::sort(crossings, crossings + crossingCount);
+                    for (int k = 0; k < crossingCount; k++) {
+                        const float t = crossings[k];
+                        const Point at { static_cast<int16_t>(roundUnit(a.x + t * (b.x - a.x))), static_cast<int16_t>(roundUnit(a.y + t * (b.y - a.y))) };
+                        // (never empty here: the loop stops once a push has failed)
+                        const Point previous = wayPoints[wayPoints.size() - 1];
+                        if ((at.x != previous.x || at.y != previous.y) && (at.x != b.x || at.y != b.y)) {
+                            wayPoints.push(at);
+                        }
+                    }
+                    wayPoints.push(b);
+                }
+            } else {
+                for (size_t j = start; j < end; j++) {
+                    wayPoints.push(points[j]);
+                }
             }
+            way.count = static_cast<uint32_t>(wayPoints.size() - way.first);
             ways.push(way);
             counters.points += way.count;
         }
@@ -331,56 +375,66 @@ bool GraphBuilder::indexPoints() {
     return true;
 }
 
-void GraphBuilder::snapJunctions() {
+bool GraphBuilder::snapJunctions() {
     // A grid of the segments, 32 units a cell
     const size_t cellCount = static_cast<size_t>(GRID_SIZE) * GRID_SIZE;
     if (!cellStart.resize(cellCount + 1)) {
-        return;
+        return true;
     }
-    auto cellsOf = [](const Point& a, const Point& b, int& left, int& top, int& right, int& bottom) {
-        left = std::clamp(std::min<int>(a.x, b.x) / GRID_CELL, 0, GRID_SIZE - 1);
-        right = std::clamp(std::max<int>(a.x, b.x) / GRID_CELL, 0, GRID_SIZE - 1);
-        top = std::clamp(std::min<int>(a.y, b.y) / GRID_CELL, 0, GRID_SIZE - 1);
-        bottom = std::clamp(std::max<int>(a.y, b.y) / GRID_CELL, 0, GRID_SIZE - 1);
+    // The cells a segment passes through (a few more at most): pieces of half a cell, each with the cells of its own
+    // box. The box of the whole segment put a long diagonal road into hundreds of cells, and the list of a dense city
+    // tile took most of the 1 MB its graph needed (Kosice centre, 15 Nov 2026).
+    auto forCells = [](const Point& a, const Point& b, auto&& visit) {
+        const int length = std::max(std::abs(b.x - a.x), std::abs(b.y - a.y));
+        const int pieces = std::max(1, (length + GRID_CELL / 2 - 1) / (GRID_CELL / 2));
+        int recent[8];
+        int recentCount = 0;
+        int previousX = a.x;
+        int previousY = a.y;
+        for (int k = 1; k <= pieces; k++) {
+            const int x = a.x + (b.x - a.x) * k / pieces;
+            const int y = a.y + (b.y - a.y) * k / pieces;
+            const int left = std::clamp(std::min(previousX, x) / GRID_CELL, 0, GRID_SIZE - 1);
+            const int right = std::clamp(std::max(previousX, x) / GRID_CELL, 0, GRID_SIZE - 1);
+            const int top = std::clamp(std::min(previousY, y) / GRID_CELL, 0, GRID_SIZE - 1);
+            const int bottom = std::clamp(std::max(previousY, y) / GRID_CELL, 0, GRID_SIZE - 1);
+            for (int cy = top; cy <= bottom; cy++) {
+                for (int cx = left; cx <= right; cx++) {
+                    const int cell = cy * GRID_SIZE + cx;
+                    bool seen = false;
+                    for (int r = 0; r < recentCount && !seen; r++) {
+                        seen = recent[r] == cell;
+                    }
+                    if (!seen) {
+                        recent[recentCount < 8 ? recentCount++ : (cell & 7)] = cell;
+                        visit(static_cast<size_t>(cell));
+                    }
+                }
+            }
+            previousX = x;
+            previousY = y;
+        }
     };
     for (const Way& way : ways) {
         for (uint32_t j = 0; j + 1 < way.count; j++) {
-            int left;
-            int top;
-            int right;
-            int bottom;
-            cellsOf(wayPoints[way.first + j], wayPoints[way.first + j + 1], left, top, right, bottom);
-            for (int cy = top; cy <= bottom; cy++) {
-                for (int cx = left; cx <= right; cx++) {
-                    cellStart[static_cast<size_t>(cy) * GRID_SIZE + cx + 1]++;
-                }
-            }
+            forCells(wayPoints[way.first + j], wayPoints[way.first + j + 1], [&](size_t cell) { cellStart[cell + 1]++; });
         }
     }
     for (size_t i = 1; i <= cellCount; i++) {
         cellStart[i] += cellStart[i - 1];
     }
     if (!cellItems.resize(cellStart[cellCount])) {
-        return;
+        return true;
     }
     {
         GrowArray<uint32_t> fill;
         if (!fill.resize(cellCount)) {
-            return;
+            return true;
         }
         for (const Way& way : ways) {
             for (uint32_t j = 0; j + 1 < way.count; j++) {
-                int left;
-                int top;
-                int right;
-                int bottom;
-                cellsOf(wayPoints[way.first + j], wayPoints[way.first + j + 1], left, top, right, bottom);
-                for (int cy = top; cy <= bottom; cy++) {
-                    for (int cx = left; cx <= right; cx++) {
-                        const size_t cell = static_cast<size_t>(cy) * GRID_SIZE + cx;
-                        cellItems[cellStart[cell] + fill[cell]++] = way.first + j;
-                    }
-                }
+                const uint32_t segment = way.first + j;
+                forCells(wayPoints[segment], wayPoints[segment + 1], [&](size_t cell) { cellItems[cellStart[cell] + fill[cell]++] = segment; });
             }
         }
     }
@@ -454,7 +508,7 @@ void GraphBuilder::snapJunctions() {
         wayPoints[move.point] = move.to;
     }
     if (inserts.size() == 0 && moves.size() == 0) {
-        return;
+        return true;
     }
     // Rebuild the point list with the inserted foot points, dropping repeated points
     std::sort(inserts.begin(), inserts.end(), [](const Insert& a, const Insert& b) {
@@ -489,14 +543,13 @@ void GraphBuilder::snapJunctions() {
             }
         }
     }
-    wayPoints.clear();
-    for (const Point& p : rebuilt) {
-        wayPoints.push(p);
+    // Swapped, not copied: a copy grew the old arrays while the new ones were still held
+    if (rebuilt.failed() || kept.failed()) {
+        return false;
     }
-    ways.clear();
-    for (const Way& way : kept) {
-        ways.push(way);
-    }
+    wayPoints.swap(rebuilt);
+    ways.swap(kept);
+    return true;
 }
 
 bool GraphBuilder::makeNodes() {
@@ -583,7 +636,9 @@ bool GraphBuilder::makeNodes() {
             const uint32_t point = way.first + j;
             if (nodeOf[point] != UINT32_MAX) {
                 since = 0;
-            } else if (++since >= MAX_SHAPE_POINTS) {
+            } else if (++since >= MAX_SHAPE_POINTS ||
+                (tile.z == GRAPH_MAIN_ZOOM && (wayPoints[point].x % LAYER_GRID == 0 || wayPoints[point].y % LAYER_GRID == 0))) {
+                // (on the layer also every point on a side of a GRAPH_ZOOM tile, see addPart())
                 const Point p = wayPoints[point];
                 nodeOf[point] = static_cast<uint32_t>(nodes.size());
                 nodes.push({ static_cast<uint16_t>(p.x), static_cast<uint16_t>(p.y), way.level });
@@ -792,7 +847,12 @@ bool GraphBuilder::build(MvtDecoder& decoder, ByteInput* input, const TileKey& s
         failureText = "no memory for the junctions";
         return false;
     }
-    snapJunctions();
+    // The sorted vertices are made again by makeNodes(): not held through the snap, the step with the largest peak
+    vertices.release();
+    if (!snapJunctions()) {
+        failureText = "no memory for the junctions";
+        return false;
+    }
     // Each working array goes as soon as it is not needed: a dense city tile left too little PSRAM for the rest
     cellStart.release();
     cellItems.release();
@@ -952,7 +1012,7 @@ const char* TileGraph::name(uint32_t edge, uint8_t& length) const {
 bool loadTileGraph(const uint8_t* data, size_t size, InflateReader& inflater, TileGraph& graph) {
     GraphHeader header {};
     graph.clear();
-    if (!readGraphHeader(data, size, header) || header.version != GRAPH_FORMAT_VERSION || GRAPH_HEADER_SIZE + header.storedSize > size ||
+    if (!readGraphHeader(data, size, header) || !isReadableGraphVersion(header.version) || GRAPH_HEADER_SIZE + header.storedSize > size ||
         header.nodeCount > 65535) {
         return false;
     }

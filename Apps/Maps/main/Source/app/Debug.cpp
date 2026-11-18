@@ -145,6 +145,30 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::TouchOnly;
             return step;
         }
+        if (strcmp(command, "pointer") == 0) {
+            // "pointer <x> <y>": the trackball pointer is shown there; "key c" then clicks at it
+            step.action = Action::Pointer;
+            step.values[0] = step.values[1] = 0.0f;
+            sscanf(argument, "%f %f", &step.values[0], &step.values[1]);
+            return step;
+        }
+        if (strcmp(command, "followgpx") == 0) {
+            // "followgpx <file>": follows the track of a GPX file in the app's folder, as Menu, GPX, Follow this track
+            step.action = Action::FollowGpx;
+            snprintf(step.name, sizeof(step.name), "%s", argument);
+            return step;
+        }
+        if (strcmp(command, "restart") == 0) {
+            // "restart": the board restarts (a failed app load leaves Tactility with less memory until it does)
+            step.action = Action::Restart;
+            return step;
+        }
+        if (strcmp(command, "memory") == 0) {
+            // "memory <label>": logs the free memory and the stack left of every task of the app
+            step.action = Action::Memory;
+            snprintf(step.name, sizeof(step.name), "%s", argument);
+            return step;
+        }
         if (strcmp(command, "squeeze") == 0) {
             step.action = Action::Squeeze;
             step.zoom = atoi(argument);
@@ -155,7 +179,7 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             return strcmp(text, "bike") == 0 ? 1 : (strcmp(text, "car") == 0 ? 2 : (strcmp(text, "all") == 0 ? 3 : 0));
         };
         char word[16] = "";
-        if (strcmp(command, "routebench") == 0 && sscanf(argument, "%31s %15s", step.name, word) >= 1) {
+        if (strcmp(command, "routebench") == 0 && sscanf(argument, "%47s %15s", step.name, word) >= 1) {
             step.action = Action::RouteBench;
             step.zoom = profileOf(word);
             return step;
@@ -169,7 +193,7 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::WaitRoute;
             return step;
         }
-        if (strcmp(command, "replay") == 0 && sscanf(argument, "%31s %f %f %f", step.name, &step.values[0], &step.values[1], &step.values[2]) >= 1) {
+        if (strcmp(command, "replay") == 0 && sscanf(argument, "%47s %f %f %f", step.name, &step.values[0], &step.values[1], &step.values[2]) >= 1) {
             // replay <file> [accuracy m] [noise m] [seed]
             step.action = Action::Replay;
             return step;
@@ -178,7 +202,7 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::SearchIndex;
             step.zoom = strncmp(argument, "force", 5) == 0 ? 1 : 0;
             // "searchindex force <region>": that region only
-            if (step.zoom != 0 && sscanf(argument, "force %31s", step.name) != 1) {
+            if (step.zoom != 0 && sscanf(argument, "force %47s", step.name) != 1) {
                 step.name[0] = '\0';
             }
             return step;
@@ -187,11 +211,20 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             step.action = Action::WaitSearchIndex;
             return step;
         }
-        if (strcmp(command, "filecheck") == 0 && sscanf(argument, "%31s", step.name) == 1) {
+        if (strcmp(command, "filecheck") == 0 && sscanf(argument, "%47s", step.name) == 1) {
             step.action = Action::FileCheck;
             return step;
         }
-        if (strcmp(command, "offroute") == 0 && sscanf(argument, "%31s %f", step.name, &step.values[0]) == 2) {
+        if ((strcmp(command, "heights") == 0 || strcmp(command, "terrain") == 0) && sscanf(argument, "%47s", step.name) == 1) {
+            // heights <region>: downloads the region's elevation now (as Download heights does)
+            step.action = Action::Heights;
+            return step;
+        }
+        if (strcmp(command, "trails") == 0 && sscanf(argument, "%47s", step.name) == 1) {
+            step.action = Action::Trails;
+            return step;
+        }
+        if (strcmp(command, "offroute") == 0 && sscanf(argument, "%47s %f", step.name, &step.values[0]) == 2) {
             step.action = Action::OffRoute;
             return step;
         }

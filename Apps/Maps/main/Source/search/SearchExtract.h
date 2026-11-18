@@ -17,7 +17,7 @@ constexpr uint8_t EXTRACT_NOT_SETTLEMENT = 255;
 
 /**
  * A point of the search index as the M6 study makes it (host/search/data.py load_region): a place, a POI (named, or
- * unnamed and not in the junk list), a water label, a peak or a park. Positions are global z14 units (tile x * 4096 +
+ * unnamed and not a barrier), a water label, a peak or a park. Positions are global z14 units (tile x * 4096 +
  * local x after scaling by the layer's extent). Strings are offsets into ExtractedTile::text.
  */
 struct ExtractPoint {
@@ -68,7 +68,7 @@ struct ExtractedTile {
     GrowArray<ExtractHouse> houses;
     /** Lines of the transportation_name layer that have no name at all (only a ref). */
     uint32_t refOnlyLines = 0;
-    /** Unnamed POIs of the junk list that were not kept. */
+    /** Unnamed barrier POIs (gate, bollard, lift gate...) that were not kept. */
     uint32_t junkPois = 0;
 
     void clear();

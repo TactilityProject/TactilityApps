@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The study's text folding (host/search/fold.py) for search keys and queries. The character tables are made from
-// fold.py by tools/make_fold_table.py (FoldTable.h).
+// fold.py by host/search/make_fold_table.py (FoldTable.h).
 #include "TextFold.h"
 
 #include "FoldTable.h"

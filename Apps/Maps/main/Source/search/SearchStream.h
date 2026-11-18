@@ -10,7 +10,7 @@
 #include "ScratchFiles.h"
 #include "SearchExtract.h"
 #include "SearchIndex.h"
-#include "SearchRegion.h"
+#include "SearchCommon.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +21,13 @@ namespace maps {
 struct StreamTile {
     int32_t x;
     int32_t y;
+    /**
+     * A margin tile: it lies just outside the tiles being indexed (the next block's edge). Only its street lines are
+     * used, cut to the box of the own tiles plus the matching reach (160 m), so that a house number next to the border
+     * finds its street across it; its points and house numbers are not taken. The streets of those lines are stored in
+     * the index (an address record refers to a street record). Same as SearchRegionBuilder::addTile(..., margin).
+     */
+    bool margin = false;
 };
 
 /** Gives the builder a tile's original vector tile (.pbf), one at a time. */
@@ -37,6 +44,9 @@ public:
 struct StreamProgress {
     uint32_t done;
     uint32_t total;
+    /** The step the build is in: 0 tiles, 1 points, 2 houses, 3 clusters, 4 matching, 5 addresses, 6 address records, 7 groups,
+     *  8 group records, 9 keys, 10 file. */
+    uint8_t phase;
 };
 
 struct StreamBuildOptions {

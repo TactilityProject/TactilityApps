@@ -96,12 +96,15 @@ private:
         int16_t rampKey = -1;
         int16_t onewayKey = -1;
         int16_t layerKey = -1;
+        int16_t surfaceKey = -1;
         int16_t nameKey = -1;
         int16_t nameLatinKey = -1;
         /** "name_en" and "name:en": a layer can have both, on different features; name_en wins on a feature with both. */
         int16_t nameEnKey = -1;
         int16_t nameEnColonKey = -1;
+        int16_t nameIntKey = -1;
         int16_t rankKey = -1;
+        int16_t elevationKey = -1;
         int16_t houseNumberKey = -1;
         uint32_t valueOffset = 0;
         uint32_t valueCount = 0;
@@ -110,6 +113,10 @@ private:
 
     bool growPools();
     bool readVarint(uint64_t& value);
+    /** A varint that is the length of a field: false when it is beyond any tile (MAX_FIELD_LENGTH). */
+    bool readLength(uint64_t& length);
+    static constexpr uint64_t MAX_FIELD_LENGTH = 64u * 1024u * 1024u;
+    static constexpr uint64_t MAX_EXTENT = 65536;
     bool readLayerName(size_t layerEnd, Layer& layer);
     bool scanLayer(size_t layerEnd, LayerTable& table, Layer layer);
     bool scanValue(size_t valueEnd, ValueEntry& entry);

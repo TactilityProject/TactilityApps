@@ -123,6 +123,7 @@ void BinFontText::close() {
     }
     font = nullptr;
     owned = false;
+    dropGlyphs();
 }
 
 namespace {
@@ -220,22 +221,85 @@ void BinFontText::drawText(Canvas& canvas, int x, int y, const char* text, uint1
     binfont_draw_text_rgb565(target, x, y + ascentPixels, font, withFallback(text), color, PIXEL_BUFFER_CONVERSION_AVERAGE);
 }
 
+void BinFontText::dropGlyphs() {
+    if (glyphs != nullptr) {
+        largeFree(glyphs);
+        largeFree(glyphMasks);
+    }
+    glyphs = nullptr;
+    glyphMasks = nullptr;
+    glyphMasksUsed = 0;
+}
+
 bool BinFontText::glyph(uint32_t codepoint, LabelGlyph& out, bool withMask) {
-    BinFontGlyph found;
-    if (font == nullptr || !binfont_get_glyph(font, codepoint, &found)) {
+    if (font == nullptr) {
         return false;
     }
-    out.id = found.glyph_id;
-    out.advanceX16 = static_cast<int>(found.advance_x16);
-    out.left = found.x;
-    // binfont gives the box's bottom above the baseline, labels want its top below it
-    out.top = -(found.y + found.height);
-    out.width = found.width;
-    out.height = found.height;
+    if (glyphs == nullptr) {
+        // Without memory for the cache every glyph is looked up as before
+        glyphs = static_cast<CachedGlyph*>(largeAlloc(sizeof(CachedGlyph) * GLYPH_SLOTS));
+        glyphMasks = glyphs != nullptr ? static_cast<uint8_t*>(largeAlloc(GLYPH_MASK_BYTES)) : nullptr;
+        if (glyphMasks == nullptr) {
+            largeFree(glyphs);
+            glyphs = nullptr;
+        } else {
+            memset(glyphs, 0, sizeof(CachedGlyph) * GLYPH_SLOTS);
+            glyphMasksUsed = 0;
+        }
+    }
+    CachedGlyph* cached = glyphs != nullptr ? &glyphs[(codepoint * 2654435761u) >> 24] : nullptr;
+    BinFontGlyph found {};
+    bool looked = false;
+    if (cached == nullptr || !cached->used || cached->codepoint != codepoint) {
+        if (!binfont_get_glyph(font, codepoint, &found)) {
+            return false;
+        }
+        looked = true;
+        out.id = found.glyph_id;
+        out.advanceX16 = static_cast<int>(found.advance_x16);
+        out.left = found.x;
+        // binfont gives the box's bottom above the baseline, labels want its top below it
+        out.top = -(found.y + found.height);
+        out.width = found.width;
+        out.height = found.height;
+        if (cached != nullptr) {
+            *cached = { codepoint, static_cast<uint32_t>(out.id), static_cast<int32_t>(out.advanceX16), NO_MASK, static_cast<int16_t>(out.left),
+                static_cast<int16_t>(out.top), static_cast<uint16_t>(out.width), static_cast<uint16_t>(out.height), true };
+        }
+    } else {
+        out.id = cached->id;
+        out.advanceX16 = cached->advanceX16;
+        out.left = cached->left;
+        out.top = cached->top;
+        out.width = cached->width;
+        out.height = cached->height;
+    }
     out.alpha = nullptr;
-    if (withMask && found.width > 0 && found.height > 0 && found.width * found.height <= MASK_BYTES &&
-        binfont_get_glyph_bitmap(font, &found, mask, found.width) == ERROR_NONE) {
-        out.alpha = mask;
+    const uint32_t size = static_cast<uint32_t>(out.width) * static_cast<uint32_t>(out.height);
+    if (!withMask || size == 0 || size > MASK_BYTES) {
+        return true;
+    }
+    if (cached != nullptr && cached->maskOffset != NO_MASK) {
+        out.alpha = glyphMasks + cached->maskOffset;
+        return true;
+    }
+    if (!looked && !binfont_get_glyph(font, codepoint, &found)) {
+        return true;
+    }
+    if (cached != nullptr && glyphMasksUsed + size > GLYPH_MASK_BYTES) {
+        // Full (a view with several scripts): started again, this glyph is its first
+        const CachedGlyph keep = *cached;
+        memset(glyphs, 0, sizeof(CachedGlyph) * GLYPH_SLOTS);
+        glyphMasksUsed = 0;
+        *cached = keep;
+    }
+    uint8_t* into = cached != nullptr ? glyphMasks + glyphMasksUsed : mask;
+    if (binfont_get_glyph_bitmap(font, &found, into, found.width) == ERROR_NONE) {
+        out.alpha = into;
+        if (cached != nullptr) {
+            cached->maskOffset = glyphMasksUsed;
+            glyphMasksUsed += size;
+        }
     }
     return true;
 }

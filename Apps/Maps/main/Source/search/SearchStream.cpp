@@ -364,6 +364,7 @@ private:
 
 struct TileInfo {
     int32_t x, y;
+    bool margin;
     uint32_t lineFirst;
     uint32_t lineCount;
     uint32_t lineOffset;
@@ -601,6 +602,10 @@ struct SearchStreamBuilder::Impl {
     GrowArray<TileInfo> tiles;
     HashIndex tileIndex;
     double regionMpu = 0;
+    // The box lines of margin tiles are cut to (global units, inclusive): the own tiles plus the matching reach
+    int32_t cutX0 = 0, cutY0 = 0, cutX1 = 0, cutY1 = 0;
+    uint32_t ownTiles = 0;
+    GrowArray<int32_t> cutPiece;
 
     // Phase 1: the extractor hands over feature by feature (extract holds one feature)
     struct Consumer final : ExtractConsumer {
@@ -827,7 +832,7 @@ struct SearchStreamBuilder::Impl {
         extract.release();
         source->tilesDone();
         lineHash.release();
-        rs.tiles = static_cast<uint32_t>(tiles.size());
+        rs.tiles = ownTiles;
         rs.lines = static_cast<uint32_t>(lineName.size());
         rs.settlements = static_cast<uint32_t>(settlements.size());
         noteTables();
@@ -840,6 +845,9 @@ struct SearchStreamBuilder::Impl {
         // Out of memory in a table: stop at once (a table that could not grow must not be read further)
         if (names.failed() || lineName.failed() || lineHash.failed() || settlements.failed()) {
             return fail("no memory for the tile tables");
+        }
+        if (tiles[currentTile].margin) {
+            return addLines(currentTile, feature);
         }
         return addLines(currentTile, feature) && addHouses(currentTile, feature) && addPoints(feature);
     }
@@ -871,16 +879,28 @@ struct SearchStreamBuilder::Impl {
                 continue;
             }
             const uint32_t nameId = names.intern(name);
-            lineName.push(nameId);
-            lineHash.push(hash);
-            rec.clear();
-            rec.u32(nameId);
-            rec.u8(l.pathClass);
             const char* latin = extract.str(l.latin);
-            rec.u8(latin != nullptr ? 1 : 0);
-            rec.u32(l.count);
-            if (!outA.write(rec) || (latin != nullptr && !outA.write(latin, static_cast<uint32_t>(strlen(latin)) + 1)) ||
-                !outA.write(xy, 2 * sizeof(int32_t) * l.count)) {
+            bool written = true;
+            // One line, or for a margin tile its parts inside the cut box (each part is a line of its own)
+            auto emit = [&](const int32_t* pxy, size_t count) {
+                lineName.push(nameId);
+                lineHash.push(hash);
+                rec.clear();
+                rec.u32(nameId);
+                rec.u8(l.pathClass);
+                rec.u8(latin != nullptr ? 1 : 0);
+                rec.u32(static_cast<uint32_t>(count));
+                if (!outA.write(rec) || (latin != nullptr && !outA.write(latin, static_cast<uint32_t>(strlen(latin)) + 1)) ||
+                    !outA.write(pxy, 2 * sizeof(int32_t) * count)) {
+                    written = false;
+                }
+            };
+            if (tile.margin) {
+                clipPolyline(xy, l.count, cutX0, cutY0, cutX1, cutY1, cutPiece, emit);
+            } else {
+                emit(xy, l.count);
+            }
+            if (!written || cutPiece.failed()) {
                 return fail("cannot write the lines");
             }
         }
@@ -1409,7 +1429,9 @@ struct SearchStreamBuilder::Impl {
         }
         // Union-find over the lines: the same cell, or touching cells (8 neighbours), of the same name join
         GrowArray<uint32_t>& parent = lineCluster;
-        parent.resize(lineTotal);
+        if (!parent.resize(lineTotal)) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t i = 0; i < lineTotal; i++) {
             parent[i] = i;
         }
@@ -1477,12 +1499,16 @@ struct SearchStreamBuilder::Impl {
         current.release();
         // Components: one per root, numbered in line order
         GrowArray<uint32_t> compOfRoot;
-        compOfRoot.resize(lineTotal);
+        if (!compOfRoot.resize(lineTotal)) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t i = 0; i < lineTotal; i++) {
             compOfRoot[i] = NONE;
         }
         GrowArray<uint32_t> compOfLine;
-        compOfLine.resize(lineTotal);
+        if (!compOfLine.resize(lineTotal)) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t i = 0; i < lineTotal; i++) {
             const uint32_t root = find(i);
             if (compOfRoot[root] == NONE) {
@@ -1606,7 +1632,9 @@ struct SearchStreamBuilder::Impl {
             }
         }
         // Lines point at the sorted clusters (the order array becomes the inverse map)
-        compOfRoot.resize(comps.size());
+        if (!compOfRoot.resize(comps.size())) {
+            return fail("no memory for the streets");
+        }
         for (uint32_t k = 0; k < order.size(); k++) {
             compOfRoot[order[k]] = k;
         }
@@ -2858,21 +2886,47 @@ bool SearchStreamBuilder::build(ScratchFiles& files, const char* scratchDir, con
     b.config = options.config;
     b.st = &statistics;
     snprintf(b.dir, sizeof(b.dir), "%s", scratchDir);
-    int32_t minY = tiles[0].y;
-    int32_t maxY = tiles[0].y;
+    int32_t minX = INT32_MAX, maxX = INT32_MIN, minY = INT32_MAX, maxY = INT32_MIN;
     for (uint32_t i = 0; i < tileCount; i++) {
         TileInfo info = {};
         info.x = tiles[i].x;
         info.y = tiles[i].y;
+        info.margin = tiles[i].margin;
         b.tileIndex.insert(mix(static_cast<uint64_t>(static_cast<uint32_t>(info.x)) << 32 | static_cast<uint32_t>(info.y)), i);
         b.tiles.push(info);
-        minY = std::min(minY, tiles[i].y);
-        maxY = std::max(maxY, tiles[i].y);
+        if (!info.margin) {
+            // The region's rows (its metres per unit) and box come from the own tiles only
+            b.ownTiles++;
+            minX = std::min(minX, tiles[i].x);
+            maxX = std::max(maxX, tiles[i].x);
+            minY = std::min(minY, tiles[i].y);
+            maxY = std::max(maxY, tiles[i].y);
+        }
+    }
+    if (b.ownTiles == 0) {
+        snprintf(errorText, sizeof(errorText), "no tiles");
+        impl->~Impl();
+        largeFree(impl);
+        impl = nullptr;
+        return false;
     }
     b.regionMpu = b.config.metresPerUnit > 0 ? b.config.metresPerUnit : metresPerUnitAtTileY((minY + maxY + 1) / 2.0);
+    {
+        const auto reach = static_cast<int32_t>(LINE_BUFFER_M / b.regionMpu) + 1;
+        b.cutX0 = minX * TILE_UNITS - reach;
+        b.cutY0 = minY * TILE_UNITS - reach;
+        b.cutX1 = (maxX + 1) * TILE_UNITS - 1 + reach;
+        b.cutY1 = (maxY + 1) * TILE_UNITS - 1 + reach;
+    }
     b.progress.total = 2 * tileCount + 7;
     bool ok = !b.tiles.failed() && !b.tileIndex.failed();
-    ok = ok && b.readTiles() && b.dedupPoints() && b.filterHouses() && b.makeClusters() && b.matchHouses() && b.makeAddresses();
+    // The step, for the memory log of the caller's hook
+    auto at = [&b](uint8_t phase) {
+        b.progress.phase = phase;
+        return true;
+    };
+    ok = ok && b.readTiles() && at(1) && b.dedupPoints() && at(2) && b.filterHouses() && at(3) && b.makeClusters() && at(4) && b.matchHouses() &&
+        at(5) && b.makeAddresses();
     uint32_t pts = 4;
     if (ok) {
         const int64_t span = std::max<int64_t>(static_cast<int64_t>(b.maxX) - b.minX, static_cast<int64_t>(b.maxY) - b.minY);
@@ -2881,7 +2935,7 @@ bool SearchStreamBuilder::build(ScratchFiles& files, const char* scratchDir, con
             b.minX = b.minY = 0;
         }
     }
-    ok = ok && b.writeAddressRecords(pts) && b.pointGroups() && b.writeGroups(pts) && b.writeKeys() &&
+    ok = ok && at(6) && b.writeAddressRecords(pts) && at(7) && b.pointGroups() && at(8) && b.writeGroups(pts) && at(9) && b.writeKeys() && at(10) &&
         b.writeFile(outPath, temporaryPath, pts);
     b.noteTables();
     b.removeScratch();

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "SearchSheet.h"
 
+#include "Metrics.h"
+#include "TextEdit.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -11,8 +14,7 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
-constexpr int ROW_PADDING = 10;
+using metrics::PADDING;
 constexpr const char* PLACEHOLDER = "Search places, streets, addresses";
 constexpr const char* CATEGORY_ENTRY = "Nearby by category";
 
@@ -184,7 +186,7 @@ const SearchSheet::Slot* SearchSheet::slotOf(int entry) const {
 int SearchSheet::entryHeight(int entry) const {
     const Slot* slot = slotOf(entry);
     if (slot == nullptr || compact) {
-        return lineHeight + ROW_PADDING;
+        return metrics::rowHeight(lineHeight);
     }
     return 2 * lineHeight + 6 + (slot->note[0] != '\0' ? lineHeight : 0);
 }
@@ -231,7 +233,7 @@ void SearchSheet::keepVisible() {
 }
 
 void SearchSheet::relayout() {
-    barHeight = lineHeight + 12;
+    barHeight = metrics::touchTargets() ? std::max(lineHeight + 12, metrics::TOUCH_BUTTON_HEIGHT) : lineHeight + 12;
     const int headerHeight = headerText[0] != '\0' ? lineHeight + 2 : 2;
     listTop = barHeight + headerHeight;
     const int hintHeight = typing && !compact ? lineHeight + 4 : 0;
@@ -243,9 +245,10 @@ void SearchSheet::layout(int width, int height, Font& font, bool compactLayout) 
     compact = compactLayout;
     lineHeight = font.lineHeight();
     frame = { 0, 0, width, height };
-    barHeight = lineHeight + 12;
-    backButton = { 0, 0, lineHeight + 16, barHeight };
-    field = { backButton.width, 3, width - backButton.width - 6, lineHeight + 8 };
+    barHeight = metrics::touchTargets() ? std::max(lineHeight + 12, metrics::TOUCH_BUTTON_HEIGHT) : lineHeight + 12;
+    backButton = { 0, 0, metrics::backWidth(lineHeight + 16), barHeight };
+    // Centred in the bar, which is 28 px with the 16 px font (the field starts 3 px down)
+    field = { backButton.width, 3 + (barHeight - (lineHeight + 12)) / 2, width - backButton.width - 6, lineHeight + 8 };
     relayout();
 }
 
@@ -301,18 +304,17 @@ void SearchSheet::drawArrow(Canvas& canvas, float cx, float cy, float degrees, u
 
 void SearchSheet::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     // The map stays visible but dimmed behind the sheet, as behind the menus
-    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 90);
+    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
     canvas.fillRect(frame.x, frame.y, frame.width, frame.height, theme.panel, theme.panelOpacity);
 
     // < at the top left, drawn as lines
     const auto backX = static_cast<float>(backButton.x + backButton.width / 2);
     const auto backY = static_cast<float>(field.y + field.height / 2);
-    canvas.line(backX + 3.0f, backY - 6.0f, backX - 3.0f, backY, 2.0f, theme.text);
-    canvas.line(backX - 3.0f, backY, backX + 3.0f, backY + 6.0f, 2.0f, theme.text);
+    metrics::drawBackChevron(canvas, backX, backY, theme.text);
 
     // The text field: the end of a long text stays in view; with the placeholder when empty
-    canvas.fillRoundRect(field.x, field.y, field.width, field.height, 4, focusField ? theme.accent : theme.border);
-    canvas.fillRoundRect(field.x + 1, field.y + 1, field.width - 2, field.height - 2, 3, theme.panel);
+    canvas.fillRoundRect(field.x, field.y, field.width, field.height, metrics::FIELD_RADIUS, focusField ? theme.accent : theme.border);
+    canvas.fillRoundRect(field.x + 1, field.y + 1, field.width - 2, field.height - 2, metrics::FIELD_RADIUS - 1, theme.panel);
     if (value[0] == '\0') {
         drawClippedText(canvas, font, field.x + 4, field.y + 4, categoryView ? CATEGORY_ENTRY : PLACEHOLDER, field.width - 8, theme.muted);
         if (focusField) {
@@ -412,55 +414,25 @@ void SearchSheet::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
     }
 
     // A thin bar shows where the visible rows are in a longer list
-    if (shownRows > 0 && shownRows < count) {
-        const int trackHeight = y - listTop;
-        const int barLength = std::max(8, trackHeight * shownRows / count);
-        const int barTop = listTop + (trackHeight - barLength) * first / std::max(1, maxFirst());
-        canvas.fillRect(frame.width - 3, barTop, 2, barLength, theme.muted);
+    if (shownRows > 0) {
+        metrics::drawScrollbar(canvas, frame.width, listTop, y - listTop, shownRows, count, first, theme.muted);
     }
 
     if (typing && !compact) {
         const int hintY = frame.height - lineHeight - 2;
         canvas.fillRect(0, hintY - 2, frame.width, 1, theme.border);
-        drawClippedText(canvas, font, PADDING, hintY, "Roll: choose  Enter: open  Esc: close", frame.width - 2 * PADDING, theme.muted);
+        drawClippedText(canvas, font, PADDING, hintY, trackball ? "Roll: choose  Enter: open  Esc: close" : "Tab: list  Enter: open  Esc: close", frame.width - 2 * PADDING, theme.muted);
     }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 
 void SearchSheet::append(uint32_t codepoint) {
-    char bytes[4];
-    size_t count = 0;
-    if (codepoint < 0x80) {
-        bytes[count++] = static_cast<char>(codepoint);
-    } else if (codepoint < 0x800) {
-        bytes[count++] = static_cast<char>(0xC0 | (codepoint >> 6));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-        bytes[count++] = static_cast<char>(0xE0 | (codepoint >> 12));
-        bytes[count++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-        bytes[count++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-    const size_t length = strlen(value);
-    if (length + count < sizeof(value)) {
-        memcpy(value + length, bytes, count);
-        value[length + count] = '\0';
-    }
+    utf8Append(value, sizeof(value), codepoint);
 }
 
 bool SearchSheet::erase() {
-    size_t length = strlen(value);
-    if (length == 0) {
-        return false;
-    }
-    while (length > 0 && (static_cast<unsigned char>(value[length - 1]) & 0xC0) == 0x80) {
-        length--;
-    }
-    if (length > 0) {
-        length--;
-    }
-    value[length] = '\0';
-    return true;
+    return utf8EraseLast(value);
 }
 
 SearchSheet::Event SearchSheet::activate(int entry) {
@@ -575,10 +547,13 @@ SearchSheet::Event SearchSheet::handleKey(uint32_t key) {
             return {};
         case keys::BACKSPACE:
         case keys::DELETE:
-            if (categoryView || resultView || value[0] == '\0') {
+            // Backspace in a field with text always deletes; on an empty field it goes back like Esc
+            if (value[0] == '\0') {
                 return goBack();
             }
             erase();
+            categoryView = false;
+            resultView = false;
             selection = 0;
             first = 0;
             highlighted = typing;

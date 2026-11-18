@@ -13,6 +13,11 @@ namespace {
 
 constexpr size_t WINDOW_SIZE = TINFL_LZ_DICT_SIZE;
 constexpr size_t INPUT_BUFFER_SIZE = 4096;
+/**
+ * No tile inflates to more: a damaged stream can make the decompressor give bytes without end (it reads zeros once
+ * the input is over), which hung every reader behind it (found by host/fuzz_tests).
+ */
+constexpr size_t MAX_INFLATED = 48u * 1024u * 1024u;
 
 tinfl_decompressor* asDecompressor(void* pointer) {
     return static_cast<tinfl_decompressor*>(pointer);
@@ -48,6 +53,7 @@ bool InflateReader::begin(ByteInput* source) {
     pending = nullptr;
     pendingEnd = nullptr;
     position = 0;
+    produced = 0;
     finished = false;
     error = false;
     if (decompressor == nullptr || !input->rewind() || !fillInput()) {
@@ -181,6 +187,12 @@ bool InflateReader::refill() {
             flags
         );
         inputPosition += inBytes;
+        produced += outBytes;
+        if (status < TINFL_STATUS_DONE || produced > MAX_INFLATED) {
+            // A damaged stream: what it gave with the error is not handed on
+            error = true;
+            return false;
+        }
         if (outBytes > 0) {
             pending = window + windowOffset;
             pendingEnd = pending + outBytes;

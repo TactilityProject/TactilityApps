@@ -1,5 +1,183 @@
 # Changelog
 
+## 0.9.0
+
+**Map**
+- Outdoor map style (Settings, Map style): paths in red, tracks in brown and cycleways in blue from zoom 12, unpaved
+  ways lighter, stronger woods and meadows. The tiles of zoom 12 and 13 are prepared again once for it.
+- Peaks show with their height ("Vysoká 754 m") from zoom 10, by importance.
+- At zoom 18 and 19 every point of interest of the map is drawn, named or not; where two meet, one moves a little or
+  becomes a dot, and only names give way. Gates and bollards show at zoom 19 only.
+- 100 more kinds of points of interest have a name and an icon (shelter, guidepost, map board, hut, spring, cave,
+  cliff, saddle and many more); a kind the app does not know shows a plain marker with its kind as the label.
+- Terrain: hillshade and contour lines (100 m at zoom 12, 50 m at 13, 20 m from 14, 10 m from 16, every fifth
+  darker) where the heights of a region are on the card: a region's actions, Download terrain (AWS Terrain Tiles,
+  about 0.1 MB a 15 x 15 km area per elevation tile, at most 300). With Settings, Terrain on (default) the heights
+  come with every new download and with browsed areas; switched on, the regions downloaded before get theirs while
+  the map is left alone (a region with all of them gets a `terrain.ok`). The light comes from the top left of the
+  screen on a turned map too (in steps of 45 degrees, tiles drawn again once the turn settled). The map credits the
+  elevation sources while terrain shows.
+- The height of a place shows in its sheet next to the coordinates ("48.93400 N 20.38300 E · 955 m").
+- Contour lines carry their height from zoom 13: one number in the middle of each long major line, at least 60 px
+  apart, with a pale halo.
+- The route card shows the route's climb and descent and a small elevation profile where terrain is on the card
+  (read in the background a few seconds after the route; Settings, Terrain on).
+- Tiles around the screen no longer stay magnified (pixelated) after the view changed while they waited to be read:
+  such a read did not start and the tile counted as having no data until the app was restarted. Their terrain and
+  trails are not lost that way either.
+- Terrain files download in pieces of 32 KB and give way to map tiles for the screen between pieces; terrain starts
+  2 s after the last browsed tile.
+- The search index is built only while the map is left alone with every tile on screen drawn.
+- Peaks, saddles, cliffs and volcanoes show in the outdoor style only, among the POIs: their icons first, their
+  names where room is left.
+- A map style button under the search button (and the key L) switches Standard / Outdoor; it left Settings.
+- Settings: each row says what it does and when to change it, the list keeps its place when a value changes, and
+  no line stays empty at the bottom. Lists follow the finger pixel by pixel.
+- Download, Choose region: "Search by name" finds a region in the whole list (case and accents ignored).
+- The map buttons hide after 10 s without input (the map following the position does not count). A finished
+  download's card closes 3 s after it ended, the background work card when nothing runs any more.
+- A north-up map starts turning with two fingers from 35 degrees (was 45).
+- Contour lines are mauve now, apart from the brown paths and tracks and the marked trails. "Heights" are called
+  "terrain" in the app (Download terrain, Downloading terrain).
+- Terrain for a browsed area starts as soon as its last map tile is prepared (was about 1.2 s later).
+- A tile that failed to draw is tried again after 10 s (up to 5 times in a row) and on every zoom change; one stayed
+  magnified (pixelated) until the app was restarted.
+- A newly downloaded tile on screen is prepared at once and drawn with its labels and POIs the first time; new height
+  files redraw only the tiles that use them, once per download. Preparing no longer waits forever when PSRAM is
+  broken up (a tile is stored uncompressed without the compressor's 320 KB block).
+- Peaks, saddles, cliffs and volcanoes can be picked like POIs (a tap, Enter); their sheet shows the mapped height.
+- Holding the trackball click with the controls shown opens a waypoint sheet at the crosshair (with the height); in
+  mouse mode holding the button does it at the pointer. With the controls hidden a long click still opens the menu.
+- Marked hiking and cycling routes (Settings, Marked trails; off by default): a region's actions, Download trails,
+  fetches them once from OpenStreetMap through the Overpass API and draws them in their marking colours, side by side
+  where several share a path. **Not usable yet:** the Overpass server needs TLS 1.3, which Tactility's firmware does
+  not have; the download says so.
+
+**Search**
+- Unnamed points of interest are found by their kind ("shelter", "bicycle parking", "waste basket"...). The search
+  indexes are made again in idle time.
+
+**Routing**
+- Long routes on the device: Bratislava - Košice by car (419 km) is found on the T-Deck in about 8 s, Košice -
+  Bratislava (403 km) in about 13 s. The main-road graphs along the way are made before a long search. A second long
+  search no longer fails for memory, the street graphs near both ends of a route are made first, and a route into a
+  region just downloaded no longer waits for every graph.
+- Walking prefers paths, tracks and footways to roads (Settings, "Walk prefers paths", on); bike routes prefer
+  cycleways and quiet, paved roads. The routing graphs are made again in idle time; until then the old ones are used.
+- While following a route, a vibration before each turn and two when off the route or arrived, on boards with a
+  motor (T-Deck Max, T-LoRa Pager).
+- Following a GPX file: Walk, Bike or Car chosen while the file is read now gives a road route to the track's end.
+
+**Downloads**
+- Up to 32 regions (was 16: regions beyond the 16th were silently left out).
+- Starting a download while another one was unfinished no longer makes the two cancel each other in turns.
+- The download card says what is downloaded, how big it is, how fast, and in words what it is doing.
+- The download pill sits under the navigation bar while navigating instead of on it.
+
+**Other**
+- About in sections. The app's version is shown everywhere as in its manifest (it said 0.6.0 and sent 0.2.0 in the
+  User-Agent).
+- A prepared tile whose label or graph file went missing is prepared again.
+- Search: a house number next to the border of a search block finds its street in the next block. Search indexes are
+  made again in idle time.
+
+## 0.8.1
+
+Published in TactilityApps as 0.8.1 (the version had been raised to 0.8.0 there with the new app icons; this was
+worked on as 0.6.0).
+
+**Menu**
+- The main menu is a grid of nine tiles with icons: Search, Download, Maps, Waypoints, Track, GPX, Location,
+  Settings, About. W A S D or the arrows move in both directions, Enter opens, Esc closes; the trackball moves tile by
+  tile or points; tap a tile. The menu opens on the tile used last.
+- A strip above the tiles shows what is running, only while it runs: the download with its progress, and Show route
+  or Stop and Clear route while there is a route.
+- Location switches on and off in place and shows its state on the tile. Exit is a small button at the top right.
+- Waypoints always opens the list; its first row is "Add waypoint here" (P and a long press on the map still add one).
+
+**Following a GPX track**
+- Menu, GPX, a file, "Follow this track": the first track or route of the file becomes the route (its card shows
+  the length and walking time; Start follows it with the bar, the remaining distance and the arrival). No turns are
+  announced, and away from the track the bar says "Off the track" with the distance instead of searching another
+  way. Tracks of any length (long ones are thinned to 6,000 points). Choosing a file now asks: show or hide it on
+  the map, or follow it.
+
+**Off the route**
+- A new route comes much faster on a long route: the app looks for the way back to the route a little ahead and
+  keeps the rest of it, instead of searching all the way to the destination again (which took seconds, by which
+  time a bike or a bus was somewhere else, so the new route was left at once and the bar never stopped
+  "recalculating").
+- A new route is asked for at once every time the route is left, from the position itself (the 10 seconds between
+  two new routes are gone). Only after a search that found no way does the next one wait 5 seconds; the bar then
+  shows how far the route is and that there is no new route yet.
+- Long car routes first look along the larger roads between their two ends, as a driver would: more routes
+  across a city are found (49 of 50 test pairs on the T-Deck, 48 before) and they come a little faster.
+- While navigating, what the app saw (positions, distance from the route, new routes) is written to `navlog.txt`
+  in the app's folder, to find out afterwards what happened on a trip.
+
+**Faster**
+- Names and icons appear sooner after the map stops moving: placing them takes a quarter to almost half less
+  time on the T-Deck.
+
+**Long routes**
+- Routes between towns and across a country: near the start and the destination the app uses the streets of the
+  detailed map, between them the main roads of the zoomed-out map (zoom 10). The detailed map is only needed around
+  both ends; for the way between, download the wider area once while zoomed out. On the T-Deck a 27 km route
+  between two towns with no detailed map between them is found in 2 to 8 seconds.
+- A new route in the middle of such a drive starts on the main road you are on, also where no detailed map is
+  on the card.
+- On the main roads the line is the zoomed-out map's, a little coarser than the road on screen; the app allows
+  for that before it says you left the route.
+- A map that was just downloaded can be routed on at once: the search prepares the tiles it needs itself
+  (before, the route was "not found" until the app had prepared them in idle time).
+
+**Search**
+- Exact names are ordered by what they are before how near they are: a town or village first, then stations,
+  airports, hospitals, malls, museums and the like, then other places, and bus stops, information boards and such
+  last (a bus stop named like the station no longer comes before the station).
+- Streets that only have an international name in the map data are found (Athens: 893 of 9,542 street lines).
+  The search indexes on the card are made again in idle time for this.
+
+**Controls and screens**
+- A search button among the map's controls, under the menu button (key /).
+- Settings: one line under the list says what the highlighted setting does.
+- With a keyboard, the waypoint sheet, the route card and the download card show their keys in one small line.
+- On boards without a keyboard, list rows and buttons are at least 36 px high.
+- The same margins, corner radii and dimming on every sheet, card and dialog; Backspace in the search field always
+  deletes a letter and only closes when the field is empty.
+
+**Labels and POIs**
+- Labels no longer jump when the map is moved: their places are fixed to the map, a label at the screen's edge is cut
+  instead of dropped, the same view always gives the same labels, and small labels (streets, POIs, house numbers) that
+  are on screen stay while the map moves or zooms.
+- More POIs: each takes only the room of its icon (the box around it was more than twice as wide as the icon), and
+  all icons are placed before any name. A POI's name shows from zoom 17 where there is room next to its icon; select
+  the icon to read it otherwise. Bratislava centre at zoom 17: 61 POIs on screen (11 before), all of them at zoom 19.
+- Zoomed out, cities show by importance: the capitals and largest cities first, more with every zoom level, the same
+  rule everywhere (Krakow no longer shows where Wien and Budapest do not). Country names are smaller from zoom 5 so
+  capitals fit between them; a city or country name moves a little above, below or beside its point when its place
+  is taken; regions (Burgenland) come after cities.
+
+**Fixes**
+- Recorded tracks: a write that the card cut short no longer leaves a broken point followed by the same points
+  again; closing an unfinished track after a crash never leaves the card without the track.
+- Region information, settings, the last view and the waypoints are replaced safely: a failed write keeps the old
+  file, and a power cut between the two steps is repaired at the next start.
+- Deleting a region also removes its search index (the folder used to stay behind).
+- Damaged map files end with an error instead of hanging or overrunning memory: tiles whose compressed data never
+  ends, wrong sizes in prepared tiles and label files, broken geometry commands, label points far outside the tile.
+- The search index build and the preparation of tiles in the background no longer run at the same time (the two
+  together left 67 KB less memory free).
+- Navigation: a weak GPS signal far from the route ends the "off route" state instead of asking for a new route
+  again and again; running out of memory during a route search says so instead of "no route".
+- Downloaded maps: an action chosen while the list changes (a download finishing) acts on the region that was chosen.
+- Recorded tracks are listed newest first; a failed settings write puts the setting back; "No tracks yet" and a
+  catalog that cannot be read no longer change where About returns to.
+- GPX: names keep whole letters when cut, control characters are left out, empty names are not written with every
+  track point, "inf" and "nan" are not read as elevations.
+- Search: a house number of 65535 no longer matches addresses without a number; a very long word is one word.
+- The Enter walk over POIs takes the nearest ones first when more than 16 are on screen.
+
 ## 0.5.0
 
 Offline search of places, streets, addresses and kinds of places in the downloaded maps.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "BackgroundWork.h"
 
+#include "Metrics.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -10,7 +12,7 @@ namespace maps {
 
 namespace {
 
-constexpr int PADDING = 8;
+using metrics::PADDING;
 
 const char* workName(WorkKind kind) {
     switch (kind) {
@@ -102,7 +104,9 @@ void drawWorkDot(Canvas& canvas, int x, int y, uint16_t color) {
 }
 
 Rect workDotTarget(int x, int y) {
-    return { x - 12, y - 12, 24, 24 };
+    // A finger wide on boards without a typing keyboard
+    const int size = metrics::touchTargets() ? metrics::TOUCH_BUTTON_HEIGHT : 24;
+    return { x - size / 2, y - size / 2, size, size };
 }
 
 void WorkCard::open() {
@@ -123,17 +127,17 @@ void WorkCard::set(const BackgroundWork& work) {
 }
 
 void WorkCard::layout(int width, int height, Font& font) {
-    const int cardWidth = std::min(width - 16, 300);
     const int line = font.lineHeight();
-    const int buttonHeight = line + 12;
+    const int cardWidth = metrics::cardWidth(width, height, 16, 300, line);
+    const int buttonHeight = metrics::buttonHeight(line, 12);
     const int cardHeight = PADDING + (1 + lineCount) * line + PADDING + buttonHeight + PADDING;
     frame = { (width - cardWidth) / 2, (height - cardHeight) / 2, cardWidth, cardHeight };
     closeBtn = { frame.x + PADDING, frame.y + cardHeight - PADDING - buttonHeight, cardWidth - 2 * PADDING, buttonHeight };
 }
 
 void WorkCard::draw(Canvas& canvas, Font& font, const UiTheme& theme) {
-    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, 110);
-    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, 8, theme.panel);
+    canvas.fillRect(0, 0, canvas.width, canvas.height, theme.scrim, metrics::SCRIM_ALPHA);
+    canvas.fillRoundRect(frame.x, frame.y, frame.width, frame.height, metrics::PANEL_RADIUS, theme.panel, theme.panelOpacity);
     const int left = frame.x + PADDING;
     const int textWidth = frame.width - 2 * PADDING;
     int y = frame.y + PADDING;

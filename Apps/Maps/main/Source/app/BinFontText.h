@@ -56,6 +56,30 @@ private:
     /** The mask of the last glyph asked for with withMask; labels use fonts of at most about 30 px. */
     static constexpr int MASK_BYTES = 48 * 48;
     uint8_t mask[MASK_BYTES] {};
+    /**
+     * The glyphs asked for before, with their masks: looking a glyph up and unpacking its bitmap in the binfont-module
+     * took about 2 ms per label, most of the time of placing the labels of a view (15 Nov). Direct mapped by
+     * codepoint; the masks in one block of PSRAM that is started again when it is full.
+     */
+    struct CachedGlyph {
+        uint32_t codepoint;
+        uint32_t id;
+        int32_t advanceX16;
+        /** Into glyphMasks; NO_MASK when the mask was not asked for yet (or is too large). */
+        uint32_t maskOffset;
+        int16_t left;
+        int16_t top;
+        uint16_t width;
+        uint16_t height;
+        bool used;
+    };
+    static constexpr int GLYPH_SLOTS = 256;
+    static constexpr uint32_t GLYPH_MASK_BYTES = 24 * 1024;
+    static constexpr uint32_t NO_MASK = UINT32_MAX;
+    void dropGlyphs();
+    CachedGlyph* glyphs = nullptr;
+    uint8_t* glyphMasks = nullptr;
+    uint32_t glyphMasksUsed = 0;
     /** The canvas the text was last drawn on, wrapped once as a PixelBuffer. */
     PixelBuffer* target = nullptr;
     uint16_t* targetPixels = nullptr;

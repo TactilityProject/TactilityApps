@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Settings.h"
 
+#include "../platform/SafeFile.h"
+
 #include "../tiles/TileMath.h"
 
 #include <cstdio>
@@ -22,6 +24,10 @@ constexpr Entry ENTRIES[] = {
     { "smooth_pinch", &Settings::smoothPinch },
     { "browse_download", &Settings::browseDownload },
     { "latin_names", &Settings::latinNames },
+    { "walk_trails", &Settings::walkTrails },
+    { "outdoor_style", &Settings::outdoorStyle },
+    { "terrain", &Settings::terrain },
+    { "trails", &Settings::trails },
     { "dev_mono", &Settings::devMonochrome },
     { "dev_probe", &Settings::devProbe },
 };
@@ -52,16 +58,17 @@ bool writeTextFile(const char* path, const char* text) {
     }
     const size_t length = strlen(text);
     const bool ok = fwrite(text, 1, length, file) == length;
-    fclose(file);
-    remove(path);
-    if (!ok || rename(temporary, path) != 0) {
+    // The old file goes only once the new one is whole (a failed write must not cost the old one)
+    if (fclose(file) != 0 || !ok) {
         remove(temporary);
         return false;
     }
-    return true;
+    // A failed replace keeps the temporary file: the old one may be gone already, and recoverFile() needs it
+    return replaceFile(temporary, path);
 }
 
 bool readTextFile(const char* path, char* text, size_t size) {
+    recoverFile(path);
     FILE* file = fopen(path, "r");
     if (file == nullptr) {
         return false;

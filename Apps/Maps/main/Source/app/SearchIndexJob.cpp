@@ -3,6 +3,7 @@
 
 #include "../mvt/MvtDecoder.h"
 #include "../platform/Platform.h"
+#include "../platform/SafeFile.h"
 #include "../route/GrowArray.h"
 #include "../search/SearchStream.h"
 #include "../tiles/RegionMeta.h"
@@ -34,7 +35,10 @@ constexpr uint32_t SORT_BUFFER = 64 * 1024;
 /** Files the build keeps open at once: the card's FAT mount allows four for the whole system. */
 constexpr int REAL_FILES = 2;
 /** The stamp's format: change it to rebuild every index (e.g. after a change of the builder's output). */
-constexpr char STAMP_VERSION[] = "sidx1";
+constexpr char STAMP_VERSION[] = "sidx4";   // sidx2 (0.6.0): streets named only by name_int are in; sidx3 (0.9.0): every
+                                            // unnamed POI but the barriers is in (shelters, guideposts, waste baskets...);
+                                            // sidx4 (0.9.0): a block's house numbers also match streets of the tiles
+                                            // around it (margin tiles)
 
 template <typename Function>
 bool onCard(IoTask& io, Function& function) {
@@ -443,7 +447,7 @@ bool keepGoingHook(const StreamProgress& progress, void* context) {
         // The FAT mount allows 4 open files for the whole system: the download needs them
         hook->files->suspend();
     }
-    return hook->job->keepGoing(static_cast<int32_t>(progress.done), static_cast<int32_t>(progress.total));
+    return hook->job->keepGoing(static_cast<int32_t>(progress.done), static_cast<int32_t>(progress.total), progress.phase);
 }
 
 /** The task suspends itself when its work is over: it must not run any more when it is deleted. */
@@ -459,6 +463,13 @@ void waitUntilSuspended(TaskHandle_t task) {
 }
 
 } // namespace
+
+Translit translitForRegion(const char* region) {
+    if (strcmp(region, "kyiv") == 0) {
+        return Translit::Ukrainian;
+    }
+    return strcmp(region, "belgrade") == 0 ? Translit::Serbian : Translit::Russian;
+}
 
 SearchIndexJob::~SearchIndexJob() {
     stop();
@@ -479,6 +490,7 @@ bool SearchIndexJob::start(IoTask& ioTask, const char* rootPath, const char* fir
     progressDone = 0;
     progressTotal = 0;
     lowestFree = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    buildLowestFree = lowestFree;
     currentState = State::Busy;
     if (xTaskCreatePinnedToCoreWithCaps(taskMain, "maps-sidx", TASK_STACK, this, TASK_PRIORITY, &task, tskNO_AFFINITY, MALLOC_CAP_SPIRAM) !=
         pdPASS) {
@@ -521,11 +533,17 @@ void SearchIndexJob::taskMain(void* context) {
     vTaskSuspend(nullptr);
 }
 
-bool SearchIndexJob::keepGoing(int32_t done, int32_t total) {
+bool SearchIndexJob::keepGoing(int32_t done, int32_t total, uint8_t phase) {
     progressDone = done;
     progressTotal = total;
     const auto free = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     lowestFree = std::min(lowestFree, free);
+    buildLowestFree = std::min(buildLowestFree, free);
+    if (phase < MEMORY_PHASES) {
+        const auto largest = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        phaseFree[phase] = std::min(phaseFree[phase], free);
+        phaseLargest[phase] = std::min(phaseLargest[phase], largest);
+    }
     while (paused.load() && !stopping.load()) {
         vTaskDelay(pdMS_TO_TICKS(250));
     }
@@ -663,6 +681,12 @@ bool SearchIndexJob::buildRegion(const char* region) {
         return true;
     };
     onCard(*io, makeFolders);
+    // The old stamp goes before any block is rewritten: a build that fails half way must not leave new blocks under a matching stamp
+    auto removeStamp = [&]() {
+        ::remove(stampPath);
+        return true;
+    };
+    onCard(*io, removeStamp);
     // Memory for the build: decoder, a tile buffer, the builder (freed at the end)
     void* decoderMemory = largeAlloc(sizeof(MvtDecoder));
     auto* buffer = static_cast<uint8_t*>(largeAlloc(TILE_CHUNK));
@@ -681,8 +705,7 @@ bool SearchIndexJob::buildRegion(const char* region) {
     options.sortBufferBytes = SORT_BUFFER;
     options.keepGoing = keepGoingHook;
     options.context = &hook;
-    const char* profile = strcmp(region, "kyiv") == 0 ? "uk" : (strcmp(region, "belgrade") == 0 ? "sr" : "ru");
-    options.config.profile = profile[0] == 'u' ? Translit::Ukrainian : (profile[0] == 's' ? Translit::Serbian : Translit::Russian);
+    options.config.profile = translitForRegion(region);
     // One block at a time (all tiles when the region is small)
     GrowArray<StreamTile> blockTiles;
     IndexFiles made;
@@ -699,6 +722,21 @@ bool SearchIndexJob::buildRegion(const char* region) {
             }
             if (blockTiles.size() == 0) {
                 continue;
+            }
+            if (blocks) {
+                // The ring of tiles around the block, for their streets only: a house number next to the border finds
+                // its street across it (search/SearchStream.h, StreamTile::margin)
+                const int32_t left = minX + bx * BLOCK_TILES;
+                const int32_t top = minY + by * BLOCK_TILES;
+                for (const StreamTile& t : list.tiles) {
+                    const bool inside = t.x >= left && t.x < left + BLOCK_TILES && t.y >= top && t.y < top + BLOCK_TILES;
+                    const bool ring = t.x >= left - 1 && t.x <= left + BLOCK_TILES && t.y >= top - 1 && t.y <= top + BLOCK_TILES;
+                    if (ring && !inside) {
+                        StreamTile margin = t;
+                        margin.margin = true;
+                        blockTiles.push(margin);
+                    }
+                }
             }
             char outPath[PATH_MAX_LENGTH];
             char temporary[PATH_MAX_LENGTH];
@@ -723,6 +761,10 @@ bool SearchIndexJob::buildRegion(const char* region) {
             CardTileSource source(*io, regionPath, buffer, owned);
             const uint32_t freeBefore = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
             lowestFree = freeBefore;
+            for (int i = 0; i < MEMORY_PHASES; i++) {
+                phaseFree[i] = UINT32_MAX;
+                phaseLargest[i] = UINT32_MAX;
+            }
             const uint32_t started = nowMs();
             ok = builder->build(files, scratch, blockTiles.begin(), static_cast<uint32_t>(blockTiles.size()), source, *decoder, outPath, temporary,
                                 options);
@@ -741,6 +783,21 @@ bool SearchIndexJob::buildRegion(const char* region) {
             report("Search index %s%s%s: %u tiles in %u ms, %u bytes; PSRAM %u KB free before, %u KB lowest", region, blocks ? " " : "",
                    blockName, static_cast<unsigned>(blockTiles.size()), static_cast<unsigned>(nowMs() - started),
                    static_cast<unsigned>(s.index.totalBytes), static_cast<unsigned>(freeBefore / 1024), static_cast<unsigned>(lowestFree / 1024));
+            {
+                // Lowest free PSRAM / smallest largest block per step, in KB (0/0: the step never reported)
+                char line[sizeof(reports[0])];
+                int at = snprintf(line, sizeof(line), "Search index KB free/largest:");
+                static const char* const NAMES[MEMORY_PHASES] = { "tile", "pnt", "hse", "clu", "mat", "adr",
+                    "rec", "grp", "grec", "key", "file" };
+                for (int i = 0; i < MEMORY_PHASES && at < static_cast<int>(sizeof(line)) - 1; i++) {
+                    if (phaseFree[i] != UINT32_MAX) {
+                        at += snprintf(line + at, sizeof(line) - static_cast<size_t>(at), " %s %u/%u", NAMES[i],
+                            static_cast<unsigned>(phaseFree[i] / 1024), static_cast<unsigned>(phaseLargest[i] / 1024));
+                    }
+                }
+                report("%s", line);
+                logMemory("after an index block");
+            }
             report("Search index phases ms: tiles %u points %u clusters %u matching %u addresses %u groups %u keys %u file %u", s.phaseMs[0],
                    s.phaseMs[1], s.phaseMs[2], s.phaseMs[3], s.phaseMs[4], s.phaseMs[5], s.phaseMs[6], s.phaseMs[7]);
             report("Search index slowest tile %d/%d %u ms, matching %d/%d %u ms; scratch %u KB, sort %u KB, tables %u KB, matcher %u KB",
@@ -786,10 +843,18 @@ bool SearchIndexJob::buildRegion(const char* region) {
                 removeFolder(blockFolder);
             }
         }
-        FILE* file = fopen(stampPath, "wb");
+        // Through a temporary file: a half-written stamp must not match
+        char stampTemporary[PATH_MAX_LENGTH];
+        snprintf(stampTemporary, sizeof(stampTemporary), "%s/stamp.tmp", regionPath);
+        FILE* file = fopen(stampTemporary, "wb");
         if (file != nullptr) {
-            fprintf(file, "%s\n", stamp);
-            fclose(file);
+            const bool written = fprintf(file, "%s\n", stamp) > 0;
+            const bool closed = fclose(file) == 0;
+            if (written && closed) {
+                replaceFile(stampTemporary, stampPath);
+            } else {
+                ::remove(stampTemporary);
+            }
         }
         return true;
     };
