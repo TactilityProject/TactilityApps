@@ -36,7 +36,6 @@ struct CalendarContext {
     bool settingsVisible = false;
     lv_obj_t* agendaPanel = nullptr;
     lv_obj_t* settingsPanel = nullptr;
-    lv_obj_t* eventList = nullptr;
     lv_obj_t* statusLabel = nullptr;
     lv_obj_t* urlInput = nullptr;
     lv_obj_t* usernameInput = nullptr;

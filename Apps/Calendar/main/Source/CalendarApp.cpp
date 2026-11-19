@@ -149,11 +149,13 @@ void createButton(lv_obj_t* parent, const char* text, lv_event_cb_t callback, Ca
 }
 
 void refreshEventList(CalendarContext* context) {
-    if (context->eventList == nullptr) return;
-    lv_obj_clean(context->eventList);
+    if (context->agendaPanel == nullptr || context->statusLabel == nullptr) return;
+    for (uint32_t count = lv_obj_get_child_count(context->agendaPanel); count > 1; --count) {
+        lv_obj_delete(lv_obj_get_child(context->agendaPanel, static_cast<int32_t>(count - 1)));
+    }
 
     if (context->eventCount == 0) {
-        lv_obj_t* empty = lv_label_create(context->eventList);
+        lv_obj_t* empty = lv_label_create(context->agendaPanel);
         lv_label_set_text(empty, "No upcoming events. Sync to check this calendar.");
         lv_obj_set_width(empty, LV_PCT(100));
         lv_label_set_long_mode(empty, LV_LABEL_LONG_MODE_WRAP);
@@ -162,12 +164,13 @@ void refreshEventList(CalendarContext* context) {
 
     for (size_t i = 0; i < context->eventCount; ++i) {
         const CalendarEvent& event = context->events[i];
-        lv_obj_t* card = lv_obj_create(context->eventList);
+        lv_obj_t* card = lv_button_create(context->agendaPanel);
         lv_obj_set_width(card, LV_PCT(100));
         lv_obj_set_height(card, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_gap(card, 4, 0);
         lv_obj_set_scrollable(card, false);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
 
         lv_obj_t* date = lv_label_create(card);
         lv_label_set_text(date, event.start);
@@ -642,6 +645,7 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     const SettingsSnapshot settingsSnapshot = getSettingsSnapshot(context);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollable(parent, false);
+    lv_obj_set_style_border_width(parent, 0, LV_PART_MAIN);
 
     lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Calendar");
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
@@ -658,6 +662,9 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_flex_flow(context->agendaPanel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(context->agendaPanel, 8, 0);
     lv_obj_set_style_pad_gap(context->agendaPanel, 8, 0);
+    lv_obj_set_style_border_width(context->agendaPanel, 0, LV_PART_MAIN);
+    lv_obj_set_scroll_dir(context->agendaPanel, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(context->agendaPanel, LV_SCROLLBAR_MODE_AUTO);
 
     context->statusLabel = lv_label_create(context->agendaPanel);
     lv_obj_set_width(context->statusLabel, LV_PCT(100));
@@ -665,12 +672,6 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_text_font(context->statusLabel, lvgl_get_text_font(FONT_SIZE_SMALL), 0);
     lv_label_set_text(context->statusLabel, context->status);
 
-    context->eventList = lv_obj_create(context->agendaPanel);
-    lv_obj_set_width(context->eventList, LV_PCT(100));
-    lv_obj_set_flex_grow(context->eventList, 1);
-    lv_obj_set_flex_flow(context->eventList, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(context->eventList, 4, 0);
-    lv_obj_set_style_pad_gap(context->eventList, 8, 0);
     refreshEventList(context);
 
     context->settingsPanel = lv_obj_create(parent);
@@ -679,6 +680,7 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_flex_flow(context->settingsPanel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(context->settingsPanel, 8, 0);
     lv_obj_set_style_pad_gap(context->settingsPanel, 6, 0);
+    lv_obj_set_style_border_width(context->settingsPanel, 0, LV_PART_MAIN);
     lv_obj_add_flag(context->settingsPanel, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t* hint = lv_label_create(context->settingsPanel);
@@ -702,7 +704,6 @@ void calendarDestroyWidgets(void* userData) {
     auto* context = static_cast<CalendarContext*>(userData);
     context->agendaPanel = nullptr;
     context->settingsPanel = nullptr;
-    context->eventList = nullptr;
     context->statusLabel = nullptr;
     context->urlInput = nullptr;
     context->usernameInput = nullptr;
