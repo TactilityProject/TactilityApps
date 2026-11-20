@@ -1,6 +1,7 @@
 #pragma once
 
 #include <app/instance.h>
+#include "CalendarSync.h"
 #include <lvgl.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <tactility/concurrent/task_event_group.h>
@@ -10,12 +11,6 @@
 #include <cstdint>
 #include <mutex>
 #include <vector>
-
-struct CalendarEvent {
-    char uid[128] {};
-    char start[48] {};
-    char summary[112] {};
-};
 
 enum class CalendarPage {
     Agenda,
@@ -28,6 +23,7 @@ struct CalendarContext {
     TaskEventGroup* eventGroup = nullptr;
     uint32_t requestBit = 0;
     std::atomic<uint32_t> requests {0};
+    std::atomic<uint32_t> settingsGeneration {0};
 
     std::mutex settingsMutex;
     char calendarUrl[256] {};
@@ -36,6 +32,12 @@ struct CalendarContext {
     char status[96] = "Configure a CalDAV calendar to get started.";
     std::vector<CalendarEvent> events;
     std::vector<CalendarEvent> upcomingEvents;
+    bool fullCalendarAvailable = false;
+    uint32_t fullCalendarGeneration = 0;
+    uint32_t upcomingEventsGeneration = 0;
+    char upcomingWindowStart[17] {};
+    char upcomingWindowEnd[17] {};
+    bool statusShouldExpire = false;
 
     bool settingsVisible = false;
     bool dayAgendaVisible = false;
@@ -54,6 +56,7 @@ struct CalendarContext {
     lv_obj_t* selectedDayEvents = nullptr;
     lv_obj_t* settingsPanel = nullptr;
     lv_obj_t* statusLabel = nullptr;
+    lv_timer_t* statusTimer = nullptr;
     lv_obj_t* urlInput = nullptr;
     lv_obj_t* usernameInput = nullptr;
     lv_obj_t* passwordInput = nullptr;
