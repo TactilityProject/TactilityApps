@@ -9,7 +9,9 @@
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
 #include <lvgl/icons/shared.h>
+#include <lvgl/grid_navigation.h>
 #include <lvgl/widgets/toolbar.h>
+#include <lvgl_window_manager/system_bars.h>
 #include <tactility/error.h>
 #include <tactility/preferences.h>
 
@@ -53,13 +55,20 @@ void signalRequest(CalendarContext* context, uint32_t request) {
 
 void showSettings(CalendarContext* context, bool visible) {
     context->settingsVisible = visible;
-    if (context->agendaPanel == nullptr || context->settingsPanel == nullptr) return;
+    if (context->agendaPanel == nullptr || context->monthPanel == nullptr ||
+        context->selectedDayPanel == nullptr || context->settingsPanel == nullptr) return;
     if (visible) {
-        lv_obj_add_flag(context->agendaPanel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(context->settingsPanel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(context->agendaPanel, true);
+        lv_obj_set_hidden(context->monthPanel, true);
+        lv_obj_set_hidden(context->selectedDayPanel, true);
+        lv_obj_set_hidden(context->settingsPanel, false);
     } else {
-        lv_obj_add_flag(context->settingsPanel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(context->agendaPanel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(context->settingsPanel, true);
+        lv_obj_set_hidden(context->agendaPanel, context->page != CalendarPage::Agenda);
+        lv_obj_set_hidden(context->monthPanel,
+            context->page != CalendarPage::Month || context->dayAgendaVisible);
+        lv_obj_set_hidden(context->selectedDayPanel,
+            context->page != CalendarPage::Month || !context->dayAgendaVisible);
     }
 }
 
@@ -113,8 +122,40 @@ void onSaveSettings(lv_event_t* event) {
     signalRequest(context, REQUEST_SAVE);
 }
 
-void onSync(lv_event_t* event) {
-    auto* context = static_cast<CalendarContext*>(lv_event_get_user_data(event));
+void refreshEventList(CalendarContext* context);
+void refreshMonth(CalendarContext* context);
+void refreshMonthAgenda(CalendarContext* context);
+
+void setCalendarPage(CalendarContext* context, CalendarPage page) {
+    context->page = page;
+    context->dayAgendaVisible = false;
+    if (context->agendaPanel == nullptr || context->monthPanel == nullptr ||
+        context->selectedDayPanel == nullptr || context->settingsPanel == nullptr) return;
+    if (context->settingsVisible) {
+        showSettings(context, false);
+    }
+    lv_obj_set_hidden(context->agendaPanel, page != CalendarPage::Agenda);
+    lv_obj_set_hidden(context->monthPanel, page != CalendarPage::Month);
+    lv_obj_set_hidden(context->selectedDayPanel, true);
+    lv_obj_set_hidden(context->settingsPanel, true);
+    if (page == CalendarPage::Month) {
+        refreshMonth(context);
+    } else {
+        refreshEventList(context);
+    }
+}
+
+void onPreviousPage(void* userData) {
+    auto* context = static_cast<CalendarContext*>(userData);
+    setCalendarPage(context, CalendarPage::Month);
+}
+
+void onNextPage(void* userData) {
+    auto* context = static_cast<CalendarContext*>(userData);
+    setCalendarPage(context, CalendarPage::Agenda);
+}
+
+void requestCalendarSync(CalendarContext* context) {
     if (context->settingsVisible) {
         copySettingsFromWidgets(context);
         showSettings(context, false);
@@ -122,6 +163,10 @@ void onSync(lv_event_t* event) {
     } else {
         signalRequest(context, REQUEST_SYNC);
     }
+}
+
+void onSyncMainAction(void* userData) {
+    requestCalendarSync(static_cast<CalendarContext*>(userData));
 }
 
 void addInput(lv_obj_t* parent, const char* labelText, const char* placeholder, const char* value,
@@ -148,6 +193,26 @@ void createButton(lv_obj_t* parent, const char* text, lv_event_cb_t callback, Ca
     lv_label_set_text(label, text);
 }
 
+bool formatDateKey(char* output, size_t size, int year, int month, int day) {
+    if (size < 11 || year < 1000 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) {
+        if (size > 0) output[0] = '\0';
+        return false;
+    }
+
+    output[0] = static_cast<char>('0' + (year / 1000) % 10);
+    output[1] = static_cast<char>('0' + (year / 100) % 10);
+    output[2] = static_cast<char>('0' + (year / 10) % 10);
+    output[3] = static_cast<char>('0' + year % 10);
+    output[4] = '-';
+    output[5] = static_cast<char>('0' + (month / 10) % 10);
+    output[6] = static_cast<char>('0' + month % 10);
+    output[7] = '-';
+    output[8] = static_cast<char>('0' + (day / 10) % 10);
+    output[9] = static_cast<char>('0' + day % 10);
+    output[10] = '\0';
+    return true;
+}
+
 void refreshEventList(CalendarContext* context) {
     if (context->agendaPanel == nullptr || context->statusLabel == nullptr) return;
     for (uint32_t count = lv_obj_get_child_count(context->agendaPanel); count > 1; --count) {
@@ -170,7 +235,7 @@ void refreshEventList(CalendarContext* context) {
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_gap(card, 4, 0);
         lv_obj_set_scrollable(card, false);
-        lv_obj_add_flag(card, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+        lv_obj_set_scroll_on_focus(card, true);
 
         lv_obj_t* date = lv_label_create(card);
         lv_label_set_text(date, event.start);
@@ -184,6 +249,190 @@ void refreshEventList(CalendarContext* context) {
         lv_obj_set_width(summary, LV_PCT(100));
         lv_label_set_long_mode(summary, LV_LABEL_LONG_MODE_WRAP);
     }
+}
+
+void onDayClicked(lv_event_t* event);
+
+void setDaySelectedStyle(lv_obj_t* day, bool selected) {
+    lv_obj_set_style_bg_opa(day, selected ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
+    if (selected) {
+        lv_obj_set_style_bg_color(day, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
+    }
+
+    lv_obj_t* number = lv_obj_get_child(day, 0);
+    if (number != nullptr) {
+        lv_obj_set_style_text_color(number,
+            selected ? lv_color_white() : lv_obj_get_style_text_color(day, LV_PART_MAIN),
+            LV_PART_MAIN);
+    }
+    if (lv_obj_get_child_count(day) > 1) {
+        lv_obj_t* marker = lv_obj_get_child(day, 1);
+        lv_obj_set_style_bg_color(marker, selected
+            ? lv_color_white()
+            : lv_palette_main(LV_PALETTE_BLUE), LV_PART_MAIN);
+    }
+}
+
+void refreshMonth(CalendarContext* context) {
+    if (context->monthTitle == nullptr || context->monthGrid == nullptr) return;
+
+    tm monthStart {};
+    monthStart.tm_year = context->displayYear - 1900;
+    monthStart.tm_mon = context->displayMonth - 1;
+    monthStart.tm_mday = 1;
+    monthStart.tm_hour = 12;
+    monthStart.tm_isdst = -1;
+    mktime(&monthStart);
+
+    const time_t monthStartTime = mktime(&monthStart);
+    tm first = *localtime(&monthStartTime);
+    const int offset = (first.tm_wday + 6) % 7;
+    tm lastDay = monthStart;
+    lastDay.tm_mon = context->displayMonth;
+    lastDay.tm_mday = 0;
+    mktime(&lastDay);
+    const int daysInMonth = lastDay.tm_mday;
+
+    char title[32] {};
+    strftime(title, sizeof(title), "%B %Y", &monthStart);
+    lv_label_set_text(context->monthTitle, title);
+
+    lv_obj_clean(context->monthGrid);
+    lv_obj_set_flex_flow(context->monthGrid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_all(context->monthGrid, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(context->monthGrid, 2, LV_PART_MAIN);
+
+    for (int cell = 0; cell < 42; ++cell) {
+        const int dayNumber = cell - offset + 1;
+        if (dayNumber < 1 || dayNumber > daysInMonth) {
+            lv_obj_t* blank = lv_obj_create(context->monthGrid);
+            lv_obj_set_size(blank, LV_PCT(13), LV_PCT(15));
+            lv_obj_set_style_border_width(blank, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(blank, LV_OPA_TRANSP, LV_PART_MAIN);
+            continue;
+        }
+
+        lv_obj_t* day = lv_button_create(context->monthGrid);
+        lv_obj_set_size(day, LV_PCT(13), LV_PCT(15));
+        lv_obj_set_flex_flow(day, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(day, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_gap(day, 2, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(day, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_width(day, 0, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(day, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_scroll_on_focus(day, true);
+        lv_obj_set_user_data(day, reinterpret_cast<void*>(static_cast<intptr_t>(dayNumber)));
+        lv_obj_add_event_cb(day, onDayClicked, LV_EVENT_CLICKED, context);
+
+        const bool selected = context->selectedYear == context->displayYear &&
+            context->selectedMonth == context->displayMonth &&
+            context->selectedDay == dayNumber;
+        setDaySelectedStyle(day, selected);
+
+        lv_obj_t* number = lv_label_create(day);
+        char numberText[3] {};
+        snprintf(numberText, sizeof(numberText), "%d", dayNumber);
+        lv_label_set_text(number, numberText);
+        lv_obj_set_style_text_align(number, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        if (selected) {
+            lv_obj_set_style_text_color(number, lv_color_white(), LV_PART_MAIN);
+        }
+
+        char dateText[11] {};
+        formatDateKey(dateText, sizeof(dateText),
+            context->displayYear, context->displayMonth, dayNumber);
+        bool hasEvent = false;
+        for (size_t i = 0; i < context->eventCount && !hasEvent; ++i) {
+            hasEvent = strncmp(context->events[i].start, dateText, 10) == 0;
+        }
+        if (hasEvent) {
+            lv_obj_t* marker = lv_obj_create(day);
+            lv_obj_set_size(marker, 6, 6);
+            lv_obj_set_style_radius(marker, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+            lv_obj_set_style_border_width(marker, 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(marker, selected
+                ? lv_color_white()
+                : lv_palette_main(LV_PALETTE_BLUE), LV_PART_MAIN);
+        }
+    }
+}
+
+void refreshMonthAgenda(CalendarContext* context) {
+    if (context->selectedDayTitle == nullptr || context->selectedDayEvents == nullptr) return;
+
+    char dateText[11] {};
+    if (!formatDateKey(dateText, sizeof(dateText),
+            context->selectedYear, context->selectedMonth, context->selectedDay)) {
+        lv_label_set_text(context->selectedDayTitle, "Selected day");
+        return;
+    }
+    lv_label_set_text(context->selectedDayTitle, dateText);
+
+    lv_obj_clean(context->selectedDayEvents);
+    size_t shownCount = 0;
+    for (size_t i = 0; i < context->eventCount; ++i) {
+        if (strncmp(context->events[i].start, dateText, 10) == 0) {
+            ++shownCount;
+        }
+    }
+    if (shownCount == 0) {
+        lv_obj_t* empty = lv_label_create(context->selectedDayEvents);
+        lv_label_set_text(empty, "No events scheduled for this day.");
+        lv_obj_set_width(empty, LV_PCT(100));
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_MODE_WRAP);
+        return;
+    }
+
+    for (size_t i = 0; i < context->eventCount; ++i) {
+        const CalendarEvent& event = context->events[i];
+        if (strncmp(event.start, dateText, 10) != 0) continue;
+
+        lv_obj_t* card = lv_button_create(context->selectedDayEvents);
+        lv_obj_set_width(card, LV_PCT(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_gap(card, 2, LV_PART_MAIN);
+        lv_obj_set_scrollable(card, false);
+
+        lv_obj_t* time = lv_label_create(card);
+        lv_label_set_text(time, event.start + 11);
+        lv_obj_set_width(time, LV_PCT(100));
+        lv_obj_set_style_text_font(time, lvgl_get_text_font(FONT_SIZE_SMALL), LV_PART_MAIN);
+
+        lv_obj_t* summary = lv_label_create(card);
+        lv_label_set_text(summary, event.summary);
+        lv_obj_set_width(summary, LV_PCT(100));
+        lv_label_set_long_mode(summary, LV_LABEL_LONG_MODE_WRAP);
+    }
+}
+
+void onDayClicked(lv_event_t* event) {
+    auto* context = static_cast<CalendarContext*>(lv_event_get_user_data(event));
+    lv_obj_t* target = lv_event_get_current_target_obj(event);
+    const int day = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(target)));
+    context->selectedYear = context->displayYear;
+    context->selectedMonth = context->displayMonth;
+    context->selectedDay = day;
+    context->dayAgendaVisible = true;
+    lv_obj_set_hidden(context->monthPanel, true);
+    lv_obj_set_hidden(context->selectedDayPanel, false);
+    const uint32_t childCount = lv_obj_get_child_count(context->monthGrid);
+    for (uint32_t i = 0; i < childCount; ++i) {
+        lv_obj_t* dayButton = lv_obj_get_child(context->monthGrid, static_cast<int32_t>(i));
+        const int dayNumber = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(dayButton)));
+        if (dayNumber > 0) {
+            setDaySelectedStyle(dayButton, dayNumber == day);
+        }
+    }
+    refreshMonthAgenda(context);
+}
+
+void onBackToMonth(lv_event_t* event) {
+    auto* context = static_cast<CalendarContext*>(lv_event_get_user_data(event));
+    context->dayAgendaVisible = false;
+    lv_obj_set_hidden(context->selectedDayPanel, true);
+    lv_obj_set_hidden(context->monthPanel, false);
 }
 
 void setStatus(CalendarContext* context, const char* status) {
@@ -201,6 +450,8 @@ void updateAgenda(CalendarContext* context, const std::array<CalendarEvent, Cale
     context->events = events;
     context->eventCount = count;
     refreshEventList(context);
+    refreshMonth(context);
+    refreshMonthAgenda(context);
     lvgl_unlock();
 }
 
@@ -643,6 +894,17 @@ void calendarLoadSettings(CalendarContext* context) {
 void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* context = static_cast<CalendarContext*>(userData);
     const SettingsSnapshot settingsSnapshot = getSettingsSnapshot(context);
+    if (context->displayYear == 0) {
+        const time_t now = time(nullptr);
+        tm local {};
+        if (localtime_r(&now, &local) != nullptr) {
+            context->displayYear = local.tm_year + 1900;
+            context->displayMonth = local.tm_mon + 1;
+            context->selectedYear = context->displayYear;
+            context->selectedMonth = context->displayMonth;
+            context->selectedDay = local.tm_mday;
+        }
+    }
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollable(parent, false);
     lv_obj_set_style_border_width(parent, 0, LV_PART_MAIN);
@@ -651,10 +913,60 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
     lvgl_toolbar_set_nav_action(toolbar, LV_SYMBOL_CLOSE, onClose, context);
 
-    lv_obj_t* refresh = lvgl_toolbar_add_text_button_action(toolbar, LVGL_ICON_SHARED_REFRESH, onSync, context);
-    lv_obj_set_style_text_font(refresh, lvgl_get_shared_icon_default_font(), 0);
     lv_obj_t* settings = lvgl_toolbar_add_text_button_action(toolbar, LVGL_ICON_SHARED_SETTINGS, onOpenSettings, context);
     lv_obj_set_style_text_font(settings, lvgl_get_shared_icon_default_font(), 0);
+    system_bars_set_main_action(LVGL_ICON_SHARED_REFRESH, onSyncMainAction, context);
+    system_bars_set_page_button_callbacks(onPreviousPage, onNextPage, context);
+    system_bars_set_page_buttons_visible(true);
+
+    context->monthPanel = lv_obj_create(parent);
+    lv_obj_set_width(context->monthPanel, LV_PCT(100));
+    lv_obj_set_flex_grow(context->monthPanel, 1);
+    lv_obj_set_flex_flow(context->monthPanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(context->monthPanel, 8, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(context->monthPanel, 4, LV_PART_MAIN);
+    lv_obj_set_style_border_width(context->monthPanel, 0, LV_PART_MAIN);
+
+    context->monthTitle = lv_label_create(context->monthPanel);
+    lv_obj_set_width(context->monthTitle, LV_PCT(100));
+    lv_obj_set_style_text_align(context->monthTitle, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_font(context->monthTitle, lvgl_get_text_font(FONT_SIZE_LARGE), LV_PART_MAIN);
+
+    context->monthGrid = lv_obj_create(context->monthPanel);
+    lv_obj_set_width(context->monthGrid, LV_PCT(100));
+    lv_obj_set_flex_grow(context->monthGrid, 1);
+    lv_obj_set_style_border_width(context->monthGrid, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(context->monthGrid, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_scrollbar_mode(context->monthGrid, LV_SCROLLBAR_MODE_OFF);
+    lvgl_grid_navigation_add(context->monthGrid);
+
+    lv_obj_set_hidden(context->monthPanel, true);
+    refreshMonth(context);
+
+    context->selectedDayPanel = lv_obj_create(parent);
+    lv_obj_set_width(context->selectedDayPanel, LV_PCT(100));
+    lv_obj_set_flex_grow(context->selectedDayPanel, 1);
+    lv_obj_set_flex_flow(context->selectedDayPanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(context->selectedDayPanel, 8, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(context->selectedDayPanel, 8, LV_PART_MAIN);
+    lv_obj_set_style_border_width(context->selectedDayPanel, 0, LV_PART_MAIN);
+    createButton(context->selectedDayPanel, "Back to month", onBackToMonth, context);
+
+    context->selectedDayTitle = lv_label_create(context->selectedDayPanel);
+    lv_obj_set_width(context->selectedDayTitle, LV_PCT(100));
+    lv_obj_set_style_text_font(context->selectedDayTitle, lvgl_get_text_font(FONT_SIZE_LARGE), LV_PART_MAIN);
+
+    context->selectedDayEvents = lv_obj_create(context->selectedDayPanel);
+    lv_obj_set_width(context->selectedDayEvents, LV_PCT(100));
+    lv_obj_set_flex_grow(context->selectedDayEvents, 1);
+    lv_obj_set_flex_flow(context->selectedDayEvents, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(context->selectedDayEvents, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(context->selectedDayEvents, 4, LV_PART_MAIN);
+    lv_obj_set_style_border_width(context->selectedDayEvents, 0, LV_PART_MAIN);
+    lv_obj_set_scroll_dir(context->selectedDayEvents, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(context->selectedDayEvents, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_hidden(context->selectedDayPanel, true);
+    refreshMonthAgenda(context);
 
     context->agendaPanel = lv_obj_create(parent);
     lv_obj_set_width(context->agendaPanel, LV_PCT(100));
@@ -681,7 +993,7 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_all(context->settingsPanel, 8, 0);
     lv_obj_set_style_pad_gap(context->settingsPanel, 6, 0);
     lv_obj_set_style_border_width(context->settingsPanel, 0, LV_PART_MAIN);
-    lv_obj_add_flag(context->settingsPanel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(context->settingsPanel, true);
 
     lv_obj_t* hint = lv_label_create(context->settingsPanel);
     lv_label_set_text(hint, "Use your CalDAV calendar collection URL.");
@@ -698,11 +1010,21 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     createButton(context->settingsPanel, "Save", onSaveSettings, context);
     createButton(context->settingsPanel, "Cancel", onCancelSettings, context);
     showSettings(context, context->settingsVisible);
+    setCalendarPage(context, context->page);
 }
 
 void calendarDestroyWidgets(void* userData) {
     auto* context = static_cast<CalendarContext*>(userData);
+    system_bars_set_main_action(nullptr, nullptr, nullptr);
+    system_bars_set_page_button_callbacks(nullptr, nullptr, nullptr);
+    system_bars_set_page_buttons_visible(false);
     context->agendaPanel = nullptr;
+    context->monthPanel = nullptr;
+    context->monthTitle = nullptr;
+    context->monthGrid = nullptr;
+    context->selectedDayPanel = nullptr;
+    context->selectedDayTitle = nullptr;
+    context->selectedDayEvents = nullptr;
     context->settingsPanel = nullptr;
     context->statusLabel = nullptr;
     context->urlInput = nullptr;

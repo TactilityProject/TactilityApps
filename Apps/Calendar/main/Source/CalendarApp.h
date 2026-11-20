@@ -16,6 +16,11 @@ struct CalendarEvent {
     char summary[112] {};
 };
 
+enum class CalendarPage {
+    Agenda,
+    Month,
+};
+
 struct CalendarContext {
     static constexpr size_t MAX_EVENTS = 24;
 
@@ -34,7 +39,20 @@ struct CalendarContext {
     size_t eventCount = 0;
 
     bool settingsVisible = false;
+    bool dayAgendaVisible = false;
+    CalendarPage page = CalendarPage::Agenda;
+    int selectedYear = 0;
+    int selectedMonth = 0;
+    int selectedDay = 0;
+    int displayYear = 0;
+    int displayMonth = 0;
     lv_obj_t* agendaPanel = nullptr;
+    lv_obj_t* monthPanel = nullptr;
+    lv_obj_t* monthTitle = nullptr;
+    lv_obj_t* monthGrid = nullptr;
+    lv_obj_t* selectedDayPanel = nullptr;
+    lv_obj_t* selectedDayTitle = nullptr;
+    lv_obj_t* selectedDayEvents = nullptr;
     lv_obj_t* settingsPanel = nullptr;
     lv_obj_t* statusLabel = nullptr;
     lv_obj_t* urlInput = nullptr;
