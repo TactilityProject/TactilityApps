@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,14 +25,18 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 namespace {
 
 constexpr const char* APP_ID = "tactility.calendar";
 constexpr const char* SETTINGS_FILE = "settings.properties";
+constexpr const char* CACHE_FILE = "calendar.cache";
+constexpr const char* CACHE_TEMP_FILE = "calendar.cache.tmp";
+constexpr char CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V1\n";
 constexpr uint32_t REQUEST_SAVE = 1U;
 constexpr uint32_t REQUEST_SYNC = 2U;
-constexpr size_t MAX_RESPONSE_BYTES = 48 * 1024;
+constexpr size_t MAX_RESPONSE_BYTES = 512 * 1024;
 constexpr int HTTP_TIMEOUT_MS = 20000;
 
 struct HttpResponse {
@@ -39,8 +44,12 @@ struct HttpResponse {
     bool tooLarge = false;
 };
 
+bool getAppFilePath(const char* filename, char* path, size_t size) {
+    return app_paths_get_user_data_path(APP_ID, filename, path, size) == ERROR_NONE;
+}
+
 bool getSettingsPath(char* path, size_t size) {
-    return app_paths_get_user_data_path(APP_ID, SETTINGS_FILE, path, size) == ERROR_NONE;
+    return getAppFilePath(SETTINGS_FILE, path, size);
 }
 
 void copyText(char* target, size_t size, const char* source) {
@@ -219,16 +228,17 @@ void refreshEventList(CalendarContext* context) {
         lv_obj_delete(lv_obj_get_child(context->agendaPanel, static_cast<int32_t>(count - 1)));
     }
 
-    if (context->eventCount == 0) {
+    if (context->upcomingEvents.empty()) {
         lv_obj_t* empty = lv_label_create(context->agendaPanel);
-        lv_label_set_text(empty, "No upcoming events. Sync to check this calendar.");
+        lv_label_set_text(empty, context->events.empty()
+            ? "No cached events. Sync to download the calendar."
+            : "No events in the next 30 days.");
         lv_obj_set_width(empty, LV_PCT(100));
         lv_label_set_long_mode(empty, LV_LABEL_LONG_MODE_WRAP);
         return;
     }
 
-    for (size_t i = 0; i < context->eventCount; ++i) {
-        const CalendarEvent& event = context->events[i];
+    for (const CalendarEvent& event : context->upcomingEvents) {
         lv_obj_t* card = lv_button_create(context->agendaPanel);
         lv_obj_set_width(card, LV_PCT(100));
         lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -342,7 +352,7 @@ void refreshMonth(CalendarContext* context) {
         formatDateKey(dateText, sizeof(dateText),
             context->displayYear, context->displayMonth, dayNumber);
         bool hasEvent = false;
-        for (size_t i = 0; i < context->eventCount && !hasEvent; ++i) {
+        for (size_t i = 0; i < context->events.size() && !hasEvent; ++i) {
             hasEvent = strncmp(context->events[i].start, dateText, 10) == 0;
         }
         if (hasEvent) {
@@ -371,7 +381,7 @@ void refreshMonthAgenda(CalendarContext* context) {
 
     lv_obj_clean(context->selectedDayEvents);
     size_t shownCount = 0;
-    for (size_t i = 0; i < context->eventCount; ++i) {
+    for (size_t i = 0; i < context->events.size(); ++i) {
         if (strncmp(context->events[i].start, dateText, 10) == 0) {
             ++shownCount;
         }
@@ -384,7 +394,7 @@ void refreshMonthAgenda(CalendarContext* context) {
         return;
     }
 
-    for (size_t i = 0; i < context->eventCount; ++i) {
+    for (size_t i = 0; i < context->events.size(); ++i) {
         const CalendarEvent& event = context->events[i];
         if (strncmp(event.start, dateText, 10) != 0) continue;
 
@@ -444,11 +454,11 @@ void setStatus(CalendarContext* context, const char* status) {
     lvgl_unlock();
 }
 
-void updateAgenda(CalendarContext* context, const std::array<CalendarEvent, CalendarContext::MAX_EVENTS>& events,
-                  size_t count) {
+void updateAgenda(CalendarContext* context, std::vector<CalendarEvent>&& events,
+                  std::vector<CalendarEvent>&& upcomingEvents) {
     lvgl_lock();
-    context->events = events;
-    context->eventCount = count;
+    context->events = std::move(events);
+    context->upcomingEvents = std::move(upcomingEvents);
     refreshEventList(context);
     refreshMonth(context);
     refreshMonthAgenda(context);
@@ -581,7 +591,7 @@ void formatStart(const std::string& value, const std::string& parameters, char* 
 }
 
 void parseVEvents(const std::string& calendarData,
-                  std::array<CalendarEvent, CalendarContext::MAX_EVENTS>& events, size_t& count) {
+                  std::vector<CalendarEvent>& events) {
     std::string unfolded;
     unfolded.reserve(calendarData.size());
     for (size_t i = 0; i < calendarData.size(); ++i) {
@@ -599,6 +609,7 @@ void parseVEvents(const std::string& calendarData,
     bool inEvent = false;
     size_t componentDepth = 0;
     bool cancelled = false;
+    std::string uid;
     std::string start;
     std::string startParameters;
     std::string summary;
@@ -613,6 +624,7 @@ void parseVEvents(const std::string& calendarData,
             inEvent = true;
             componentDepth = 1;
             cancelled = false;
+            uid.clear();
             start.clear();
             startParameters.clear();
             summary.clear();
@@ -621,22 +633,11 @@ void parseVEvents(const std::string& calendarData,
         } else if (inEvent && equalsIgnoreCase(line, "END:VEVENT") && componentDepth == 1) {
             if (!cancelled && !start.empty()) {
                 CalendarEvent event {};
+                copyText(event.uid, sizeof(event.uid), uid.c_str());
                 formatStart(start, startParameters, event.start, sizeof(event.start));
                 const std::string displaySummary = summary.empty() ? "Untitled event" : unescapeIcs(summary);
                 copyText(event.summary, sizeof(event.summary), displaySummary.c_str());
-                size_t insertion = count;
-                while (insertion > 0 && strcmp(event.start, events[insertion - 1].start) < 0) {
-                    if (insertion < events.size()) {
-                        events[insertion] = events[insertion - 1];
-                    }
-                    --insertion;
-                }
-                if (count < events.size()) {
-                    ++count;
-                    events[insertion] = event;
-                } else if (insertion < events.size()) {
-                    events[insertion] = event;
-                }
+                events.push_back(event);
             }
             inEvent = false;
             componentDepth = 0;
@@ -656,6 +657,8 @@ void parseVEvents(const std::string& calendarData,
             if (equalsIgnoreCase(property, "DTSTART")) {
                 start = value;
                 startParameters = parameters;
+            } else if (equalsIgnoreCase(property, "UID")) {
+                uid = value;
             } else if (equalsIgnoreCase(property, "SUMMARY")) {
                 summary = value;
             } else if (equalsIgnoreCase(property, "STATUS") && equalsIgnoreCase(value, "CANCELLED")) {
@@ -667,7 +670,7 @@ void parseVEvents(const std::string& calendarData,
 }
 
 bool parseCalendarResponse(const std::string& xml,
-                           std::array<CalendarEvent, CalendarContext::MAX_EVENTS>& events, size_t& count) {
+                           std::vector<CalendarEvent>& events) {
     size_t position = 0;
     bool foundData = false;
     while ((position = xml.find('<', position)) != std::string::npos) {
@@ -714,7 +717,7 @@ bool parseCalendarResponse(const std::string& xml,
         const std::string closeTag = "</" + tagName + ">";
         const size_t closeStart = xml.find(closeTag, openEnd + 1);
         if (closeStart == std::string::npos) return false;
-        parseVEvents(decodeXml(xml.substr(openEnd + 1, closeStart - openEnd - 1)), events, count);
+        parseVEvents(decodeXml(xml.substr(openEnd + 1, closeStart - openEnd - 1)), events);
         position = closeStart + closeTag.size();
     }
     return foundData || xml.find("multistatus") != std::string::npos;
@@ -733,7 +736,21 @@ esp_err_t onHttpEvent(esp_http_client_event_t* event) {
     return ESP_OK;
 }
 
-bool makeReport(char* report, size_t size, char* error, size_t errorSize) {
+bool makeFullCalendarReport(char* report, size_t size, char* error, size_t errorSize) {
+    const int written = snprintf(report, size,
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+        "<c:calendar-query xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
+        "<d:prop><d:getetag/><c:calendar-data/></d:prop>"
+        "<c:filter><c:comp-filter name=\"VCALENDAR\"><c:comp-filter name=\"VEVENT\"/>"
+        "</c:comp-filter></c:filter></c:calendar-query>");
+    if (written < 0 || static_cast<size_t>(written) >= size) {
+        copyText(error, errorSize, "Could not create the full-calendar CalDAV request.");
+        return false;
+    }
+    return true;
+}
+
+bool makeUpcomingReport(char* report, size_t size, char* error, size_t errorSize) {
     const time_t now = time(nullptr);
     if (now < 1735689600) {
         copyText(error, errorSize, "Set the device clock before syncing.");
@@ -770,18 +787,8 @@ bool makeReport(char* report, size_t size, char* error, size_t errorSize) {
     return true;
 }
 
-bool syncCalendar(const SettingsSnapshot& settings, char* message, size_t messageSize,
-                  std::array<CalendarEvent, CalendarContext::MAX_EVENTS>& events, size_t& count) {
-    if (strncmp(settings.calendarUrl, "https://", 8) != 0 ||
-        strpbrk(settings.calendarUrl, "\r\n ") != nullptr) {
-        copyText(message, messageSize, "Enter a valid HTTPS calendar collection URL in Settings.");
-        return false;
-    }
-
-    char report[768] {};
-    if (!makeReport(report, sizeof(report), message, messageSize)) return false;
-
-    HttpResponse response;
+bool performReport(const SettingsSnapshot& settings, const char* report,
+                   HttpResponse& response, char* message, size_t messageSize) {
     response.body.reserve(4096);
     esp_http_client_config_t config {};
     config.url = settings.calendarUrl;
@@ -815,7 +822,7 @@ bool syncCalendar(const SettingsSnapshot& settings, char* message, size_t messag
     esp_http_client_cleanup(client);
 
     if (response.tooLarge) {
-        copyText(message, messageSize, "Calendar response is too large (48 KB limit).");
+        copyText(message, messageSize, "Calendar response exceeds the 512 KB limit.");
         return false;
     }
     if (result != ESP_OK) {
@@ -830,17 +837,66 @@ bool syncCalendar(const SettingsSnapshot& settings, char* message, size_t messag
         }
         return false;
     }
-    if (!parseCalendarResponse(response.body, events, count)) {
-        copyText(message, messageSize, "The server response did not contain CalDAV calendar data.");
+    return true;
+}
+
+bool syncCalendar(const SettingsSnapshot& settings, char* message, size_t messageSize,
+                  std::vector<CalendarEvent>& events,
+                  std::vector<CalendarEvent>& upcomingEvents) {
+    if (strncmp(settings.calendarUrl, "https://", 8) != 0 ||
+        strpbrk(settings.calendarUrl, "\r\n ") != nullptr) {
+        copyText(message, messageSize, "Enter a valid HTTPS calendar collection URL in Settings.");
         return false;
     }
-    if (count == events.size()) {
-        snprintf(message, messageSize, "Showing the first %u upcoming events; more may be available.",
-            static_cast<unsigned>(count));
-    } else {
-        snprintf(message, messageSize, "Synced %u upcoming event%s.",
-            static_cast<unsigned>(count), count == 1 ? "" : "s");
+
+    char fullReport[768] {};
+    char upcomingReport[768] {};
+    if (!makeFullCalendarReport(fullReport, sizeof(fullReport), message, messageSize) ||
+        !makeUpcomingReport(upcomingReport, sizeof(upcomingReport), message, messageSize)) {
+        return false;
     }
+
+    HttpResponse response;
+    if (!performReport(settings, fullReport, response, message, messageSize)) return false;
+
+    std::vector<CalendarEvent> allEvents;
+    if (!parseCalendarResponse(response.body, allEvents)) {
+        copyText(message, messageSize, "The full-calendar response did not contain CalDAV data.");
+        return false;
+    }
+    std::string().swap(response.body);
+
+    if (!performReport(settings, upcomingReport, response, message, messageSize)) return false;
+
+    std::vector<CalendarEvent> expandedEvents;
+    if (!parseCalendarResponse(response.body, expandedEvents)) {
+        copyText(message, messageSize, "The upcoming-events response did not contain CalDAV data.");
+        return false;
+    }
+    const auto eventLess = [](const CalendarEvent& left, const CalendarEvent& right) {
+        const int startCompare = strcmp(left.start, right.start);
+        if (startCompare != 0) return startCompare < 0;
+        const int uidCompare = strcmp(left.uid, right.uid);
+        return uidCompare == 0 ? strcmp(left.summary, right.summary) < 0 : uidCompare < 0;
+    };
+    const auto sameEvent = [](const CalendarEvent& left, const CalendarEvent& right) {
+        if (strcmp(left.start, right.start) != 0) return false;
+        if (left.uid[0] != '\0' && right.uid[0] != '\0') {
+            return strcmp(left.uid, right.uid) == 0;
+        }
+        return left.uid[0] == '\0' && right.uid[0] == '\0' &&
+            strcmp(left.summary, right.summary) == 0;
+    };
+    std::sort(expandedEvents.begin(), expandedEvents.end(), eventLess);
+    expandedEvents.erase(std::unique(expandedEvents.begin(), expandedEvents.end(), sameEvent),
+                         expandedEvents.end());
+    allEvents.insert(allEvents.end(), expandedEvents.begin(), expandedEvents.end());
+    std::sort(allEvents.begin(), allEvents.end(), eventLess);
+    allEvents.erase(std::unique(allEvents.begin(), allEvents.end(), sameEvent), allEvents.end());
+
+    events = std::move(allEvents);
+    upcomingEvents = std::move(expandedEvents);
+    snprintf(message, messageSize, "Downloaded %zu calendar events.", events.size());
     return true;
 }
 
@@ -861,6 +917,141 @@ void saveSettings(CalendarContext* context) {
     preferences_put_string(preferences, "password", settings.password);
     preferences_close(preferences);
     setStatus(context, "Calendar settings saved.");
+}
+
+bool writeCacheField(FILE* file, const char* value) {
+    const size_t length = strlen(value);
+    return fprintf(file, "%zu\n", length) >= 0 &&
+        fwrite(value, 1, length, file) == length &&
+        fputc('\n', file) != EOF;
+}
+
+bool readCacheField(FILE* file, char* output, size_t outputSize) {
+    char lengthLine[16] {};
+    if (fgets(lengthLine, sizeof(lengthLine), file) == nullptr) return false;
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long length = strtoul(lengthLine, &end, 10);
+    if (errno != 0 || end == lengthLine || (*end != '\n' && *end != '\0') ||
+        length >= outputSize) {
+        return false;
+    }
+    if (fread(output, 1, length, file) != length || fgetc(file) != '\n') return false;
+    output[length] = '\0';
+    return true;
+}
+
+bool writeCacheSize(FILE* file, size_t value) {
+    return fprintf(file, "%zu\n", value) >= 0;
+}
+
+bool readCacheSize(FILE* file, size_t& output) {
+    char lengthLine[24] {};
+    if (fgets(lengthLine, sizeof(lengthLine), file) == nullptr) return false;
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long value = strtoul(lengthLine, &end, 10);
+    if (errno != 0 || end == lengthLine || (*end != '\n' && *end != '\0')) return false;
+    output = static_cast<size_t>(value);
+    return true;
+}
+
+bool writeCacheEvents(FILE* file, const std::vector<CalendarEvent>& events) {
+    if (!writeCacheSize(file, events.size())) return false;
+    for (const CalendarEvent& event : events) {
+        if (!writeCacheField(file, event.uid) || !writeCacheField(file, event.start) ||
+            !writeCacheField(file, event.summary)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events) {
+    size_t count = 0;
+    if (!readCacheSize(file, count)) return false;
+    for (size_t i = 0; i < count; ++i) {
+        CalendarEvent event {};
+        if (!readCacheField(file, event.uid, sizeof(event.uid)) ||
+            !readCacheField(file, event.start, sizeof(event.start)) ||
+            !readCacheField(file, event.summary, sizeof(event.summary))) {
+            return false;
+        }
+        events.push_back(event);
+    }
+    return true;
+}
+
+bool saveCalendarCache(const SettingsSnapshot& settings, const std::vector<CalendarEvent>& events,
+                       const std::vector<CalendarEvent>& upcomingEvents) {
+    char path[256] {};
+    char tempPath[256] {};
+    if (!getAppFilePath(CACHE_FILE, path, sizeof(path)) ||
+        !getAppFilePath(CACHE_TEMP_FILE, tempPath, sizeof(tempPath))) {
+        return false;
+    }
+
+    FILE* file = fopen(tempPath, "wb");
+    if (file == nullptr) return false;
+
+    bool success = fwrite(CACHE_MAGIC, 1, strlen(CACHE_MAGIC), file) == strlen(CACHE_MAGIC) &&
+        writeCacheField(file, settings.calendarUrl) &&
+        writeCacheField(file, settings.username) &&
+        writeCacheEvents(file, events) &&
+        writeCacheEvents(file, upcomingEvents);
+    if (fflush(file) != 0) success = false;
+    if (fclose(file) != 0) success = false;
+    if (!success) {
+        remove(tempPath);
+        return false;
+    }
+
+    if (remove(path) != 0 && errno != ENOENT) {
+        remove(tempPath);
+        return false;
+    }
+    if (rename(tempPath, path) != 0) {
+        remove(tempPath);
+        return false;
+    }
+    return true;
+}
+
+bool loadCalendarCache(const SettingsSnapshot& settings, std::vector<CalendarEvent>& events,
+                       std::vector<CalendarEvent>& upcomingEvents,
+                       bool& found, bool& matchesSettings) {
+    found = false;
+    matchesSettings = false;
+    char path[256] {};
+    if (!getAppFilePath(CACHE_FILE, path, sizeof(path))) return false;
+
+    FILE* file = fopen(path, "rb");
+    if (file == nullptr) return errno == ENOENT;
+    found = true;
+
+    char header[sizeof(CACHE_MAGIC)] {};
+    const bool validHeader = fgets(header, sizeof(header), file) != nullptr &&
+        strcmp(header, CACHE_MAGIC) == 0;
+    char cachedUrl[sizeof(CalendarContext::calendarUrl)] {};
+    char cachedUsername[sizeof(CalendarContext::username)] {};
+    if (!validHeader || !readCacheField(file, cachedUrl, sizeof(cachedUrl)) ||
+        !readCacheField(file, cachedUsername, sizeof(cachedUsername))) {
+        fclose(file);
+        return false;
+    }
+    matchesSettings = strcmp(cachedUrl, settings.calendarUrl) == 0 &&
+        strcmp(cachedUsername, settings.username) == 0;
+    if (!matchesSettings) {
+        fclose(file);
+        return true;
+    }
+
+    const bool validData = readCacheEvents(file, events) &&
+        readCacheEvents(file, upcomingEvents) && fgetc(file) == EOF && !ferror(file);
+    fclose(file);
+    return validData;
 }
 
 } // namespace
@@ -887,8 +1078,28 @@ void calendarLoadSettings(CalendarContext* context) {
         return;
     }
     if (context->calendarUrl[0] != '\0') {
-        copyText(context->status, sizeof(context->status), "Ready to sync. Events are shown for the next 30 days.");
+        copyText(context->status, sizeof(context->status), "Ready to sync the full calendar.");
     }
+}
+
+void calendarLoadCachedEvents(CalendarContext* context) {
+    const SettingsSnapshot settings = getSettingsSnapshot(context);
+    if (settings.calendarUrl[0] == '\0') return;
+
+    std::vector<CalendarEvent> events;
+    std::vector<CalendarEvent> upcomingEvents;
+    bool found = false;
+    bool matchesSettings = false;
+    if (!loadCalendarCache(settings, events, upcomingEvents, found, matchesSettings)) {
+        copyText(context->status, sizeof(context->status), "Saved calendar cache is invalid; sync to refresh.");
+        return;
+    }
+    if (!found || !matchesSettings) return;
+
+    context->events = std::move(events);
+    context->upcomingEvents = std::move(upcomingEvents);
+    snprintf(context->status, sizeof(context->status),
+        "Loaded %zu cached events. Sync to update.", context->events.size());
 }
 
 void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
@@ -1042,11 +1253,16 @@ void calendarProcessRequests(CalendarContext* context) {
     if ((requests & REQUEST_SYNC) != 0) {
         setStatus(context, "Syncing CalDAV calendar...");
         const SettingsSnapshot settings = getSettingsSnapshot(context);
-        auto events = std::make_unique<std::array<CalendarEvent, CalendarContext::MAX_EVENTS>>();
-        size_t count = 0;
+        std::vector<CalendarEvent> events;
+        std::vector<CalendarEvent> upcomingEvents;
         char message[sizeof(context->status)] {};
-        if (syncCalendar(settings, message, sizeof(message), *events, count)) {
-            updateAgenda(context, *events, count);
+        if (syncCalendar(settings, message, sizeof(message), events, upcomingEvents)) {
+            const bool cached = saveCalendarCache(settings, events, upcomingEvents);
+            updateAgenda(context, std::move(events), std::move(upcomingEvents));
+            if (!cached) {
+                copyText(message, sizeof(message),
+                    "Calendar downloaded, but its local cache could not be saved.");
+            }
         }
         setStatus(context, message);
     }
