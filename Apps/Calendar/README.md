@@ -10,7 +10,7 @@ Read-only CalDAV calendar viewer for Tactility.
 - Lets you configure a calendar collection URL, username and password
 - Stores account settings using Tactility preferences
 - Provides Sync as the page bar's main action
-- Provides a selectable month page, a full-screen agenda for the selected day, and a separate agenda page for the next 30 days
+- Provides a navigable month page, a full-screen agenda for the selected day, and a separate agenda page for the next 30 days
 
 ## Setup
 

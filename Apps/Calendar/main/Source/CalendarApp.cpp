@@ -202,6 +202,13 @@ void createButton(lv_obj_t* parent, const char* text, lv_event_cb_t callback, Ca
     lv_label_set_text(label, text);
 }
 
+void makeArrowButtonCircular(lv_obj_t* button, lv_obj_t* label) {
+    lv_obj_update_layout(button);
+    const lv_coord_t diameter = std::max(lv_obj_get_width(button), lv_obj_get_height(button));
+    lv_obj_set_size(button, diameter, diameter);
+    lv_obj_center(label);
+}
+
 bool formatDateKey(char* output, size_t size, int year, int month, int day) {
     if (size < 11 || year < 1000 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) {
         if (size > 0) output[0] = '\0';
@@ -443,6 +450,41 @@ void onBackToMonth(lv_event_t* event) {
     context->dayAgendaVisible = false;
     lv_obj_set_hidden(context->selectedDayPanel, true);
     lv_obj_set_hidden(context->monthPanel, false);
+}
+
+void changeDisplayedMonth(CalendarContext* context, int offset) {
+    tm targetMonth {};
+    targetMonth.tm_year = context->displayYear - 1900;
+    targetMonth.tm_mon = context->displayMonth - 1 + offset;
+    targetMonth.tm_mday = 1;
+    targetMonth.tm_hour = 12;
+    targetMonth.tm_isdst = -1;
+    mktime(&targetMonth);
+
+    const int year = targetMonth.tm_year + 1900;
+    if (year < 1000 || year > 9999) return;
+
+    tm lastDay = targetMonth;
+    lastDay.tm_mon += 1;
+    lastDay.tm_mday = 0;
+    mktime(&lastDay);
+
+    context->displayYear = year;
+    context->displayMonth = targetMonth.tm_mon + 1;
+    context->selectedYear = context->displayYear;
+    context->selectedMonth = context->displayMonth;
+    context->selectedDay = std::max(1, std::min(context->selectedDay, lastDay.tm_mday));
+    refreshMonth(context);
+}
+
+void onPreviousMonth(lv_event_t* event) {
+    auto* context = static_cast<CalendarContext*>(lv_event_get_user_data(event));
+    changeDisplayedMonth(context, -1);
+}
+
+void onNextMonth(lv_event_t* event) {
+    auto* context = static_cast<CalendarContext*>(lv_event_get_user_data(event));
+    changeDisplayedMonth(context, 1);
 }
 
 void setStatus(CalendarContext* context, const char* status) {
@@ -1138,10 +1180,54 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_pad_gap(context->monthPanel, 4, LV_PART_MAIN);
     lv_obj_set_style_border_width(context->monthPanel, 0, LV_PART_MAIN);
 
-    context->monthTitle = lv_label_create(context->monthPanel);
-    lv_obj_set_width(context->monthTitle, LV_PCT(100));
+    lv_obj_t* monthNavigation = lv_obj_create(context->monthPanel);
+    lv_obj_set_width(monthNavigation, LV_PCT(100));
+    lv_obj_set_height(monthNavigation, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(monthNavigation, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(monthNavigation, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(monthNavigation, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(monthNavigation, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(monthNavigation, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(monthNavigation, LV_OPA_TRANSP, LV_PART_MAIN);
+
+    lv_obj_t* previousSlot = lv_obj_create(monthNavigation);
+    lv_obj_set_size(previousSlot, LV_PCT(25), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(previousSlot, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(previousSlot, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(previousSlot, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(previousSlot, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(previousSlot, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_scrollable(previousSlot, false);
+
+    lv_obj_t* previousMonth = lv_button_create(previousSlot);
+    lv_obj_set_size(previousMonth, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(previousMonth, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_add_event_cb(previousMonth, onPreviousMonth, LV_EVENT_CLICKED, context);
+    lv_obj_t* previousLabel = lv_label_create(previousMonth);
+    lv_label_set_text(previousLabel, "<");
+    makeArrowButtonCircular(previousMonth, previousLabel);
+
+    context->monthTitle = lv_label_create(monthNavigation);
+    lv_obj_set_width(context->monthTitle, LV_PCT(50));
     lv_obj_set_style_text_align(context->monthTitle, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_style_text_font(context->monthTitle, lvgl_get_text_font(FONT_SIZE_LARGE), LV_PART_MAIN);
+
+    lv_obj_t* nextSlot = lv_obj_create(monthNavigation);
+    lv_obj_set_size(nextSlot, LV_PCT(25), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(nextSlot, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(nextSlot, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(nextSlot, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(nextSlot, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(nextSlot, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_scrollable(nextSlot, false);
+
+    lv_obj_t* nextMonth = lv_button_create(nextSlot);
+    lv_obj_set_size(nextMonth, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(nextMonth, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_add_event_cb(nextMonth, onNextMonth, LV_EVENT_CLICKED, context);
+    lv_obj_t* nextLabel = lv_label_create(nextMonth);
+    lv_label_set_text(nextLabel, ">");
+    makeArrowButtonCircular(nextMonth, nextLabel);
 
     context->monthGrid = lv_obj_create(context->monthPanel);
     lv_obj_set_width(context->monthGrid, LV_PCT(100));
