@@ -69,7 +69,7 @@ inline error_t attachToLvgl(struct Device* device) {
             format == DISPLAY_COLOR_FORMAT_BGR565_SWAPPED ||
             format == DISPLAY_COLOR_FORMAT_BGR565,
         .force_full_frame = display_has_capability(device, DISPLAY_CAPABILITY_REQUIRES_FULL_FRAME),
-        .prefer_external_ram = display_has_capability(device, DISPLAY_CAPABILITY_PREFER_EXTERNAL_RAM),
+        .prefer_external_ram = display_has_capability(device, DISPLAY_CAPABILITY_REQUIRES_FULL_FRAME),
     };
 
     lvgl_lock();

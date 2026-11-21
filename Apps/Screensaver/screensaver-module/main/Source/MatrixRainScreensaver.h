@@ -15,8 +15,8 @@ public:
     MatrixRainScreensaver(MatrixRainScreensaver&&) = delete;
     MatrixRainScreensaver& operator=(MatrixRainScreensaver&&) = delete;
 
-    static constexpr int CHAR_WIDTH = 12;
-    static constexpr int CHAR_HEIGHT = 16;
+    static constexpr int GLYPH_WIDTH = 12;
+    static constexpr int GLYPH_HEIGHT = 16;
     static constexpr int MIN_TRAIL_LENGTH = 8;
     static constexpr int MAX_TRAIL_LENGTH = 20;
     static constexpr int MAX_ACTIVE_DROPS = 16;

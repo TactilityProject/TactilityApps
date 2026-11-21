@@ -173,7 +173,7 @@ void MatrixRainScreensaver::resetRaindrop(Raindrop& drop) {
 }
 
 void MatrixRainScreensaver::updateRaindropDisplay(Raindrop& drop) {
-    int xPos = drop.column * CHAR_WIDTH;
+    int xPos = drop.column * GLYPH_WIDTH;
 
     for (int i = 0; i < drop.trailLength; i++) {
         auto& rc = drop.chars[i];
@@ -181,7 +181,7 @@ void MatrixRainScreensaver::updateRaindropDisplay(Raindrop& drop) {
             continue;
         }
         int row = drop.headRow - i;
-        int yPos = row * CHAR_HEIGHT;
+        int yPos = row * GLYPH_HEIGHT;
 
         // Only show characters that are on screen (grid-snapped positions)
         if (row >= 0 && row < numRows_) {
@@ -230,8 +230,8 @@ void MatrixRainScreensaver::start(lv_obj_t* overlay, lv_coord_t screenW, lv_coor
     screenH_ = screenH;
     globalFlickerCounter_ = 0;
 
-    numColumns_ = screenW / CHAR_WIDTH;
-    numRows_ = screenH / CHAR_HEIGHT;
+    numColumns_ = screenW / GLYPH_WIDTH;
+    numRows_ = screenH / GLYPH_HEIGHT;
 
     availableColumns_.clear();
     for (int i = 0; i < numColumns_; i++) {
