@@ -181,12 +181,14 @@ bool Target::setupFlip() {
 bool Target::setupFullFrame(bool required) {
     const std::size_t stride = pixel_buffer_row_stride_bytes(info_.format, info_.width);
     const std::size_t frame_bytes = stride * static_cast<std::size_t>(info_.height);
-    const bool display_copies = display_has_capability(display_, DISPLAY_CAPABILITY_PREFER_EXTERNAL_RAM);
+
+    // Displays that require full frames get external RAM, the others need DMA-capable memory
+    const bool external_ram = display_has_capability(display_, DISPLAY_CAPABILITY_REQUIRES_FULL_FRAME);
 
 #ifdef ESP_PLATFORM
     if (!required) {
         // malloc-cap failures are the real test, but this keeps a frame from eating the whole heap
-        const uint32_t caps = display_copies ? MALLOC_CAP_DEFAULT : MALLOC_CAP_DMA;
+        const uint32_t caps = external_ram ? MALLOC_CAP_DEFAULT : MALLOC_CAP_DMA;
         if (frame_bytes * FULL_FRAME_HEADROOM > heap_caps_get_largest_free_block(caps)) {
             return false;
         }
@@ -196,8 +198,7 @@ bool Target::setupFullFrame(bool required) {
     (void)frame_bytes;
 #endif
 
-    // DMA-capable unless the driver copies out of the buffer, since panel drivers read it directly
-    const MemoryPolicy policy = display_copies
+    const MemoryPolicy policy = external_ram
         ? MemoryPolicy { 0, MEMORY_CAPABILITY_EXTERNAL, 64 }
         : MemoryPolicy { MEMORY_CAPABILITY_DMA, MEMORY_CAPABILITY_EXTERNAL, 64 };
 

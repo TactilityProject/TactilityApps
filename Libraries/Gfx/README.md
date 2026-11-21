@@ -297,8 +297,8 @@ Primitives mark their own dirty regions. If you write through a raw pointer, cal
 
 - Banded mode uses a 32 KB budget by default and keeps bands in internal DMA-capable memory,
   because SPI panel drivers DMA straight from the buffer and ESP32-class chips can't DMA from PSRAM.
-- Full-frame mode requires the frame to fit with 2x headroom, and requires DMA-capable memory
-  unless the display reports `PREFER_EXTERNAL_RAM` (meaning its driver copies the data).
+- Full-frame mode requires the frame to fit with 2x headroom, and requires DMA-capable memory,
+  unless the display requires full frames, which then use external RAM.
 
 ## Presenting
 
