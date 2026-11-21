@@ -23,6 +23,7 @@ extern "C" int main(int argc, char* argv[]) {
     check(task_event_group_claim_bit(&eventGroup, &context->requestBit) == ERROR_NONE);
 
     calendarLoadSettings(context.get());
+    calendarLoadCachedEvents(context.get());
     context->window = window_manager_create_ext(
         context->appInstanceId,
         calendarCreateWidgets,
