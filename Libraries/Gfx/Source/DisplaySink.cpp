@@ -65,9 +65,9 @@ bool DisplaySink::frame_buffer_policy(MemoryPolicy& out) const {
     if (display_ == nullptr) {
         return false;
     }
-    // If the driver copies out of the buffer, external RAM is fine. Otherwise the driver may DMA
-    // straight from it, which PSRAM can't do on ESP32-class chips.
-    if (display_has_capability(display_, DISPLAY_CAPABILITY_PREFER_EXTERNAL_RAM)) {
+    // A display that requires full frames has a large buffer, which goes in external RAM.
+    // Other drivers may DMA straight from the buffer, which PSRAM can't do on ESP32-class chips.
+    if (display_has_capability(display_, DISPLAY_CAPABILITY_REQUIRES_FULL_FRAME)) {
         return false;
     }
     out = MemoryPolicy { MEMORY_CAPABILITY_DMA, MEMORY_CAPABILITY_EXTERNAL, 64 };

@@ -1,0 +1,3 @@
+[submodule "TactilityAppPublisher"]
+	path = TactilityAppPublisher
+	url = https://github.com/TactilityProject/TactilityAppPublisher.git
