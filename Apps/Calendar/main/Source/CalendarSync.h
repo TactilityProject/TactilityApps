@@ -8,6 +8,7 @@ struct CalendarSyncSettings {
     char calendarUrl[256] {};
     char username[96] {};
     char password[96] {};
+    char cacheIdentity[17] {};
 };
 
 struct CalendarSyncResult {

@@ -5,6 +5,17 @@
 #include <string>
 #include <vector>
 
+struct CalendarTimeZoneTransition {
+    char start[16] {};
+    int32_t offsetFrom = 0;
+    int32_t offsetTo = 0;
+    int8_t recurrenceMonth = 0;
+    int8_t recurrenceMonthDay = 0;
+    int8_t recurrenceWeekday = -1;
+    int8_t recurrenceOrdinal = 0;
+    bool repeatsYearly = false;
+};
+
 struct CalendarEvent {
     char uid[256] {};
     char occurrenceId[40] {};
@@ -14,10 +25,16 @@ struct CalendarEvent {
     char summary[112] {};
     char recurrenceRule[192] {};
     char recurrenceLocalId[20] {};
+    char recurrenceTimeZone[96] {};
     char excludedDates[128] {};
+    CalendarTimeZoneTransition timeZoneTransitions[4] {};
+    uint8_t timeZoneTransitionCount = 0;
     bool recurrenceOverride = false;
+    bool recurrenceThisAndFuture = false;
     bool cancelled = false;
     bool recurrenceUnsupported = false;
+    bool excludedDatesIncomplete = false;
+    bool timeZoneTransitionsIncomplete = false;
 };
 
 bool calendarFormatDateKey(char* output, std::size_t size, int year, int month, int day);

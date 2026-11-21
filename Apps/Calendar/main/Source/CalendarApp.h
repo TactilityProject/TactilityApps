@@ -29,6 +29,7 @@ struct CalendarContext {
     char calendarUrl[256] {};
     char username[96] {};
     char password[96] {};
+    char cacheIdentity[17] {};
     char status[96] = "Configure a CalDAV calendar to get started.";
     std::vector<CalendarEvent> events;
     std::vector<CalendarEvent> upcomingEvents;
@@ -57,6 +58,8 @@ struct CalendarContext {
     lv_obj_t* settingsPanel = nullptr;
     lv_obj_t* statusLabel = nullptr;
     lv_timer_t* statusTimer = nullptr;
+    lv_timer_t* agendaCoverageTimer = nullptr;
+    bool agendaCoverageExpired = false;
     lv_obj_t* urlInput = nullptr;
     lv_obj_t* usernameInput = nullptr;
     lv_obj_t* passwordInput = nullptr;

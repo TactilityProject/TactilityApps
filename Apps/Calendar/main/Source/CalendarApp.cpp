@@ -10,6 +10,7 @@
 #include <lvgl_window_manager/system_bars.h>
 #include <tactility/error.h>
 #include <tactility/preferences.h>
+#include <esp_random.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -36,6 +37,12 @@ bool getSettingsPath(char* path, size_t size) {
 void copyText(char* target, size_t size, const char* source) {
     if (size == 0) return;
     snprintf(target, size, "%s", source == nullptr ? "" : source);
+}
+
+void createCacheIdentity(char* output, size_t size) {
+    snprintf(output, size, "%08x%08x",
+             static_cast<unsigned>(esp_random()),
+             static_cast<unsigned>(esp_random()));
 }
 
 void signalRequest(CalendarContext* context, uint32_t request) {
@@ -78,7 +85,10 @@ void copySettingsFromWidgets(CalendarContext* context) {
         copyText(context->calendarUrl, sizeof(context->calendarUrl), calendarUrl);
         copyText(context->username, sizeof(context->username), username);
         copyText(context->password, sizeof(context->password), password);
-        if (changed) context->settingsGeneration.fetch_add(1);
+        if (changed) {
+            createCacheIdentity(context->cacheIdentity, sizeof(context->cacheIdentity));
+            context->settingsGeneration.fetch_add(1);
+        }
     }
     if (changed) invalidateCalendarData(context);
 }
@@ -90,6 +100,7 @@ CalendarSyncSettings getCalendarSyncSettings(CalendarContext* context,
     copyText(settings.calendarUrl, sizeof(settings.calendarUrl), context->calendarUrl);
     copyText(settings.username, sizeof(settings.username), context->username);
     copyText(settings.password, sizeof(settings.password), context->password);
+    copyText(settings.cacheIdentity, sizeof(settings.cacheIdentity), context->cacheIdentity);
     if (generation != nullptr) *generation = context->settingsGeneration.load();
     return settings;
 }
@@ -226,9 +237,12 @@ void refreshEventList(CalendarContext* context) {
         lv_obj_delete(lv_obj_get_child(context->agendaPanel, static_cast<int32_t>(count - 1)));
     }
 
-    if (context->upcomingEventsGeneration != context->settingsGeneration.load() ||
-        !calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
-                                         context->upcomingWindowEnd)) {
+    const bool covered =
+        context->upcomingEventsGeneration == context->settingsGeneration.load() &&
+        calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
+                                        context->upcomingWindowEnd);
+    context->agendaCoverageExpired = !covered;
+    if (!covered) {
         lv_obj_t* unavailable = lv_label_create(context->agendaPanel);
         lv_label_set_text(unavailable,
             "Cached Agenda does not cover the current 30-day window. Sync to refresh.");
@@ -265,6 +279,21 @@ void refreshEventList(CalendarContext* context) {
         lv_label_set_text(summary, event.summary);
         lv_obj_set_width(summary, LV_PCT(100));
         lv_label_set_long_mode(summary, LV_LABEL_LONG_MODE_WRAP);
+    }
+}
+
+void onAgendaCoverageTimer(lv_timer_t* timer) {
+    auto* context = static_cast<CalendarContext*>(lv_timer_get_user_data(timer));
+    if (context->agendaPanel == nullptr || context->page != CalendarPage::Agenda ||
+        context->dayAgendaVisible || context->settingsVisible ||
+        context->agendaCoverageExpired) {
+        return;
+    }
+
+    if (context->upcomingEventsGeneration != context->settingsGeneration.load() ||
+        !calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
+                                         context->upcomingWindowEnd)) {
+        refreshEventList(context);
     }
 }
 
@@ -629,6 +658,7 @@ void saveSettings(CalendarContext* context) {
         setStatus(context, "Could not open app storage; settings were not saved.");
         return;
     }
+    preferences_put_string(preferences, "cacheIdentity", settings.cacheIdentity);
     preferences_put_string(preferences, "calendarUrl", settings.calendarUrl);
     preferences_put_string(preferences, "username", settings.username);
     preferences_put_string(preferences, "password", settings.password);
@@ -653,10 +683,18 @@ void calendarLoadSettings(CalendarContext* context) {
     const error_t urlResult = preferences_opt_string(preferences, "calendarUrl", context->calendarUrl, sizeof(context->calendarUrl));
     const error_t usernameResult = preferences_opt_string(preferences, "username", context->username, sizeof(context->username));
     const error_t passwordResult = preferences_opt_string(preferences, "password", context->password, sizeof(context->password));
+    const error_t identityResult = preferences_opt_string(preferences, "cacheIdentity",
+        context->cacheIdentity, sizeof(context->cacheIdentity));
+    if (identityResult == ERROR_NOT_FOUND ||
+        (identityResult == ERROR_NONE && context->cacheIdentity[0] == '\0')) {
+        createCacheIdentity(context->cacheIdentity, sizeof(context->cacheIdentity));
+        preferences_put_string(preferences, "cacheIdentity", context->cacheIdentity);
+    }
     preferences_close(preferences);
     if ((urlResult != ERROR_NONE && urlResult != ERROR_NOT_FOUND) ||
         (usernameResult != ERROR_NONE && usernameResult != ERROR_NOT_FOUND) ||
-        (passwordResult != ERROR_NONE && passwordResult != ERROR_NOT_FOUND)) {
+        (passwordResult != ERROR_NONE && passwordResult != ERROR_NOT_FOUND) ||
+        (identityResult != ERROR_NONE && identityResult != ERROR_NOT_FOUND)) {
         copyText(context->status, sizeof(context->status), "Calendar settings could not be loaded completely.");
         return;
     }
@@ -844,6 +882,10 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_scrollbar_mode(context->agendaPanel, LV_SCROLLBAR_MODE_AUTO);
 
     refreshEventList(context);
+    context->agendaCoverageTimer = lv_timer_create(onAgendaCoverageTimer, 60000, context);
+    if (context->agendaCoverageTimer == nullptr) {
+        setStatus(context, "Could not start the Agenda coverage timer.");
+    }
 
     context->settingsPanel = lv_obj_create(parent);
     lv_obj_set_width(context->settingsPanel, LV_PCT(100));
@@ -878,6 +920,11 @@ void calendarDestroyWidgets(void* userData) {
         lv_timer_delete(context->statusTimer);
         context->statusTimer = nullptr;
     }
+    if (context->agendaCoverageTimer != nullptr) {
+        lv_timer_delete(context->agendaCoverageTimer);
+        context->agendaCoverageTimer = nullptr;
+    }
+    context->agendaCoverageExpired = false;
     system_bars_set_main_action(nullptr, nullptr, nullptr);
     system_bars_set_page_button_callbacks(nullptr, nullptr, nullptr);
     system_bars_set_page_buttons_visible(false);

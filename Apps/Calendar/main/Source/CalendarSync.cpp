@@ -22,7 +22,8 @@ namespace {
 constexpr const char* APP_ID = "tactility.calendar";
 constexpr const char* CACHE_FILE = "calendar.cache";
 constexpr const char* CACHE_TEMP_FILE = "calendar.cache.tmp";
-constexpr char CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V5\n";
+constexpr char CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V6\n";
+constexpr char PREVIOUS_CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V5\n";
 constexpr char LEGACY_CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V4\n";
 constexpr size_t MAX_RESPONSE_BYTES = 512 * 1024;
 constexpr int HTTP_TIMEOUT_MS = 20000;
@@ -312,19 +313,61 @@ bool readCacheSize(FILE* file, size_t& output) {
     return true;
 }
 
+bool writeCacheInteger(FILE* file, int32_t value) {
+    return fprintf(file, "%ld\n", static_cast<long>(value)) >= 0;
+}
+
+bool readCacheInteger(FILE* file, int32_t& output) {
+    char line[24] {};
+    if (fgets(line, sizeof(line), file) == nullptr) return false;
+    errno = 0;
+    char* end = nullptr;
+    const long value = strtol(line, &end, 10);
+    if (errno != 0 || end == line || (*end != '\n' && *end != '\0') ||
+        value < INT32_MIN || value > INT32_MAX) {
+        return false;
+    }
+    output = static_cast<int32_t>(value);
+    return true;
+}
+
 bool writeCacheEvents(FILE* file, const std::vector<CalendarEvent>& events) {
     if (!writeCacheSize(file, events.size())) return false;
     for (const CalendarEvent& event : events) {
+        if (event.timeZoneTransitionCount >
+            sizeof(event.timeZoneTransitions) / sizeof(event.timeZoneTransitions[0])) {
+            return false;
+        }
         if (!writeCacheField(file, event.uid) || !writeCacheField(file, event.occurrenceId) ||
             !writeCacheField(file, event.startDate) ||
             !writeCacheField(file, event.endDateExclusive) || !writeCacheField(file, event.start) ||
             !writeCacheField(file, event.summary) ||
             !writeCacheField(file, event.recurrenceRule) ||
             !writeCacheField(file, event.recurrenceLocalId) ||
-            !writeCacheField(file, event.excludedDates) ||
+            !writeCacheField(file, event.recurrenceTimeZone) ||
+            !writeCacheSize(file, event.timeZoneTransitionCount)) {
+            return false;
+        }
+        for (uint8_t i = 0; i < event.timeZoneTransitionCount; ++i) {
+            const CalendarTimeZoneTransition& transition = event.timeZoneTransitions[i];
+            if (!writeCacheField(file, transition.start) ||
+                !writeCacheInteger(file, transition.offsetFrom) ||
+                !writeCacheInteger(file, transition.offsetTo) ||
+                !writeCacheInteger(file, transition.recurrenceMonth) ||
+                !writeCacheInteger(file, transition.recurrenceMonthDay) ||
+                !writeCacheInteger(file, transition.recurrenceWeekday) ||
+                !writeCacheInteger(file, transition.recurrenceOrdinal) ||
+                !writeCacheField(file, transition.repeatsYearly ? "1" : "0")) {
+                return false;
+            }
+        }
+        if (!writeCacheField(file, event.excludedDates) ||
             !writeCacheField(file, event.recurrenceOverride ? "1" : "0") ||
             !writeCacheField(file, event.cancelled ? "1" : "0") ||
-            !writeCacheField(file, event.recurrenceUnsupported ? "1" : "0")) {
+            !writeCacheField(file, event.recurrenceUnsupported ? "1" : "0") ||
+            !writeCacheField(file, event.recurrenceThisAndFuture ? "1" : "0") ||
+            !writeCacheField(file, event.excludedDatesIncomplete ? "1" : "0") ||
+            !writeCacheField(file, event.timeZoneTransitionsIncomplete ? "1" : "0")) {
             return false;
         }
     }
@@ -344,9 +387,49 @@ bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events) {
             !readCacheField(file, event.summary, sizeof(event.summary)) ||
             !readCacheField(file, event.recurrenceRule, sizeof(event.recurrenceRule)) ||
             !readCacheField(file, event.recurrenceLocalId, sizeof(event.recurrenceLocalId)) ||
-            !readCacheField(file, event.excludedDates, sizeof(event.excludedDates))) {
+            !readCacheField(file, event.recurrenceTimeZone, sizeof(event.recurrenceTimeZone))) {
             return false;
         }
+        size_t transitionCount = 0;
+        if (!readCacheSize(file, transitionCount) ||
+            transitionCount > sizeof(event.timeZoneTransitions) /
+                sizeof(event.timeZoneTransitions[0])) {
+            return false;
+        }
+        event.timeZoneTransitionCount = static_cast<uint8_t>(transitionCount);
+        for (uint8_t transitionIndex = 0;
+             transitionIndex < event.timeZoneTransitionCount; ++transitionIndex) {
+            CalendarTimeZoneTransition& transition =
+                event.timeZoneTransitions[transitionIndex];
+            int32_t recurrenceMonth = 0;
+            int32_t recurrenceMonthDay = 0;
+            int32_t recurrenceWeekday = 0;
+            int32_t recurrenceOrdinal = 0;
+            if (!readCacheField(file, transition.start, sizeof(transition.start)) ||
+                !readCacheInteger(file, transition.offsetFrom) ||
+                !readCacheInteger(file, transition.offsetTo) ||
+                !readCacheInteger(file, recurrenceMonth) ||
+                !readCacheInteger(file, recurrenceMonthDay) ||
+                !readCacheInteger(file, recurrenceWeekday) ||
+                !readCacheInteger(file, recurrenceOrdinal) ||
+                recurrenceMonth < INT8_MIN || recurrenceMonth > INT8_MAX ||
+                recurrenceMonthDay < INT8_MIN || recurrenceMonthDay > INT8_MAX ||
+                recurrenceWeekday < INT8_MIN || recurrenceWeekday > INT8_MAX ||
+                recurrenceOrdinal < INT8_MIN || recurrenceOrdinal > INT8_MAX) {
+                return false;
+            }
+            transition.recurrenceMonth = static_cast<int8_t>(recurrenceMonth);
+            transition.recurrenceMonthDay = static_cast<int8_t>(recurrenceMonthDay);
+            transition.recurrenceWeekday = static_cast<int8_t>(recurrenceWeekday);
+            transition.recurrenceOrdinal = static_cast<int8_t>(recurrenceOrdinal);
+            char repeatFlag[2] {};
+            if (!readCacheField(file, repeatFlag, sizeof(repeatFlag)) ||
+                (repeatFlag[0] != '0' && repeatFlag[0] != '1')) {
+                return false;
+            }
+            transition.repeatsYearly = repeatFlag[0] == '1';
+        }
+        if (!readCacheField(file, event.excludedDates, sizeof(event.excludedDates))) return false;
         char flag[2] {};
         if (!readCacheField(file, flag, sizeof(flag)) || (flag[0] != '0' && flag[0] != '1')) return false;
         event.recurrenceOverride = flag[0] == '1';
@@ -354,6 +437,12 @@ bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events) {
         event.cancelled = flag[0] == '1';
         if (!readCacheField(file, flag, sizeof(flag)) || (flag[0] != '0' && flag[0] != '1')) return false;
         event.recurrenceUnsupported = flag[0] == '1';
+        if (!readCacheField(file, flag, sizeof(flag)) || (flag[0] != '0' && flag[0] != '1')) return false;
+        event.recurrenceThisAndFuture = flag[0] == '1';
+        if (!readCacheField(file, flag, sizeof(flag)) || (flag[0] != '0' && flag[0] != '1')) return false;
+        event.excludedDatesIncomplete = flag[0] == '1';
+        if (!readCacheField(file, flag, sizeof(flag)) || (flag[0] != '0' && flag[0] != '1')) return false;
+        event.timeZoneTransitionsIncomplete = flag[0] == '1';
         events.push_back(event);
     }
     return true;
@@ -364,6 +453,7 @@ bool saveCalendarCache(const CalendarSyncSettings& settings, const std::vector<C
                        bool fullCalendarAvailable,
                        const char* upcomingWindowStart,
                        const char* upcomingWindowEnd) {
+    if (settings.cacheIdentity[0] == '\0') return false;
     char path[256] {};
     char tempPath[256] {};
     if (!getAppFilePath(CACHE_FILE, path, sizeof(path)) ||
@@ -377,6 +467,7 @@ bool saveCalendarCache(const CalendarSyncSettings& settings, const std::vector<C
     bool success = fwrite(CACHE_MAGIC, 1, strlen(CACHE_MAGIC), file) == strlen(CACHE_MAGIC) &&
         writeCacheField(file, settings.calendarUrl) &&
         writeCacheField(file, settings.username) &&
+        writeCacheField(file, settings.cacheIdentity) &&
         writeCacheField(file, fullCalendarAvailable ? "1" : "0") &&
         writeCacheField(file, upcomingWindowStart) &&
         writeCacheField(file, upcomingWindowEnd) &&
@@ -418,11 +509,12 @@ bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<Calenda
     if (file == nullptr) return errno == ENOENT;
     found = true;
 
-    char header[sizeof(LEGACY_CACHE_MAGIC)] {};
+    char header[sizeof(CACHE_MAGIC)] {};
     const bool hasHeader = fgets(header, sizeof(header), file) != nullptr;
-    const bool hasWindow = hasHeader && strcmp(header, CACHE_MAGIC) == 0;
-    const bool validHeader = hasWindow ||
-        (hasHeader && strcmp(header, LEGACY_CACHE_MAGIC) == 0);
+    const bool currentFormat = hasHeader && strcmp(header, CACHE_MAGIC) == 0;
+    const bool validHeader = currentFormat ||
+        (hasHeader && (strcmp(header, PREVIOUS_CACHE_MAGIC) == 0 ||
+                       strcmp(header, LEGACY_CACHE_MAGIC) == 0));
     char cachedUrl[sizeof(settings.calendarUrl)] {};
     char cachedUsername[sizeof(settings.username)] {};
     if (!validHeader || !readCacheField(file, cachedUrl, sizeof(cachedUrl)) ||
@@ -430,8 +522,20 @@ bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<Calenda
         fclose(file);
         return false;
     }
-    matchesSettings = strcmp(cachedUrl, settings.calendarUrl) == 0 &&
-        strcmp(cachedUsername, settings.username) == 0;
+    if (!currentFormat) {
+        fclose(file);
+        return true;
+    }
+
+    char cachedIdentity[sizeof(settings.cacheIdentity)] {};
+    if (!readCacheField(file, cachedIdentity, sizeof(cachedIdentity))) {
+        fclose(file);
+        return false;
+    }
+    matchesSettings = settings.cacheIdentity[0] != '\0' &&
+        strcmp(cachedUrl, settings.calendarUrl) == 0 &&
+        strcmp(cachedUsername, settings.username) == 0 &&
+        strcmp(cachedIdentity, settings.cacheIdentity) == 0;
     if (!matchesSettings) {
         fclose(file);
         return true;
@@ -440,8 +544,8 @@ bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<Calenda
     char fullCalendarFlag[2] {};
     const bool validData = readCacheField(file, fullCalendarFlag, sizeof(fullCalendarFlag)) &&
         (fullCalendarFlag[0] == '0' || fullCalendarFlag[0] == '1') &&
-        (!hasWindow || readCacheWindow(file, upcomingWindowStart, upcomingWindowStartSize,
-                                       upcomingWindowEnd, upcomingWindowEndSize)) &&
+        readCacheWindow(file, upcomingWindowStart, upcomingWindowStartSize,
+                        upcomingWindowEnd, upcomingWindowEndSize) &&
         readCacheEvents(file, events) &&
         readCacheEvents(file, upcomingEvents) && fgetc(file) == EOF && !ferror(file);
     if (validData) fullCalendarAvailable = fullCalendarFlag[0] == '1';
