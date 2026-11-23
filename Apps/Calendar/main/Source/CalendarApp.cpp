@@ -249,25 +249,53 @@ void refreshEventList(CalendarContext* context) {
         context->upcomingEventsGeneration == context->settingsGeneration.load() &&
         calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
                                         context->upcomingWindowEnd);
+    context->agendaUsesLocalCalendar =
+        context->fullCalendarAvailable &&
+        context->fullCalendarGeneration == context->settingsGeneration.load();
     context->agendaCoverageExpired = !covered;
-    if (!covered) {
+    context->agendaWindowStart = 0;
+    context->agendaNextRefresh = 0;
+    std::vector<CalendarEvent> localEvents;
+    const std::vector<CalendarEvent>* shownEvents = &context->upcomingEvents;
+    if (context->agendaUsesLocalCalendar) {
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        if (now < 1735689600) {
+            lv_obj_t* unavailable = lv_label_create(context->agendaPanel);
+            lv_label_set_text(unavailable, "Set the device clock to view the Agenda.");
+            lv_obj_set_width(unavailable, LV_PCT(100));
+            lv_label_set_long_mode(unavailable, LV_LABEL_LONG_MODE_WRAP);
+            return;
+        }
+        context->agendaWindowStart = now;
+        const bool complete = calendarExpandEventsForInterval(
+            context->events, now, now + 30 * 24 * 60 * 60, localEvents,
+            &context->agendaNextRefresh);
+        if (!complete) {
+            lv_obj_t* warning = lv_label_create(context->agendaPanel);
+            lv_label_set_text(warning,
+                "Some cached events cannot be calculated. Sync may be needed.");
+            lv_obj_set_width(warning, LV_PCT(100));
+            lv_label_set_long_mode(warning, LV_LABEL_LONG_MODE_WRAP);
+        }
+        shownEvents = &localEvents;
+    } else if (!covered) {
         lv_obj_t* unavailable = lv_label_create(context->agendaPanel);
-        lv_label_set_text(unavailable,
-            "Cached Agenda does not cover the current 30-day window. Sync to refresh.");
         lv_obj_set_width(unavailable, LV_PCT(100));
         lv_label_set_long_mode(unavailable, LV_LABEL_LONG_MODE_WRAP);
+        lv_label_set_text(unavailable,
+            "Cached Agenda does not cover the current 30-day window. Sync to refresh.");
         return;
     }
 
-    if (context->upcomingEvents.empty()) {
+    if (shownEvents->empty()) {
         lv_obj_t* empty = lv_label_create(context->agendaPanel);
-        lv_label_set_text(empty, "No events in the next 30 days.");
+        lv_label_set_text(empty, "No events found in the next 30 days.");
         lv_obj_set_width(empty, LV_PCT(100));
         lv_label_set_long_mode(empty, LV_LABEL_LONG_MODE_WRAP);
         return;
     }
 
-    for (const CalendarEvent& event : context->upcomingEvents) {
+    for (const CalendarEvent& event : *shownEvents) {
         lv_obj_t* card = lvgl_card_create(context->agendaPanel);
         lv_obj_set_width(card, LV_PCT(100));
         lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -292,14 +320,25 @@ void refreshEventList(CalendarContext* context) {
 void onAgendaCoverageTimer(lv_timer_t* timer) {
     auto* context = static_cast<CalendarContext*>(lv_timer_get_user_data(timer));
     if (context->agendaPanel == nullptr || context->page != CalendarPage::Agenda ||
-        context->dayAgendaVisible || context->settingsVisible ||
-        context->agendaCoverageExpired) {
+        context->dayAgendaVisible || context->settingsVisible) {
         return;
     }
 
-    if (context->upcomingEventsGeneration != context->settingsGeneration.load() ||
-        !calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
-                                         context->upcomingWindowEnd)) {
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (context->agendaUsesLocalCalendar) {
+        if ((context->agendaWindowStart == 0 && now >= 1735689600) ||
+            (context->agendaWindowStart != 0 &&
+             (now < context->agendaWindowStart || now >= context->agendaNextRefresh))) {
+            const int32_t scrollY = lv_obj_get_scroll_y(context->agendaPanel);
+            refreshEventList(context);
+            lv_obj_update_layout(context->agendaPanel);
+            lv_obj_scroll_to_y(context->agendaPanel, scrollY, LV_ANIM_OFF);
+        }
+        return;
+    }
+    const bool covered = context->upcomingEventsGeneration == context->settingsGeneration.load() &&
+        calendarUpcomingWindowCoversNow(context->upcomingWindowStart, context->upcomingWindowEnd);
+    if (covered == context->agendaCoverageExpired) {
         refreshEventList(context);
     }
 }
@@ -631,6 +670,7 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
                  upcomingWindowEnd);
         refreshEventList(context);
     }
+    if (updateFullCalendar && !updateUpcoming) refreshEventList(context);
     cachedEvents = context->events;
     cachedUpcomingEvents = context->upcomingEvents;
     copyText(cachedWindowStart, 17, context->upcomingWindowStart);
@@ -723,7 +763,8 @@ void calendarLoadCachedEvents(CalendarContext* context) {
     context->fullCalendarAvailable = fullCalendarAvailable;
     context->fullCalendarGeneration = cacheGeneration;
     context->upcomingEventsGeneration = cacheGeneration;
-    if (calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
+    if (context->fullCalendarAvailable ||
+        calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
                                         context->upcomingWindowEnd)) {
         snprintf(context->status, sizeof(context->status),
             "Loaded %zu cached events. Sync to update.", context->events.size());
