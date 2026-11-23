@@ -392,7 +392,8 @@ void refreshMonth(CalendarContext* context) {
             lv_obj_set_style_radius(marker, LV_RADIUS_CIRCLE, LV_PART_MAIN);
             lv_obj_set_style_border_width(marker, 0, LV_PART_MAIN);
             lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(marker, textColor, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(marker, lvgl_theme_is_mono()
+                ? textColor : lv_theme_get_color_secondary(marker), LV_PART_MAIN);
         }
         const bool selected = context->selectedYear == context->displayYear &&
             context->selectedMonth == context->displayMonth &&
