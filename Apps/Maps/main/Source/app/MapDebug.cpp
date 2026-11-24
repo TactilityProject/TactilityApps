@@ -17,13 +17,49 @@
 namespace maps {
 
 void MapView::pollDebug(uint32_t now) {
+    // Mirrored log lines (logmirror) go to scriptlog.txt once a second
+    if (now - lastMirrorFlush >= 1000) {
+        lastMirrorFlush = now;
+        auto* text = static_cast<char*>(largeAlloc(8 * 1024 + 1));
+        const size_t length = text != nullptr ? peekMirroredLog(text, 8 * 1024 + 1) : 0;
+        if (length > 0) {
+            char path[PATH_MAX_LENGTH];
+            snprintf(path, sizeof(path), "%s/scriptlog.txt", rootPath);
+            // The lines stay kept until they are on the card; a short write lets go of what was written only
+            size_t written = 0;
+            auto append = [&]() {
+                FILE* file = fopen(path, "a");
+                if (file == nullptr) {
+                    return false;
+                }
+                written = fwrite(text, 1, length, file);
+                const bool closed = fclose(file) == 0;
+                if (!closed) {
+                    written = 0;
+                }
+                return written == length;
+            };
+            runOnCard(io, append);
+            dropMirroredLog(written);
+        }
+        largeFree(text);
+    }
     if (waitingRoute && navigator.state() != Navigator::State::Searching) {
         waitingRoute = false;
     }
     if (waitingSearchIndex && searchIndexJob.state() != SearchIndexJob::State::Busy) {
         waitingSearchIndex = false;
     }
-    if (!waitingIdle && !waitingRoute && !waitingSearchIndex) {
+    if (waitingTrailsUntil != 0) {
+        const Downloader::Status status = downloader.status();
+        // A quiet query shows Downloading at once, one asked for Connecting while the server answers
+        const bool running = status.trails && (status.state == Downloader::State::Downloading || status.state == Downloader::State::Connecting);
+        if (running || static_cast<int32_t>(now - waitingTrailsUntil) >= 0) {
+            logInfo("debug: waittrails %s", status.trails ? "a trails query runs" : "timed out");
+            waitingTrailsUntil = 0;
+        }
+    }
+    if (!waitingIdle && !waitingRoute && !waitingSearchIndex && waitingTrailsUntil == 0) {
         runDebugStep(script.next(now), now);
     } else if (viewTimed && !dirty) {
         waitingIdle = false;
@@ -119,6 +155,17 @@ void MapView::runDebugStep(const DebugScript::Step& step, uint32_t now) {
             followGpxFile(path);
             break;
         }
+        case DebugScript::Action::WaitTrails:
+            waitingTrailsUntil = now + 180000;
+            break;
+        case DebugScript::Action::LogMirror:
+            setLogMirror(step.name);
+            break;
+        case DebugScript::Action::ShowTrails:
+            // Drawing only, whatever the style (they are always downloaded)
+            worker.setTrails(step.zoom != 0);
+            logInfo("debug: marked trails drawn: %s", step.zoom != 0 ? "yes" : "no");
+            break;
         case DebugScript::Action::Restart:
             logInfo("debug: restarting the board");
             saveView();

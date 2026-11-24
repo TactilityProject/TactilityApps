@@ -47,6 +47,30 @@ constexpr size_t TERRAIN_INTERNAL_BLOCK = 8 * 1024;
 constexpr TickType_t SWEEP_TICKS = pdMS_TO_TICKS(5000);
 /** How often waiting heights are looked at. */
 constexpr TickType_t TERRAIN_POLL_TICKS = pdMS_TO_TICKS(500);
+/**
+ * Idle-time trails (browsed blocks, regions without them): they wait this long after the last browsed tile, after a
+ * failed query this long, and two queries are at least this far apart (the Overpass API is shared: one query at a time,
+ * no bursts).
+ */
+constexpr uint32_t TRAILS_AFTER_BROWSE_MS = 4000;
+constexpr uint32_t TRAILS_RETRY_MS = 5 * 60 * 1000;
+constexpr uint32_t TRAILS_BLOCK_RETRY_MS = 60 * 1000;
+/**
+ * A quiet trails query waits for its answer in steps of this length, looking for browsing in between. It is the
+ * client's timeout from the start: esp-tls makes it the socket's receive timeout, the only one mbedTLS obeys (with
+ * TLS 1.3 the server's session tickets make the socket readable, and mbedTLS then blocked in its read until the answer
+ * came, 30-40 s, 23 Nov). The handshake goes on across such timeouts.
+ */
+constexpr int TRAILS_STEP_MS = 1000;
+constexpr uint32_t TRAILS_GAP_MS = 10000;
+/** Browsed trails are asked for in blocks of this zoom level: 4 z12 tiles, about 20 km across in Central Europe. */
+constexpr int TRAIL_BLOCK_ZOOM = 11;
+/** A tile that failed while browsing is asked for again after this long at the earliest. */
+constexpr uint32_t BROWSE_FAILED_MS = 30000;
+/** PSRAM block the trail parsing wants free before it starts (else the map's tile cache gives some). */
+constexpr size_t TRAILS_PARSE_BLOCK = 512 * 1024;
+/** The largest Overpass answer taken: a region's trails with their geometry, compressed. */
+constexpr size_t MAX_TRAILS_BYTES = 6 * 1024 * 1024;
 
 /**
  * Starts a network task with its stack in PSRAM, which keeps about 28 KB of internal RAM free for Wi-Fi, TLS and
@@ -117,6 +141,9 @@ esp_err_t Downloader::onHttpEvent(esp_http_client_event_t* event) {
             if (connection->owner != nullptr) {
                 connection->owner->endHandshake(*connection);
             }
+            if (connection->shortReadMs > 0) {
+                esp_http_client_set_timeout_ms(event->client, connection->shortReadMs);
+            }
         }
     }
     if (event->event_id == HTTP_EVENT_DISCONNECTED && connection != nullptr) {
@@ -127,7 +154,7 @@ esp_err_t Downloader::onHttpEvent(esp_http_client_event_t* event) {
     // one block
     if (event->event_id == HTTP_EVENT_ON_DATA && body != nullptr) {
         const size_t total = body->size() + static_cast<size_t>(event->data_len);
-        if (total > MAX_TILE_BYTES) {
+        if (total > (connection->maxBytes != 0 ? connection->maxBytes : MAX_TILE_BYTES)) {
             body->fail();
         } else {
             Downloader* owner = connection->owner;
@@ -393,6 +420,8 @@ struct StoreTileJob {
     /** The tile column folder this connection made last, so it is not made again for every tile. */
     char* lastFolder;
     bool yielded;
+    /** False for a tile the screen waits for: its write does not give way to other card work. */
+    bool canYield;
 };
 
 bool storeTileJob(IoTask& io, void* context) {
@@ -417,7 +446,7 @@ bool storeTileJob(IoTask& io, void* context) {
         }
     }
     // A write of a few hundred KB gives way to tiles on screen, the tile stays in memory and is written again
-    const bool ok = io.writeFile(path, temporary, *job->body, true);
+    const bool ok = io.writeFile(path, temporary, *job->body, job->canYield);
     job->yielded = io.yielded();
     return ok;
 }
@@ -500,6 +529,7 @@ bool Downloader::start(const char* root, TileStore* tileStore, IoTask* ioTask) {
     stopped = xSemaphoreCreateBinary();
     connectionsDone = xSemaphoreCreateCounting(CONNECTIONS, 0);
     tileJsonLock = xSemaphoreCreateMutex();
+    browseMetaLock = xSemaphoreCreateMutex();
     browseWake = xSemaphoreCreateBinary();
     browseStopped = xSemaphoreCreateBinary();
     handshakeLock = xSemaphoreCreateBinary();
@@ -511,7 +541,7 @@ bool Downloader::start(const char* root, TileStore* tileStore, IoTask* ioTask) {
         xSemaphoreGive(transferLock);
     }
     if (handshakeLock == nullptr || transferLock == nullptr || mutex == nullptr || wake == nullptr || stopped == nullptr || connectionsDone == nullptr || tileJsonLock == nullptr ||
-        browseWake == nullptr || browseStopped == nullptr) {
+        browseMetaLock == nullptr || browseWake == nullptr || browseStopped == nullptr) {
         return false;
     }
     current = {};
@@ -547,7 +577,8 @@ void Downloader::stop() {
     if (mutex != nullptr) {
         closeIdleClients(0);
     }
-    for (SemaphoreHandle_t* handle : { &mutex, &wake, &stopped, &connectionsDone, &tileJsonLock, &browseWake, &browseStopped, &handshakeLock, &transferLock }) {
+    for (SemaphoreHandle_t* handle : { &mutex, &wake, &stopped, &connectionsDone, &tileJsonLock, &browseMetaLock, &browseWake, &browseStopped, &handshakeLock,
+                                    &transferLock }) {
         if (*handle != nullptr) {
             vSemaphoreDelete(*handle);
             *handle = nullptr;
@@ -770,7 +801,7 @@ void Downloader::controlLoop() {
     while (!stopRequested) {
         // Heights asked for by the map are looked at twice a second, so they start as soon as the map is left alone
         xSemaphoreTake(mutex, portMAX_DELAY);
-        const bool heightsWaiting = browseTerrainCount > 0;
+        const bool heightsWaiting = browseTerrainCount > 0 || (trailsWithDownloads && browseTrailsCount > 0);
         xSemaphoreGive(mutex);
         const bool woken = xSemaphoreTake(wake, heightsWaiting ? TERRAIN_POLL_TICKS : SWEEP_TICKS) == pdTRUE;
         xSemaphoreTake(mutex, portMAX_DELAY);
@@ -781,6 +812,9 @@ void Downloader::controlLoop() {
             if (terrainWithDownloads) {
                 runPendingTerrain();
             }
+            if (trailsWithDownloads && !stopRequested) {
+                runPendingTrails();
+            }
             continue;
         }
         if (!woken) {
@@ -788,8 +822,12 @@ void Downloader::controlLoop() {
             if (!stopRequested && terrainWithDownloads) {
                 runPendingTerrain();
             }
-            // Outdated regions are looked for at most once a minute while the map is left alone
-            if (updatesAllowed && !stopRequested && nowMs() - lastUpdateCheckMs >= UPDATE_CHECK_MS && wifiConnected()) {
+            if (!stopRequested && trailsWithDownloads) {
+                runPendingTrails();
+            }
+            // Outdated regions are looked for at most once a minute while the map is left alone, after the heights and
+            // trails the screen waits for (an update of a region took 20-60 s and held them up, 23 Nov)
+            if (updatesAllowed && !stopRequested && nowMs() - lastUpdateCheckMs >= UPDATE_CHECK_MS && wifiConnected() && !screenWorkWaiting()) {
                 lastUpdateCheckMs = nowMs();
                 char region[REGION_NAME_MAX + 1];
                 if (urlTemplate[0] != '\0' && findOutdated(region, sizeof(region))) {
@@ -1003,6 +1041,8 @@ bool Downloader::downloadTile(Connection& connection, const char* region, const 
     if (result != ESP_OK || connection.body->failed() || size > MAX_TILE_BYTES || (status != 200 && status != 204 && status != 404)) {
         if (connection.body->failed()) {
             logError("Tile %d/%d/%d: no memory for %u bytes", tile.z, tile.x, tile.y, static_cast<unsigned>(size));
+        } else if (!waitForIdle) {
+            logError("Tile %d/%d/%d: %s after %u bytes", tile.z, tile.x, tile.y, esp_err_to_name(result), static_cast<unsigned>(size));
         }
         connection.body->trim();
         return false;
@@ -1016,14 +1056,19 @@ bool Downloader::downloadTile(Connection& connection, const char* region, const 
     while (waitForIdle && !idle && !stopRequested && !cancelRequested) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    StoreTileJob job { rootPath, region, tile, connection.body, connection.lastFolder, false };
+    // A tile the screen waits for (browsing) is written whole: given way to every tile load it never got written
+    // while the map kept loading around it (a Noordwijk tile was fetched again every 20 s, 23 Nov)
+    StoreTileJob job { rootPath, region, tile, connection.body, connection.lastFolder, false, waitForIdle };
     bool stored = io->run(IoPriority::Background, storeTileJob, &job);
-    for (int attempt = 0; !stored && job.yielded && attempt < 20 && !stopRequested; attempt++) {
+    int yields = 0;
+    for (; !stored && job.yielded && yields < 20 && !stopRequested; yields++) {
         vTaskDelay(pdMS_TO_TICKS(50));
         stored = io->run(IoPriority::Background, storeTileJob, &job);
     }
     connection.body->trim();
     if (!stored) {
+        logError("Tile %d/%d/%d: %u bytes not written to the card (%s)", tile.z, tile.x, tile.y, static_cast<unsigned>(size),
+            job.yielded ? "gave way too often" : "write failed");
         return false;
     }
     connection.received += static_cast<uint64_t>(size);
@@ -1204,6 +1249,7 @@ void Downloader::runDownload() {
     connections[0].owner = this;
     connections[0].index = 0;
     connections[0].body = &bodies[0];
+    connections[0].shortReadMs = 0;
     const bool tileJson = ensureTileJson(connections[0]);
     giveClient(connections[0]);
     bodies[0].release();
@@ -1363,7 +1409,7 @@ bool terrainExistsJob(IoTask& io, void* context) {
     // Another region with the same heights: not fetched twice (the map would only be drawn again)
     // Only regions whose area holds the tile: each look on the card costs tens of milliseconds (24 regions took 1 s)
     for (int i = 0; !job->exists && job->store != nullptr && i < job->store->regionCount(); i++) {
-        if (job->store->mayHave(i, job->tile)) {
+        if (job->store->mayHaveArea(i, job->tile)) {
             job->exists = terrainPath(path, sizeof(path), job->root, job->store->regionName(i), job->tile) && fileExists(path);
         }
     }
@@ -1397,6 +1443,26 @@ bool writeTerrainMarkerJob(IoTask& io, void* context) {
     snprintf(temporary, sizeof(temporary), "%s/maps/%s/terrain.tmp", job->root, job->region);
     static const uint8_t TEXT[] = { 'o', 'k', '\n' };
     return io.writeFile(path, temporary, TEXT, sizeof(TEXT), true);
+}
+
+/** maps/<region>/trails.ok: all trails of the region are on the card. */
+bool writeTrailsMarkerJob(IoTask& io, void* context) {
+    auto* job = static_cast<MarkerJob*>(context);
+    char path[PATH_MAX_LENGTH];
+    char temporary[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/maps/%s/trails.ok", job->root, job->region);
+    snprintf(temporary, sizeof(temporary), "%s/maps/%s/trails.tmp", job->root, job->region);
+    static const uint8_t TEXT[] = { 'o', 'k', '\n' };
+    return io.writeFile(path, temporary, TEXT, sizeof(TEXT), true);
+}
+
+bool trailsMarkerJob(IoTask& io, void* context) {
+    (void)io;
+    auto* job = static_cast<MarkerJob*>(context);
+    char path[PATH_MAX_LENGTH];
+    snprintf(path, sizeof(path), "%s/maps/%s/trails.ok", job->root, job->region);
+    job->exists = fileExists(path);
+    return true;
 }
 
 bool terrainMarkerJob(IoTask& io, void* context) {
@@ -1437,6 +1503,10 @@ constexpr const char* OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 /** The server takes 20-40 s before it answers a region's query. */
 constexpr int OVERPASS_TIMEOUT_MS = 120000;
 constexpr uint32_t OVERPASS_BUSY_WAIT_MS = 30000;
+/** Answers that mean "busy, ask later": too many queries (429), or the server's gateway without a free slot (502-504). */
+bool overpassBusy(int status) {
+    return status == 429 || (status >= 502 && status <= 504);
+}
 
 constexpr const char* TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/%d/%d/%d.png";
 /** An elevation tile is 70-140 KB; anything larger is not one. */
@@ -1448,33 +1518,75 @@ constexpr uint32_t TERRAIN_AFTER_BROWSE_MS = 2000;
 
 } // namespace
 
-bool Downloader::runTrails(const RegionMeta& region) {
+bool Downloader::runTrails(const RegionMeta& region, bool quiet) {
+    // Over the whole z12 tiles the box touches: the files then hold every trail of their tiles, and a browsed block
+    // inside those tiles (trailsCovered) has all of them
+    const TileRange range = tileRange(region.box, TRAIL_ZOOM);
+    const double size = static_cast<double>(TILE_SIZE);
+    BoundingBox box {};
+    box.west = worldXToLon(range.minX * size + 0.5, TRAIL_ZOOM);
+    box.east = worldXToLon((range.maxX + 1) * size - 0.5, TRAIL_ZOOM);
+    box.north = worldYToLat(range.minY * size + 0.5, TRAIL_ZOOM);
+    box.south = worldYToLat((range.maxY + 1) * size - 0.5, TRAIL_ZOOM);
+    if (!runTrailsArea(region.name, box, quiet, false)) {
+        return false;
+    }
+    // Every trail of the region is on the card: the idle-time sweep and the browsed blocks inside it skip it from now
+    // on. Without the marker the region is asked for again later.
+    MarkerJob marker { rootPath, region.name, false };
+    if (!storeGivingWay(writeTrailsMarkerJob, &marker)) {
+        logError("Trails for %s: trails.ok not written", region.name);
+        return false;
+    }
+    trailRegionsStale = true;
+    return true;
+}
+
+bool Downloader::runTrailsArea(const char* regionName, const BoundingBox& box, bool quiet, bool markEmpty) {
+    trailsStatus = 0;
+    trailsYielded = false;
+    // Every query at least TRAILS_GAP_MS after the last one: a region's query (asked for) waits out the rest of it
+    while (trailsQueryMs != 0 && nowMs() - trailsQueryMs < TRAILS_GAP_MS && !cancelRequested && !stopRequested) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (cancelRequested || stopRequested) {
+        return false;
+    }
     if (!wifiConnected()) {
-        setStatus(State::Failed, "No Wi-Fi connection");
+        if (!quiet) {
+            setStatus(State::Failed, "No Wi-Fi connection");
+        }
         return false;
     }
     char* post = static_cast<char*>(largeAlloc(1024));
-    if (post == nullptr || !formatTrailQuery(region.box, post, 1024)) {
+    if (post == nullptr || !formatTrailQuery(box, post, 1024)) {
         largeFree(post);
-        setStatus(State::Failed, "Trails could not be asked for");
+        if (!quiet) {
+            setStatus(State::Failed, "Trails could not be asked for");
+        }
         return false;
     }
     xSemaphoreTake(mutex, portMAX_DELAY);
-    snprintf(current.region, sizeof(current.region), "%s", region.name);
+    snprintf(current.region, sizeof(current.region), "%s", regionName);
     current.total = 2;
     current.done = 0;
     current.bytes = 0;
     current.trails = true;
     xSemaphoreGive(mutex);
-    setStatus(State::Connecting, "Asking for trails (up to a minute)");
+    // A quiet run shows its progress only (the pill), a region's query says that it can take a while
+    setStatus(quiet ? State::Downloading : State::Connecting, quiet ? "Downloading trails" : "Asking for trails (up to a minute)");
     logMemory("trails start");
     const uint32_t start = nowMs();
     Connection& connection = connections[0];
     connection = { this, 0, nullptr, &bodies[0], 0, nullptr, "" };
+    connection.maxBytes = MAX_TRAILS_BYTES;
+    // The server takes 30-40 s to answer even a small box (23 Nov), all that time one HTTPS transfer: a quiet query
+    // reads in short steps (TRAILS_STEP_MS) and gives the connection to browsing the moment a tile is wanted
+    connection.shortReadMs = quiet ? TRAILS_STEP_MS : 0;
     esp_http_client_config_t config = {};
     config.url = OVERPASS_URL;
     config.user_agent = USER_AGENT;
-    config.timeout_ms = OVERPASS_TIMEOUT_MS;
+    config.timeout_ms = quiet ? TRAILS_STEP_MS : OVERPASS_TIMEOUT_MS;
     config.method = HTTP_METHOD_POST;
     config.cert_pem = ROOT_CERTIFICATES;
     config.cert_len = sizeof(ROOT_CERTIFICATES);
@@ -1490,10 +1602,31 @@ bool Downloader::runTrails(const RegionMeta& region) {
         esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
         esp_http_client_set_header(client, "Accept-Encoding", "gzip");
         esp_http_client_set_post_field(client, post, static_cast<int>(strlen(post)));
-        // One query at a time; when the server is busy (429, 504) it is asked again after 30 s, twice at most
-        for (int attempt = 1; attempt <= 3 && !fetched && !cancelRequested && !stopRequested; attempt++) {
+        // One query at a time; when the server is busy (429, 504) it is asked again after 30 s, twice at most. Quiet
+        // runs ask once: the next idle-time try comes TRAILS_RETRY_MS later.
+        const int attempts = quiet ? 1 : 3;
+        for (int attempt = 1; attempt <= attempts && !fetched && !cancelRequested && !stopRequested; attempt++) {
             connection.body->clear();
-            const esp_err_t result = perform(connection);
+            const uint32_t asked = nowMs();
+            esp_err_t result = ESP_FAIL;
+            int steps = 0;
+            while ((result = perform(connection)) == ESP_ERR_HTTP_EAGAIN) {
+                steps++;
+                if (quiet && (browsing || browseCount > 0)) {
+                    trailsYielded = true;
+                    break;
+                }
+                if (cancelRequested || stopRequested || nowMs() - asked >= static_cast<uint32_t>(OVERPASS_TIMEOUT_MS)) {
+                    break;
+                }
+            }
+            if (quiet) {
+                logInfo("Trails for %s: %d waiting steps, %s", regionName, steps, esp_err_to_name(result));
+            }
+            if (trailsYielded) {
+                logInfo("Trails for %s: gave way to browsing after %u ms", regionName, static_cast<unsigned>(nowMs() - asked));
+                break;
+            }
             status = esp_http_client_get_status_code(client);
             fetched = result == ESP_OK && status == 200 && !connection.body->failed();
             if (!fetched && result == ESP_ERR_HTTP_CONNECT && !connection.connected) {
@@ -1503,19 +1636,32 @@ bool Downloader::runTrails(const RegionMeta& region) {
                 break;
             }
             if (!fetched) {
-                logError("Trails for %s: HTTP %d (%s), attempt %d", region.name, status, esp_err_to_name(result), attempt);
-                const uint32_t waitMs = status == 429 || status == 504 ? OVERPASS_BUSY_WAIT_MS : 5000;
-                for (uint32_t waited = 0; attempt < 3 && waited < waitMs && !cancelRequested && !stopRequested; waited += 100) {
+                logError("Trails for %s: HTTP %d (%s), attempt %d%s", regionName, status, esp_err_to_name(result), attempt,
+                    connection.body->failed() ? ", answer too large" : "");
+                const uint32_t waitMs = overpassBusy(status) ? OVERPASS_BUSY_WAIT_MS : 5000;
+                for (uint32_t waited = 0; attempt < attempts && waited < waitMs && !cancelRequested && !stopRequested; waited += 100) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
             }
         }
     }
+    trailsStatus = status;
+    if (noTls) {
+        trailsNoTls = true;
+    }
     largeFree(post);
     dropClient(connection);
+    trailsQueryMs = nowMs();
+    // The short read steps are this query's only: downloads and updates use connections[0] next
+    connection.shortReadMs = 0;
     const size_t received = connection.body->size();
-    logInfo("Trails for %s: %u bytes in %u s (HTTP %d)", region.name, static_cast<unsigned>(received), static_cast<unsigned>((nowMs() - start) / 1000), status);
-    // The answer, gzip or plain JSON, read in pieces into the parser; the lines collected per z12 tile
+    logInfo("Trails for %s: %u bytes in %u ms (HTTP %d)", regionName, static_cast<unsigned>(received), static_cast<unsigned>(nowMs() - start), status);
+    // The answer, gzip or plain JSON, read in pieces into the parser; the lines collected per z12 tile. The tiler grows
+    // to a few hundred KB (two of them at once while an array doubles): the map's tile cache makes room first when
+    // PSRAM has no such block (a browsed block failed on 23 Nov with 250 KB the largest)
+    if (fetched && memoryRelief != nullptr && heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < TRAILS_PARSE_BLOCK) {
+        memoryRelief(memoryReliefContext, TRAILS_PARSE_BLOCK);
+    }
     void* tilerPlace = largeAlloc(sizeof(TrailTiler));
     void* parserPlace = largeAlloc(sizeof(TrailParser));
     void* inflaterPlace = largeAlloc(sizeof(InflateReader));
@@ -1523,11 +1669,14 @@ bool Downloader::runTrails(const RegionMeta& region) {
     TrailTiler* tiler = tilerPlace != nullptr ? new (tilerPlace) TrailTiler() : nullptr;
     TrailParser* parser = parserPlace != nullptr ? new (parserPlace) TrailParser() : nullptr;
     InflateReader* inflater = inflaterPlace != nullptr ? new (inflaterPlace) InflateReader() : nullptr;
-    bool ok = fetched && tiler != nullptr && parser != nullptr && inflater != nullptr && piece != nullptr && tiler->begin(region.box) &&
+    bool ok = fetched && tiler != nullptr && parser != nullptr && inflater != nullptr && piece != nullptr && tiler->begin(box) &&
         parser->begin(tiler);
     int stored = 0;
+    int withTrails = 0;
     if (ok) {
-        setStatus(State::Downloading, "Making the trail files");
+        if (!quiet) {
+            setStatus(State::Downloading, "Making the trail files");
+        }
         xSemaphoreTake(mutex, portMAX_DELAY);
         current.done = 1;
         current.bytes = received;
@@ -1552,24 +1701,40 @@ bool Downloader::runTrails(const RegionMeta& region) {
                 ok = parser->feed(piece, static_cast<size_t>(got));
             }
         }
-        ok = ok && parser->finish() && !tiler->failed();
-        logInfo("Trails for %s: %d routes, %d lines, %d points, %d tiles, %u KB held", region.name, parser->routeCount(), parser->lineCount(),
-            parser->pointCount(), tiler->tileCount(), static_cast<unsigned>(tiler->memoryBytes() / 1024));
+        const bool fed = ok;
+        const bool finished = fed && parser->finish();
+        ok = finished && !tiler->failed();
+        logInfo("Trails for %s: %d routes, %d lines, %d points, %d tiles, %u KB held%s", regionName, parser->routeCount(), parser->lineCount(),
+            parser->pointCount(), tiler->tileCount(), static_cast<unsigned>(tiler->memoryBytes() / 1024),
+            ok ? "" : (tiler->failed() ? " - no memory for the lines" : (!fed ? " - the answer did not read" : " - the answer ended early")));
+        if (!ok) {
+            logMemory("trails parse failed");
+        }
         connection.body->trim();
         GrowArray<uint8_t> file;
         for (int i = 0; ok && i < tiler->tileCount() && !cancelRequested && !stopRequested; i++) {
             file.clear();
-            if (!tiler->buildTile(i, file)) {
+            if (!markEmpty && !tiler->tileHasLines(i)) {
+                // No trail in this tile: no file (only browsed blocks mark the tiles they asked for)
                 continue;
             }
-            while (!idle && !stopRequested && !cancelRequested) {
-                vTaskDelay(pdMS_TO_TICKS(50));
+            if (!tiler->buildTile(i, file, markEmpty)) {
+                // No memory for the file: the area stays without trails.ok / is asked for again
+                logError("Trails for %s: 12/%d/%d not built", regionName, tiler->tileAt(i).x, tiler->tileAt(i).y);
+                ok = false;
+                break;
             }
-            TrailFileJob job { rootPath, region.name, tiler->tileAt(i), &file };
-            if (io->run(IoPriority::Background, storeTrailJob, &job)) {
+            // Written like a height file: it gives way to the map's card work and is tried again (the first browsed
+            // block on the T-Deck lost its files to that, 23 Nov)
+            TrailFileJob job { rootPath, regionName, tiler->tileAt(i), &file };
+            if (storeGivingWay(storeTrailJob, &job)) {
                 stored++;
+                if (file.size() > TRAIL_HEADER_BYTES) {
+                    withTrails++;
+                }
                 noteTerrainFile(job.tile);
             } else {
+                logError("Trails for %s: 12/%d/%d not stored", regionName, job.tile.x, job.tile.y);
                 ok = false;
             }
         }
@@ -1595,18 +1760,28 @@ bool Downloader::runTrails(const RegionMeta& region) {
     current.trails = false;
     current.done = 2;
     xSemaphoreGive(mutex);
-    if (cancelRequested) {
-        setStatus(State::Done, "Trails paused", true);
+    if (cancelRequested || stopRequested || trailsYielded) {
+        setStatus(quiet ? State::Idle : State::Done, quiet ? "" : "Trails paused", !quiet);
         return false;
     }
     if (!ok) {
-        setStatus(State::Failed, noTls ? "Trails need TLS 1.3 in the firmware"
-                                       : (status == 429 || status == 504 ? "The trail server is busy, try later" : "Trails could not be downloaded"));
+        if (quiet) {
+            setStatus(State::Idle, "");
+            logError("Trails for %s failed (HTTP %d), tried again later", regionName, status);
+        } else {
+            setStatus(State::Failed, noTls ? "Trails need TLS 1.3 in the firmware"
+                                           : (overpassBusy(status) ? "The trail server is busy, try later" : "Trails could not be downloaded"));
+        }
         return false;
     }
-    char message[64];
-    snprintf(message, sizeof(message), "Trails: %d tiles in %u s", stored, static_cast<unsigned>((nowMs() - start) / 1000));
-    setStatus(State::Done, message);
+    logInfo("Trails for %s: %d files (%d with trails) in %u s", regionName, stored, withTrails, static_cast<unsigned>((nowMs() - start) / 1000));
+    if (quiet) {
+        setStatus(State::Idle, "");
+    } else {
+        char message[64];
+        snprintf(message, sizeof(message), "Trails: %d tiles in %u s", withTrails, static_cast<unsigned>((nowMs() - start) / 1000));
+        setStatus(State::Done, message);
+    }
     return true;
 }
 
@@ -1643,12 +1818,16 @@ bool Downloader::runTerrain(const RegionMeta& region, bool quiet) {
 }
 
 bool Downloader::storeTerrain(void* job) {
+    return storeGivingWay(storeTerrainJob, job);
+}
+
+bool Downloader::storeGivingWay(IoJob write, void* job) {
     // A write gives way to the map's card work (a yielding job): tried again once the map is left alone
     for (int attempt = 0; attempt < 20 && !stopRequested && !cancelRequested; attempt++) {
         while (!idle && !stopRequested && !cancelRequested) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
-        if (io->run(IoPriority::Background, storeTerrainJob, job)) {
+        if (io->run(IoPriority::Background, write, job)) {
             return true;
         }
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -1980,6 +2159,9 @@ void Downloader::browse(const TileKey* tiles, int count) {
         for (int j = 0; j < browseEmptyCount && !known; j++) {
             known = browseEmpty[j] == tiles[i];
         }
+        for (int j = 0; j < BROWSE_FAILED && !known; j++) {
+            known = browseFailedMs[j] != 0 && browseFailed[j] == tiles[i] && nowMs() - browseFailedMs[j] < BROWSE_FAILED_MS;
+        }
         if (known || !isValidTile(tiles[i])) {
             continue;
         }
@@ -2058,6 +2240,33 @@ bool Downloader::ensureBrowseRegion(const TileKey& tile) {
     return true;
 }
 
+bool Downloader::coverInBrowsed(const TileKey* tiles, int count) {
+    xSemaphoreTake(browseMetaLock, portMAX_DELAY);
+    const BoundingBox before = browseMeta.box;
+    const bool wasReady = browseMetaReady;
+    bool ok = true;
+    for (int i = 0; i < count && ok; i++) {
+        ok = ensureBrowseRegion(tiles[i]);
+    }
+    const bool grew = !wasReady || (browseMeta.box.west != before.west || browseMeta.box.east != before.east ||
+                                   browseMeta.box.south != before.south || browseMeta.box.north != before.north);
+    if (ok && grew) {
+        // Saved at once: the files stored next are found after a restart too
+        ok = writeMeta(browseMeta);
+    }
+    xSemaphoreGive(browseMetaLock);
+    return ok;
+}
+
+void Downloader::forgetTrailBlock(const TileKey& block) {
+    // Caller holds mutex
+    for (int i = 0; i < TRAILS_SEEN; i++) {
+        if (browseTrailsSeen[i] == block) {
+            browseTrailsSeen[i] = {};
+        }
+    }
+}
+
 bool Downloader::takeTilesChanged(TileKey* tiles, int& count) {
     if (!tilesChanged.exchange(false)) {
         return false;
@@ -2077,7 +2286,10 @@ bool Downloader::fetchBrowseTile(const TileKey& tile) {
     if (tileOnCard(BROWSE_REGION, tile, inThisRegion)) {
         return true;
     }
-    if (!ensureBrowseRegion(tile)) {
+    xSemaphoreTake(browseMetaLock, portMAX_DELAY);
+    const bool regionReady = ensureBrowseRegion(tile);
+    xSemaphoreGive(browseMetaLock);
+    if (!regionReady) {
         return false;
     }
     Connection& connection = browseConnection;
@@ -2094,6 +2306,13 @@ bool Downloader::fetchBrowseTile(const TileKey& tile) {
     }
     if (!ok) {
         logError("Browse: tile %d/%d/%d failed (HTTP %d)", tile.z, tile.x, tile.y, status);
+        // Not asked for again at once: the map asks for its gaps every few seconds, and the count on the pill grew
+        // with every new try
+        xSemaphoreTake(mutex, portMAX_DELAY);
+        browseFailed[browseFailedNext] = tile;
+        browseFailedMs[browseFailedNext] = nowMs() | 1;
+        browseFailedNext = (browseFailedNext + 1) % BROWSE_FAILED;
+        xSemaphoreGive(mutex);
         return false;
     }
     if (connection.received == before) {
@@ -2111,7 +2330,9 @@ bool Downloader::fetchBrowseTile(const TileKey& tile) {
     logInfo("Browse: tile %d/%d/%d, %u bytes in %u ms", tile.z, tile.x, tile.y, static_cast<unsigned>(connection.received - before), nowMs() - startMs);
     if (++browseUnsaved >= 5) {
         browseUnsaved = 0;
+        xSemaphoreTake(browseMetaLock, portMAX_DELAY);
         writeMeta(browseMeta);
+        xSemaphoreGive(browseMetaLock);
     }
     xSemaphoreTake(mutex, portMAX_DELAY);
     if (arrivedCount < MAX_ARRIVED) {
@@ -2170,15 +2391,17 @@ void Downloader::browseLoop() {
         }
         browsing = false;
         browseEndedAt = nowMs();
-        // Terrain for the tiles just fetched starts soon (TERRAIN_AFTER_BROWSE_MS), looked at from the next poll
-        if (terrainWithDownloads) {
+        // Terrain and trails for the tiles just fetched start soon (TERRAIN_AFTER_BROWSE_MS), looked at from the next poll
+        if (terrainWithDownloads || trailsWithDownloads) {
             xSemaphoreGive(wake);
         }
         giveClient(browseConnection);
         browseBody.release();
         if (browseUnsaved > 0) {
             browseUnsaved = 0;
+            xSemaphoreTake(browseMetaLock, portMAX_DELAY);
             writeMeta(browseMeta);
+            xSemaphoreGive(browseMetaLock);
         }
     }
     dropClient(browseConnection);
@@ -2212,6 +2435,48 @@ bool Downloader::takeTerrainChanged(TileKey* files, int& count) {
     terrainArrivedAll = false;
     xSemaphoreGive(mutex);
     return true;
+}
+
+void Downloader::setTrailsWithDownloads(bool value) {
+    if (value && !trailsWithDownloads) {
+        // Switched on (or on at start): the regions downloaded before get their trails, in idle time
+        trailsSweep = true;
+        trailRegionsStale = true;
+    }
+    trailsWithDownloads = value;
+}
+
+void Downloader::queueTrails(const TileKey& tile) {
+    if (!trailsWithDownloads || trailsNoTls || tile.z != TRAIL_ZOOM) {
+        return;
+    }
+    const TileKey block = ancestorOf(tile, TRAIL_BLOCK_ZOOM);
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    bool known = false;
+    for (int i = 0; i < browseTrailsCount && !known; i++) {
+        known = browseTrails[i] == block;
+    }
+    for (int i = 0; i < TRAILS_SEEN && !known; i++) {
+        known = browseTrailsSeen[i] == block;
+    }
+    if (!known) {
+        if (browseTrailsCount == BROWSE_TRAILS) {
+            // The oldest goes: the map has moved on from it (it is asked for again if it shows again)
+            forgetTrailBlock(browseTrails[0]);
+            memmove(browseTrails, browseTrails + 1, sizeof(TileKey) * (BROWSE_TRAILS - 1));
+            browseTrailsCount--;
+        }
+        browseTrails[browseTrailsCount++] = block;
+        browseTrailsSeen[browseTrailsSeenNext] = block;
+        browseTrailsSeenNext = (browseTrailsSeenNext + 1) % TRAILS_SEEN;
+    }
+    xSemaphoreGive(mutex);
+    if (!known) {
+        logInfo("Trails: block %d/%d/%d queued (tile 12/%d/%d has no trail file)", block.z, block.x, block.y, tile.x, tile.y);
+        if (viewComplete && !browsing) {
+            xSemaphoreGive(wake);
+        }
+    }
 }
 
 void Downloader::setTerrainWithDownloads(bool value) {
@@ -2313,7 +2578,8 @@ void Downloader::runPendingTerrain() {
         for (int i = 0; i < count; i++) {
             kept[i] = tiles[i];
         }
-        if (!runTerrainTiles(BROWSE_REGION, tiles, count, true)) {
+        // Heights of a downloaded area without its own: the browsed map's box takes them in, or they are not found
+        if (!coverInBrowsed(tiles, count) || !runTerrainTiles(BROWSE_REGION, tiles, count, true)) {
             if (!terrainYielded) {
                 terrainFailedMs = nowMs();
             }
@@ -2367,6 +2633,192 @@ void Downloader::runPendingTerrain() {
     }
     terrainSweep = pending || !updatesAllowed;
 }
+
+bool Downloader::screenWorkWaiting() {
+    const uint32_t now = nowMs();
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    const bool heights = terrainWithDownloads && browseTerrainCount > 0;
+    const bool trails = trailsWithDownloads && browseTrailsCount > 0;
+    xSemaphoreGive(mutex);
+    // Not while they wait after a failure: then the update goes first
+    return (heights && (terrainFailedMs == 0 || now - terrainFailedMs >= TERRAIN_RETRY_MS)) ||
+        (trails && !trailsNoTls && (trailsFailedMs == 0 || now - trailsFailedMs >= TRAILS_BLOCK_RETRY_MS));
+}
+
+void Downloader::refreshTrailRegions() {
+    trailRegionsStale = false;
+    trailRegionCount = 0;
+    for (int i = 0; i < store->regionCount() && trailRegionCount < TileStore::MAX_REGIONS && !stopRequested; i++) {
+        const char* name = store->regionName(i);
+        if (strcmp(name, BROWSE_REGION) == 0) {
+            continue;
+        }
+        MarkerJob marker { rootPath, name, false };
+        io->run(IoPriority::Background, trailsMarkerJob, &marker);
+        RegionMeta region {};
+        if (marker.exists && readMeta(name, region)) {
+            trailRegions[trailRegionCount++] = region.box;
+        }
+    }
+}
+
+bool Downloader::trailsCovered(const TileKey& block) const {
+    const int shift = TRAIL_ZOOM - block.z;
+    const int minX = block.x << shift;
+    const int minY = block.y << shift;
+    const int maxX = minX + (1 << shift) - 1;
+    const int maxY = minY + (1 << shift) - 1;
+    for (int i = 0; i < trailRegionCount; i++) {
+        const TileRange range = tileRange(trailRegions[i], TRAIL_ZOOM);
+        if (minX >= range.minX && maxX <= range.maxX && minY >= range.minY && maxY <= range.maxY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Downloader::runPendingTrails() {
+    // The same moments as idle-time heights: never while tiles are browsed or the view is drawn, a while after the
+    // last browsed tile, with internal RAM to spare. Heights of the view go first (they are cheap and shade it all).
+    const uint32_t now = nowMs();
+    // Why waiting blocks wait, at most every 20 s in the log
+    static uint32_t whyLoggedMs = 0;
+    auto why = [&](const char* reason) {
+        if (browseTrailsCount > 0 && now - whyLoggedMs >= 20000) {
+            whyLoggedMs = now;
+            logInfo("Trails: %d block(s) wait (%s)", browseTrailsCount, reason);
+        }
+    };
+    if (trailsNoTls || !wifiConnected() || browsing || browseCount > 0) {
+        why("browsing or offline");
+        return;
+    }
+    if ((trailsFailedMs != 0 && now - trailsFailedMs < TRAILS_BLOCK_RETRY_MS) || (trailsQueryMs != 0 && now - trailsQueryMs < TRAILS_GAP_MS) ||
+        (browseEndedAt != 0 && now - browseEndedAt < TRAILS_AFTER_BROWSE_MS)) {
+        why("pause between queries");
+        return;
+    }
+    if (!idle || !viewComplete) {
+        why(!idle ? "map in use" : "view not complete");
+        return;
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    // Heights that wait out a failure (TERRAIN_RETRY_MS) do not hold the trails up
+    const bool heightsWaiting = terrainWithDownloads && browseTerrainCount > 0 && (terrainFailedMs == 0 || now - terrainFailedMs >= TERRAIN_RETRY_MS);
+    const bool blocksWaiting = browseTrailsCount > 0;
+    xSemaphoreGive(mutex);
+    const bool sweepDue = trailsSweep && updatesAllowed && (trailsSweepFailedMs == 0 || now - trailsSweepFailedMs >= TRAILS_RETRY_MS);
+    if (heightsWaiting || (!blocksWaiting && !sweepDue)) {
+        if (heightsWaiting) {
+            why("terrain first");
+        }
+        return;
+    }
+    if (trailRegionsStale) {
+        refreshTrailRegions();
+    }
+    // Blocks of the browsed map, the latest first (nearest to what is on screen); those inside a region with all its
+    // trails are dropped (the region's files will show once the map looks again). A block in a downloaded region
+    // without all its trails is stored with the browsed map, which then takes it into its box.
+    TileKey block {};
+    bool found = false;
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    while (browseTrailsCount > 0 && !found) {
+        block = browseTrails[--browseTrailsCount];
+        found = !trailsCovered(block);
+    }
+    xSemaphoreGive(mutex);
+    if (!found && !sweepDue) {
+        return;
+    }
+    // The kept OpenFreeMap connections give their TLS memory back first (as for heights)
+    closeIdleClients(0);
+    const bool roomy = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= TERRAIN_INTERNAL_BLOCK;
+    if (found) {
+        if (!roomy || !claimIdle()) {
+            why(!roomy ? "internal RAM" : "a download or update runs");
+            xSemaphoreTake(mutex, portMAX_DELAY);
+            if (browseTrailsCount < BROWSE_TRAILS) {
+                browseTrails[browseTrailsCount++] = block;
+            } else {
+                forgetTrailBlock(block);
+            }
+            xSemaphoreGive(mutex);
+            return;
+        }
+        if (!coverInBrowsed(&block, 1)) {
+            logError("Trails: block %d/%d/%d, the browsed map's box not saved", block.z, block.x, block.y);
+            releaseIdle();
+            trailsFailedMs = nowMs();
+            xSemaphoreTake(mutex, portMAX_DELAY);
+            forgetTrailBlock(block);
+            xSemaphoreGive(mutex);
+            return;
+        }
+        // The block's box a little inside its edges, so that only its own z12 tiles are asked for
+        const double size = static_cast<double>(TILE_SIZE);
+        BoundingBox box {};
+        box.west = worldXToLon(block.x * size + 0.5, block.z);
+        box.east = worldXToLon((block.x + 1) * size - 0.5, block.z);
+        box.north = worldYToLat(block.y * size + 0.5, block.z);
+        box.south = worldYToLat((block.y + 1) * size - 0.5, block.z);
+        logInfo("Trails: block %d/%d/%d of the browsed map", block.z, block.x, block.y);
+        const bool done = runTrailsArea(BROWSE_REGION, box, true, true);
+        trailsQueryMs = nowMs();
+        releaseIdle();
+        if (!done) {
+            if (!cancelRequested && !trailsYielded) {
+                trailsFailedMs = nowMs();
+            }
+            if (!trailsNoTls) {
+                // Asked for again later (the queue keeps the latest blocks)
+                xSemaphoreTake(mutex, portMAX_DELAY);
+                if (browseTrailsCount < BROWSE_TRAILS) {
+                    memmove(browseTrails + 1, browseTrails, sizeof(TileKey) * browseTrailsCount);
+                    browseTrails[0] = block;
+                    browseTrailsCount++;
+                } else {
+                    forgetTrailBlock(block);
+                }
+                xSemaphoreGive(mutex);
+            }
+        }
+        // One query per call: the next one TRAILS_GAP_MS later
+        return;
+    }
+    // Downloaded regions without all their trails, once Marked trails is on: one region per call while the map is left
+    // alone
+    if (!sweepDue || !updatesAllowed || stopRequested || !roomy) {
+        return;
+    }
+    for (int i = 0; i < store->regionCount() && updatesAllowed && !stopRequested; i++) {
+        const char* name = store->regionName(i);
+        if (strcmp(name, BROWSE_REGION) == 0) {
+            continue;
+        }
+        MarkerJob marker { rootPath, name, false };
+        io->run(IoPriority::Background, trailsMarkerJob, &marker);
+        RegionMeta region {};
+        if (marker.exists || !readMeta(name, region) || !region.isComplete() || tileRange(region.box, TRAIL_ZOOM).count() > TRAIL_MAX_TILES) {
+            continue;
+        }
+        snprintf(region.name, sizeof(region.name), "%s", name);
+        if (!claimIdle()) {
+            return;
+        }
+        logInfo("Trails: %s has no trails.ok, its trails are fetched", name);
+        const bool done = runTrails(region, true);
+        trailsQueryMs = nowMs();
+        releaseIdle();
+        if (!done && !cancelRequested && !trailsYielded) {
+            trailsSweepFailedMs = nowMs();
+        }
+        // One region per call; the sweep goes on with the next call
+        return;
+    }
+    trailsSweep = false;
+}
+
 
 void Downloader::browseProgress(int& done, int& total) {
     xSemaphoreTake(mutex, portMAX_DELAY);
@@ -2495,6 +2947,7 @@ void Downloader::runUpdate(bool manual) {
     connection.body = &bodies[0];
     connection.received = 0;
     connection.lastFolder[0] = '\0';
+    connection.shortReadMs = 0;
     if (!ensureTileJson(connection)) {
         giveClient(connection);
         setStatus(State::Failed, "OpenFreeMap is not reachable");

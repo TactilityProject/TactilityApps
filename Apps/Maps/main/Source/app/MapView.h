@@ -374,6 +374,15 @@ private:
     void goBack();
     void openRegions();
     void fillRegionList();
+    /** The region on the selected row of the list, -1 for a group row or none. */
+    int selectedRegion() const;
+    /** Selects the row that shows region index (its group's row when it is in one). */
+    void selectRegionRow(int index);
+    /** The group of maps on row, its actions: open it, show all of it, rename all of it. */
+    void openGroupActions(int row);
+    void chooseGroupAction(int action);
+    /** Every map titled actionGroup gets this title. */
+    void renameRegionGroup(const char* title);
     /** Enter, a tap or a long press on a region: what can be done with it. */
     void openRegionActions();
     void chooseRegionAction(int action);
@@ -620,6 +629,14 @@ private:
     int regionCount = 0;
     /** The folder of the region whose actions popup is open: the list can be rebuilt while it is open. */
     char actionRegion[REGION_NAME_MAX + 1] {};
+    /**
+     * Maps with the same title are one row of the list (regionRows), opened to list them on their own: the rows,
+     * the title of the group listed (empty for all maps) and the group whose actions popup or rename prompt is open.
+     */
+    RegionRow regionRowList[TileStore::MAX_REGIONS] {};
+    int regionRowCount = 0;
+    char regionGroup[sizeof(RegionMeta::title)] = "";
+    char actionGroup[sizeof(RegionMeta::title)] = "";
     ListView settingList;
     char catalogPath[PATH_MAX_LENGTH] = "";
     FileBuffer catalogFile;
@@ -684,6 +701,10 @@ private:
     /** No new build before this time after a failed one. */
     uint32_t searchIndexRetryAt = 0;
     bool waitingSearchIndex = false;
+    /** waittrails: the script waits until a trails query runs, or this time (0: not waiting). */
+    uint32_t waitingTrailsUntil = 0;
+    /** When mirrored log lines (logmirror) last went to scriptlog.txt. */
+    uint32_t lastMirrorFlush = 0;
     Downloader::State searchIndexDownloadState = Downloader::State::Idle;
     void pollSearchIndex(uint32_t now);
     void startSearchIndex(bool force, const char* only = nullptr);
@@ -703,6 +724,7 @@ private:
     TextPrompt prompt;
     enum class PromptPurpose : uint8_t {
         RenameRegion,
+        RenameGroup,
         RenameWaypoint,
         CatalogSearch
     };
@@ -718,6 +740,10 @@ private:
     /** The region of the download that was paused from the details card, so it can be resumed there. */
     char pausedRegion[REGION_NAME_MAX + 1] = "";
     char cancelRegion[REGION_NAME_MAX + 1] = "";
+    /** The folder of the map a region dialog or rename prompt was opened for: the list can change while it is open. */
+    char dialogRegion[REGION_NAME_MAX + 1] = "";
+    /** The index of dialogRegion in regions, -1 when it is gone. */
+    int dialogRegionIndex() const;
     TransferRate transferRate;
     DownloadCard downloadCard;
     Rect pillRect {};

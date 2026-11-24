@@ -46,6 +46,11 @@ public:
     void setRegionBounds(const char* name, const BoundingBox& box, int minZoom, int maxZoom);
     /** Whether a region can have a tile. */
     bool mayHave(int index, const TileKey& tile) const;
+    /**
+     * Whether a tile lies in a region's area, at any zoom: trail and height files are z12 files of every region,
+     * also of one downloaded to z10 or from z13 on.
+     */
+    bool mayHaveArea(int index, const TileKey& tile) const;
 
     /**
      * Finds the file to draw a tile from: the tile itself, or the nearest ancestor that exists, never above

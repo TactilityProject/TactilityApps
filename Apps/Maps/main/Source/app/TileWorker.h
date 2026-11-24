@@ -74,6 +74,8 @@ public:
     void setLightStep(int step);
     /** z12 tiles a drawn tile needed heights of and found none (at most out's 8), for the downloader. */
     int takeMissingTerrain(TileKey* out, int max);
+    /** z12 tiles a tile on screen found no trail file for (Marked trails on), at most out's 8, for the downloader. */
+    int takeMissingTrails(TileKey* out, int max);
     /** Where the lanes put the label sections of the prepared tiles they draw. Set before start(). */
     void setLabelStore(LabelStore* store) { labelStore = store; }
     void stop();
@@ -400,6 +402,21 @@ private:
     TileKey missingTerrain[MAX_MISSING_TERRAIN] {};
     int missingTerrainCount = 0;
     void noteMissingTerrain(const TileKey& tile);
+    TileKey missingTrails[MAX_MISSING_TERRAIN] {};
+    int missingTrailsCount = 0;
+    void noteMissingTrails(const TileKey& tile);
+    /**
+     * z12 tiles on screen whose trail file is still to be looked for (want()): a tile rendered for the ring around the
+     * screen did not ask, and is not rendered again when it comes on screen. trailsLooked: the last ones looked for.
+     */
+    static constexpr int TRAIL_LOOKS = 8;
+    static constexpr int TRAILS_LOOKED = 32;
+    TileKey trailLooks[TRAIL_LOOKS] {};
+    int trailLookCount = 0;
+    TileKey trailsLooked[TRAILS_LOOKED] {};
+    int trailsLookedNext = 0;
+    /** Looks for one trail file of trailLooks; true when it did. */
+    bool lookForTrails(Lane& lane);
     std::atomic<bool> trailsOn { false };
     TerrainSlot terrainSlots[MAX_TERRAIN_SLOTS] {};
     int terrainSlotCount = 0;

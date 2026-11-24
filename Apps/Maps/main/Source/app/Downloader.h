@@ -90,11 +90,22 @@ public:
      */
     bool downloadTerrain(const char* region);
     /**
-     * Fetches the region's marked trails with one Overpass API query (opt-in, Settings, Marked trails) and stores a
-     * .trl file next to each z12 tile (render/Trails.h). After a 429 or 504 it waits 30 s, at most twice.
+     * Fetches the region's marked trails with one Overpass API query and stores a
+     * .trl file next to each z12 tile (render/Trails.h). After a 429 or 504 it waits 30 s, at most twice. A region
+     * with all its trails has maps/<region>/trails.ok.
      */
     bool downloadTrails(const char* region);
-    void setTrailsWithDownloads(bool value) { trailsWithDownloads = value; }
+    /**
+     * Trails follow every finished download and the browsed map (always on since 23 Nov 2026; drawn in the outdoor style
+     * only); the regions downloaded before get theirs in idle time, one query at a time.
+     */
+    void setTrailsWithDownloads(bool value);
+    /**
+     * Asks for the trails of a z12 tile: the map drew a tile on screen there and found no trail file.
+     * Fetched in idle time, after the heights, as one small query for its z11 block (4 z12 tiles) into the browsed
+     * region; tiles without trails get an empty file, so they are not asked for again.
+     */
+    void queueTrails(const TileKey& tile);
     /**
      * Heights follow every finished download and browsed tiles (Settings, Terrain); switched on, the regions downloaded
      * before get theirs in idle time (a region with all of them has maps/<region>/terrain.ok).
@@ -165,7 +176,8 @@ public:
     /** Whether every tile on screen is drawn: idle-time heights wait for it (drawing takes the internal RAM). */
     void setViewComplete(bool value) {
         // A view completing with terrain waiting starts it at once
-        if (value && !viewComplete.exchange(true) && terrainWithDownloads && browseTerrainCount > 0 && wake != nullptr) {
+        if (value && !viewComplete.exchange(true) && ((terrainWithDownloads && browseTerrainCount > 0) || (trailsWithDownloads && browseTrailsCount > 0)) &&
+            wake != nullptr) {
             xSemaphoreGive(wake);
         }
         viewComplete = value;
@@ -196,6 +208,13 @@ private:
         /** When the request now running started, and how long its TCP and TLS connect took (0: reused). */
         uint32_t requestStartMs = 0;
         uint32_t connectMs = 0;
+        /** The largest answer taken (0: MAX_TILE_BYTES). */
+        size_t maxBytes = 0;
+        /**
+         * Once connected, reads wait at most this long (0: the client's timeout): perform() then returns
+         * ESP_ERR_HTTP_EAGAIN and goes on where it stopped when called again, so a long wait can give way.
+         */
+        int shortReadMs = 0;
         /** Whether the client has an open connection the next request can reuse. */
         bool connected = false;
         /** Whether this connection holds the handshake lock. */
@@ -249,12 +268,28 @@ private:
     bool runTerrainTiles(const char* regionName, TileKey* tiles, int count, bool quiet);
     /** Stores a height file (a TerrainFileJob), trying again when the write gave way to the map. */
     bool storeTerrain(void* job);
+    /** Runs a card write job, trying again while it gives way to the map (as storeTerrain). */
+    bool storeGivingWay(IoJob write, void* job);
     /** Idle-time heights: browsed areas, and the regions without them after Terrain was switched on. */
     void runPendingTerrain();
     /** Takes the control task for idle work when no job waits; releaseIdle() gives it back. */
     bool claimIdle();
     void releaseIdle();
-    bool runTrails(const RegionMeta& region);
+    /** A region's trails; on success it writes trails.ok. Quiet: idle time, no retries, no messages but the progress. */
+    bool runTrails(const RegionMeta& region, bool quiet = false);
+    /**
+     * One Overpass query for a box, its trail files stored into a region. markEmpty: every z12 tile of the box gets a
+     * file, an empty one where no trail is (the map then knows it was asked).
+     */
+    bool runTrailsArea(const char* regionName, const BoundingBox& box, bool quiet, bool markEmpty);
+    /** Idle-time trails: blocks of the browsed map, then the regions without trails.ok. One query per call. */
+    void runPendingTrails();
+    /** Heights or trail blocks of the browsed map wait and can run now: idle-time updates of regions wait for them. */
+    bool screenWorkWaiting();
+    /** Reads which regions have all their trails (trails.ok) and their boxes. */
+    void refreshTrailRegions();
+    /** Whether a region with all its trails covers the z12 tiles of a z11 block. */
+    bool trailsCovered(const TileKey& block) const;
     /** Updates one region whose tiles are older than the source; manual: not paused by input. */
     void runUpdate(bool manual);
     /** The name of a complete region with an older tile version than the source, or false. */
@@ -279,6 +314,14 @@ private:
     void browseLoop();
     bool fetchBrowseTile(const TileKey& tile);
     bool ensureBrowseRegion(const TileKey& tile);
+    /**
+     * Makes sure the browsed map exists (folder, meta.json, in the store) and its box takes in these tiles, for trail
+     * and height files of areas that have no browsed tiles: in a downloaded area without them, trail blocks were
+     * dropped while no browsed map existed (24 Nov).
+     */
+    bool coverInBrowsed(const TileKey* tiles, int count);
+    /** A trail block left the queue unasked: it may be queued again when the map shows it. */
+    void forgetTrailBlock(const TileKey& block);
     void saveProgress();
     bool readMeta(const char* region, RegionMeta& out);
     bool writeMeta(const RegionMeta& out);
@@ -322,7 +365,33 @@ private:
     int browseTerrainCount = 0;
     TileKey browseTerrainSeen[BROWSE_TERRAIN] {};
     int browseTerrainSeenNext = 0;
-    bool trailsWithDownloads = false;
+    std::atomic<bool> trailsWithDownloads { false };
+    /** Regions without trails.ok are looked for (Marked trails switched on, or a region's query failed). */
+    std::atomic<bool> trailsSweep { false };
+    /**
+     * After an idle-time query failed, the next one waits: a browsed block TRAILS_BLOCK_RETRY_MS, a region
+     * TRAILS_RETRY_MS (a failed region does not hold up the blocks of the screen). Queries are TRAILS_GAP_MS apart.
+     */
+    uint32_t trailsFailedMs = 0;
+    uint32_t trailsSweepFailedMs = 0;
+    uint32_t trailsQueryMs = 0;
+    /** The last query found no TLS connection: the firmware cannot reach the server, not asked again this session. */
+    std::atomic<bool> trailsNoTls { false };
+    /** The HTTP status of the last query (0: none). */
+    int trailsStatus = 0;
+    /** The last quiet query gave the connection to browsing before its answer came: asked again later, no failure. */
+    bool trailsYielded = false;
+    static constexpr int BROWSE_TRAILS = 8;
+    static constexpr int TRAILS_SEEN = 32;
+    /** z11 blocks of tiles on screen without trail files, the latest last; and the last ones queued. */
+    TileKey browseTrails[BROWSE_TRAILS] {};
+    int browseTrailsCount = 0;
+    TileKey browseTrailsSeen[TRAILS_SEEN] {};
+    int browseTrailsSeenNext = 0;
+    /** Boxes of the regions with trails.ok (control task only). */
+    BoundingBox trailRegions[TileStore::MAX_REGIONS] {};
+    int trailRegionCount = 0;
+    std::atomic<bool> trailRegionsStale { true };
     std::atomic<bool> terrainChanged { false };
     /** A height or trail file was stored for this z12 tile. */
     void noteTerrainFile(const TileKey& tile);
@@ -331,6 +400,8 @@ private:
     bool terrainArrivedAll = false;
     ChunkedBody bodies[CONNECTIONS];
     SemaphoreHandle_t tileJsonLock = nullptr;
+    /** browseMeta: the browse task grows it with tiles, the control task with trail and height blocks. */
+    SemaphoreHandle_t browseMetaLock = nullptr;
     /** Held for each HTTPS request (perform()). */
     SemaphoreHandle_t transferLock = nullptr;
     SemaphoreHandle_t browseWake = nullptr;
@@ -346,6 +417,11 @@ private:
     TileKey browseEmpty[BROWSE_EMPTY] {};
     int browseEmptyCount = 0;
     int browseEmptyNext = 0;
+    /** Tiles that failed while browsing, not asked for again until BROWSE_FAILED_MS after the failure. */
+    static constexpr int BROWSE_FAILED = 8;
+    TileKey browseFailed[BROWSE_FAILED] {};
+    uint32_t browseFailedMs[BROWSE_FAILED] {};
+    int browseFailedNext = 0;
     std::atomic<bool> browsing = false;
     std::atomic<bool> idle = true;
     std::atomic<bool> viewComplete = false;

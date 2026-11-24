@@ -85,7 +85,8 @@ bool MapView::begin(Device* display, const char* root, const char* dataPath) {
     worker.setDeflatePrepared(settings.deflatePrepared);
     worker.setSdCache(settings.sdCache);
     worker.setTerrain(settings.terrain);
-    worker.setTrails(settings.trails);
+    // Marked trails are drawn in the outdoor style only (decided 23 Nov 2026)
+    worker.setTrails(palette->outdoor);
     startLabels(root);
     if (!worker.start(&store, &io, palette, TILE_CACHE_SLOTS, root)) {
         return false;
@@ -220,7 +221,9 @@ void MapView::startServices(const char* root) {
     downloader.setTiming(settings.devProbe);
     downloader.setMemoryRelief([](void* context, size_t bytes) { return static_cast<TileWorker*>(context)->relieveMemory(bytes); }, &worker);
     downloader.setTerrainWithDownloads(settings.terrain);
-    downloader.setTrailsWithDownloads(settings.trails);
+    // Marked trails are always downloaded (decided 23 Nov 2026): with each region, for the browsed map, and in idle time
+    // for the regions without them, so that the outdoor style has them at once
+    downloader.setTrailsWithDownloads(true);
     if (!downloader.start(root, &store, &io)) {
         logError("Downloader not started");
     }
@@ -520,10 +523,17 @@ void MapView::drawStatus() {
     pillRect = {};
     statusShown = false;
     bool progress = true;
-    if (status.state == Downloader::State::Downloading && status.total > 0 && (status.terrain || status.trails)) {
-        // Terrain and trails count elevation tiles: "Downloading terrain" for browsed areas, else with the region
+    if (status.state == Downloader::State::Downloading && status.trails) {
+        // One query, then its files: no tile count (done/total count the two steps)
+        if (strcmp(status.region, BROWSE_REGION) == 0) {
+            snprintf(text, sizeof(text), "Downloading trails");
+        } else {
+            snprintf(text, sizeof(text), "Downloading %s trails", statusTitle);
+        }
+    } else if (status.state == Downloader::State::Downloading && status.total > 0 && status.terrain) {
+        // Terrain counts elevation tiles: "Downloading terrain" for browsed areas, else with the region
         char title[64];
-        const char* what = status.terrain ? "terrain" : "trails";
+        const char* what = "terrain";
         if (strcmp(status.region, BROWSE_REGION) == 0) {
             snprintf(title, sizeof(title), "%s", what);
         } else {

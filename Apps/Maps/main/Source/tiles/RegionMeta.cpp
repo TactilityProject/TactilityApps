@@ -182,6 +182,51 @@ const char* regionTitle(const RegionMeta& meta) {
     return meta.title[0] != '\0' ? meta.title : meta.name;
 }
 
+bool sameRegionTitle(const char* a, const char* b) {
+    auto fold = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    for (; *a != '\0' && *b != '\0'; a++, b++) {
+        if (fold(*a) != fold(*b)) {
+            return false;
+        }
+    }
+    return *a == *b;
+}
+
+namespace {
+
+/** Regions that can share a row: the browsed map and regions named only by their folder stay alone. */
+bool groupable(const RegionMeta& meta) {
+    return meta.title[0] != '\0' && strcmp(meta.name, "browsed") != 0;
+}
+
+} // namespace
+
+int regionRows(const RegionMeta* regions, int count, const char* group, RegionRow* rows) {
+    int rowCount = 0;
+    if (group != nullptr && group[0] != '\0') {
+        for (int i = 0; i < count; i++) {
+            if (groupable(regions[i]) && sameRegionTitle(regions[i].title, group)) {
+                rows[rowCount++] = { i, 1 };
+            }
+        }
+        return rowCount;
+    }
+    for (int i = 0; i < count; i++) {
+        bool joined = false;
+        for (int row = 0; row < rowCount && groupable(regions[i]) && !joined; row++) {
+            const RegionMeta& first = regions[rows[row].region];
+            if (groupable(first) && sameRegionTitle(first.title, regions[i].title)) {
+                rows[row].members++;
+                joined = true;
+            }
+        }
+        if (!joined) {
+            rows[rowCount++] = { i, 1 };
+        }
+    }
+    return rowCount;
+}
+
 bool writeRegionMeta(const char* path, const RegionMeta& meta) {
     char text[896];
     if (!formatRegionMeta(meta, text, sizeof(text))) {

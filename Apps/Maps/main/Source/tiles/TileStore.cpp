@@ -124,6 +124,15 @@ bool TileStore::mayHave(int index, const TileKey& tile) const {
     return tile.x >= range.minX - 1 && tile.x <= range.maxX + 1 && tile.y >= range.minY - 1 && tile.y <= range.maxY + 1;
 }
 
+bool TileStore::mayHaveArea(int index, const TileKey& tile) const {
+    const Bounds& b = bounds[index];
+    if (!b.known || !(b.box.west < b.box.east && b.box.south < b.box.north)) {
+        return true;
+    }
+    const TileRange range = tileRange(b.box, tile.z);
+    return tile.x >= range.minX - 1 && tile.x <= range.maxX + 1 && tile.y >= range.minY - 1 && tile.y <= range.maxY + 1;
+}
+
 bool TileStore::find(const TileKey& target, TileFile& file) const {
     const int top = target.z < MAX_SOURCE_ZOOM ? target.z : MAX_SOURCE_ZOOM;
     const int bottom = target.z - MAX_OVERZOOM > 0 ? target.z - MAX_OVERZOOM : 0;

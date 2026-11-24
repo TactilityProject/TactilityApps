@@ -17,6 +17,15 @@ uint64_t nowUs();
 
 void logInfo(const char* format, ...);
 void logError(const char* format, ...);
+/**
+ * Debug scripts: log lines containing word are also kept (up to 8 KB) until dropMirroredLog() lets them go, so that a
+ * test without a serial log (the T-Deck after a reboot) can still read them. nullptr or "" stops it.
+ */
+void setLogMirror(const char* word);
+/** A copy of the kept lines, whole lines only, into out (NUL-terminated); returns their length, 0 when none. */
+size_t peekMirroredLog(char* out, size_t size);
+/** Lets the first bytes of the kept lines go (written to the card). */
+void dropMirroredLog(size_t bytes);
 
 bool fileExists(const char* path);
 /** The size of a regular file. Returns false when there is none. */
