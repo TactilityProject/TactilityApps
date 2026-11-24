@@ -34,6 +34,7 @@ struct CalendarContext {
     std::vector<CalendarEvent> events;
     std::vector<CalendarEvent> upcomingEvents;
     bool fullCalendarAvailable = false;
+    bool fullCalendarHasTiming = false;
     uint32_t fullCalendarGeneration = 0;
     uint32_t upcomingEventsGeneration = 0;
     char upcomingWindowStart[17] {};
@@ -60,6 +61,9 @@ struct CalendarContext {
     lv_timer_t* statusTimer = nullptr;
     lv_timer_t* agendaCoverageTimer = nullptr;
     bool agendaCoverageExpired = false;
+    int64_t agendaWindowStart = 0;
+    int64_t agendaNextRefresh = 0;
+    bool agendaUsesLocalCalendar = false;
     lv_obj_t* urlInput = nullptr;
     lv_obj_t* usernameInput = nullptr;
     lv_obj_t* passwordInput = nullptr;
