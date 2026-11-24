@@ -22,7 +22,9 @@ namespace {
 constexpr const char* APP_ID = "tactility.calendar";
 constexpr const char* CACHE_FILE = "calendar.cache";
 constexpr const char* CACHE_TEMP_FILE = "calendar.cache.tmp";
-constexpr char CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V6\n";
+constexpr char CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V8\n";
+constexpr char PREVIOUS_TIMING_CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V7\n";
+constexpr char TIMING_LEGACY_CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V6\n";
 constexpr char PREVIOUS_CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V5\n";
 constexpr char LEGACY_CACHE_MAGIC[] = "TACTILITY_CALENDAR_CACHE_V4\n";
 constexpr size_t MAX_RESPONSE_BYTES = 512 * 1024;
@@ -367,14 +369,21 @@ bool writeCacheEvents(FILE* file, const std::vector<CalendarEvent>& events) {
             !writeCacheField(file, event.recurrenceUnsupported ? "1" : "0") ||
             !writeCacheField(file, event.recurrenceThisAndFuture ? "1" : "0") ||
             !writeCacheField(file, event.excludedDatesIncomplete ? "1" : "0") ||
-            !writeCacheField(file, event.timeZoneTransitionsIncomplete ? "1" : "0")) {
+            !writeCacheField(file, event.timeZoneTransitionsIncomplete ? "1" : "0") ||
+            !writeCacheField(file, event.timingStart) ||
+            !writeCacheField(file, event.timingEnd) ||
+            !writeCacheField(file, event.timingDuration) ||
+            !writeCacheField(file, event.timingIncomplete ? "1" : "0") ||
+            !writeCacheInteger(file, event.timingEndOffset) ||
+            !writeCacheField(file, event.timingEndOffsetValid ? "1" : "0")) {
             return false;
         }
     }
     return true;
 }
 
-bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events) {
+bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events,
+                     bool hasTiming, bool hasEndOffset) {
     size_t count = 0;
     if (!readCacheSize(file, count)) return false;
     for (size_t i = 0; i < count; ++i) {
@@ -443,6 +452,22 @@ bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events) {
         event.excludedDatesIncomplete = flag[0] == '1';
         if (!readCacheField(file, flag, sizeof(flag)) || (flag[0] != '0' && flag[0] != '1')) return false;
         event.timeZoneTransitionsIncomplete = flag[0] == '1';
+        if (hasTiming) {
+            if (!readCacheField(file, event.timingStart, sizeof(event.timingStart)) ||
+                !readCacheField(file, event.timingEnd, sizeof(event.timingEnd)) ||
+                !readCacheField(file, event.timingDuration, sizeof(event.timingDuration)) ||
+                !readCacheField(file, flag, sizeof(flag)) ||
+                (flag[0] != '0' && flag[0] != '1')) return false;
+            event.timingIncomplete = flag[0] == '1';
+            if (hasEndOffset) {
+                if (!readCacheInteger(file, event.timingEndOffset) ||
+                    !readCacheField(file, flag, sizeof(flag)) ||
+                    (flag[0] != '0' && flag[0] != '1')) return false;
+                event.timingEndOffsetValid = flag[0] == '1';
+            }
+        } else {
+            event.timingIncomplete = true;
+        }
         events.push_back(event);
     }
     return true;
@@ -451,6 +476,7 @@ bool readCacheEvents(FILE* file, std::vector<CalendarEvent>& events) {
 bool saveCalendarCache(const CalendarSyncSettings& settings, const std::vector<CalendarEvent>& events,
                        const std::vector<CalendarEvent>& upcomingEvents,
                        bool fullCalendarAvailable,
+                       bool fullCalendarHasTiming,
                        const char* upcomingWindowStart,
                        const char* upcomingWindowEnd) {
     if (settings.cacheIdentity[0] == '\0') return false;
@@ -469,6 +495,7 @@ bool saveCalendarCache(const CalendarSyncSettings& settings, const std::vector<C
         writeCacheField(file, settings.username) &&
         writeCacheField(file, settings.cacheIdentity) &&
         writeCacheField(file, fullCalendarAvailable ? "1" : "0") &&
+        writeCacheField(file, fullCalendarHasTiming ? "1" : "0") &&
         writeCacheField(file, upcomingWindowStart) &&
         writeCacheField(file, upcomingWindowEnd) &&
         writeCacheEvents(file, events) &&
@@ -494,12 +521,14 @@ bool saveCalendarCache(const CalendarSyncSettings& settings, const std::vector<C
 bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<CalendarEvent>& events,
                        std::vector<CalendarEvent>& upcomingEvents,
                        bool& fullCalendarAvailable,
+                       bool& fullCalendarHasTiming,
                        char* upcomingWindowStart, size_t upcomingWindowStartSize,
                        char* upcomingWindowEnd, size_t upcomingWindowEndSize,
                        bool& found, bool& matchesSettings) {
     found = false;
     matchesSettings = false;
     fullCalendarAvailable = false;
+    fullCalendarHasTiming = false;
     if (upcomingWindowStartSize > 0) upcomingWindowStart[0] = '\0';
     if (upcomingWindowEndSize > 0) upcomingWindowEnd[0] = '\0';
     char path[256] {};
@@ -512,7 +541,9 @@ bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<Calenda
     char header[sizeof(CACHE_MAGIC)] {};
     const bool hasHeader = fgets(header, sizeof(header), file) != nullptr;
     const bool currentFormat = hasHeader && strcmp(header, CACHE_MAGIC) == 0;
-    const bool validHeader = currentFormat ||
+    const bool previousTimingFormat = hasHeader && strcmp(header, PREVIOUS_TIMING_CACHE_MAGIC) == 0;
+    const bool timingLegacyFormat = hasHeader && strcmp(header, TIMING_LEGACY_CACHE_MAGIC) == 0;
+    const bool validHeader = currentFormat || previousTimingFormat || timingLegacyFormat ||
         (hasHeader && (strcmp(header, PREVIOUS_CACHE_MAGIC) == 0 ||
                        strcmp(header, LEGACY_CACHE_MAGIC) == 0));
     char cachedUrl[sizeof(settings.calendarUrl)] {};
@@ -522,7 +553,7 @@ bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<Calenda
         fclose(file);
         return false;
     }
-    if (!currentFormat) {
+    if (!currentFormat && !previousTimingFormat && !timingLegacyFormat) {
         fclose(file);
         return true;
     }
@@ -542,13 +573,24 @@ bool loadCalendarCache(const CalendarSyncSettings& settings, std::vector<Calenda
     }
 
     char fullCalendarFlag[2] {};
+    char fullTimingFlag[2] {};
     const bool validData = readCacheField(file, fullCalendarFlag, sizeof(fullCalendarFlag)) &&
         (fullCalendarFlag[0] == '0' || fullCalendarFlag[0] == '1') &&
+        (!currentFormat ||
+         (readCacheField(file, fullTimingFlag, sizeof(fullTimingFlag)) &&
+          (fullTimingFlag[0] == '0' || fullTimingFlag[0] == '1'))) &&
         readCacheWindow(file, upcomingWindowStart, upcomingWindowStartSize,
                         upcomingWindowEnd, upcomingWindowEndSize) &&
-        readCacheEvents(file, events) &&
-        readCacheEvents(file, upcomingEvents) && fgetc(file) == EOF && !ferror(file);
-    if (validData) fullCalendarAvailable = fullCalendarFlag[0] == '1';
+        readCacheEvents(file, events, currentFormat || previousTimingFormat, currentFormat) &&
+        readCacheEvents(file, upcomingEvents, currentFormat || previousTimingFormat, currentFormat) &&
+        fgetc(file) == EOF && !ferror(file);
+    if (validData) {
+        fullCalendarAvailable = fullCalendarFlag[0] == '1';
+        fullCalendarHasTiming = fullCalendarAvailable &&
+            (currentFormat ? fullTimingFlag[0] == '1'
+             : previousTimingFormat && std::none_of(events.begin(), events.end(),
+                 [](const CalendarEvent& event) { return event.timingStart[0] == '\0'; }));
+    }
     fclose(file);
     return validData;
 }
@@ -582,9 +624,11 @@ bool calendarSaveCache(const CalendarSyncSettings& settings,
                        const std::vector<CalendarEvent>& events,
                        const std::vector<CalendarEvent>& upcomingEvents,
                        bool fullCalendarAvailable,
+                       bool fullCalendarHasTiming,
                        const char* upcomingWindowStart,
                        const char* upcomingWindowEnd) {
     return saveCalendarCache(settings, events, upcomingEvents, fullCalendarAvailable,
+                             fullCalendarHasTiming,
                              upcomingWindowStart, upcomingWindowEnd);
 }
 
@@ -592,10 +636,12 @@ bool calendarLoadCache(const CalendarSyncSettings& settings,
                        std::vector<CalendarEvent>& events,
                        std::vector<CalendarEvent>& upcomingEvents,
                        bool& fullCalendarAvailable,
+                       bool& fullCalendarHasTiming,
                        char* upcomingWindowStart, size_t upcomingWindowStartSize,
                        char* upcomingWindowEnd, size_t upcomingWindowEndSize,
                        bool& found, bool& matchesSettings) {
     return loadCalendarCache(settings, events, upcomingEvents, fullCalendarAvailable,
+                             fullCalendarHasTiming,
                              upcomingWindowStart, upcomingWindowStartSize,
                              upcomingWindowEnd, upcomingWindowEndSize,
                              found, matchesSettings);

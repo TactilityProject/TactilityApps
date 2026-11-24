@@ -23,6 +23,13 @@ struct CalendarEvent {
     char endDateExclusive[11] {};
     char start[48] {};
     char summary[112] {};
+    char timingStart[17] {};
+    char timingEnd[17] {};
+    char timingDuration[40] {};
+    char timingOccurrenceStart[17] {};
+    // Offset at the original DTEND when it uses a different time zone.
+    int32_t timingEndOffset = 0;
+    bool timingEndOffsetValid = false;
     char recurrenceRule[192] {};
     char recurrenceLocalId[20] {};
     char recurrenceTimeZone[96] {};
@@ -35,6 +42,7 @@ struct CalendarEvent {
     bool recurrenceUnsupported = false;
     bool excludedDatesIncomplete = false;
     bool timeZoneTransitionsIncomplete = false;
+    bool timingIncomplete = false;
 };
 
 bool calendarFormatDateKey(char* output, std::size_t size, int year, int month, int day);
@@ -43,3 +51,10 @@ bool calendarParseResponse(const std::string& xml, std::vector<CalendarEvent>& e
 bool calendarExpandEventsForMonth(const std::vector<CalendarEvent>& events,
                                  int year, int month,
                                  std::vector<CalendarEvent>& monthEvents);
+bool calendarExpandEventsForDateRange(const std::vector<CalendarEvent>& events,
+                                     const char* startDate, const char* endDateExclusive,
+                                     std::vector<CalendarEvent>& rangeEvents);
+bool calendarExpandEventsForInterval(const std::vector<CalendarEvent>& events,
+                                    int64_t start, int64_t end,
+                                    std::vector<CalendarEvent>& intervalEvents,
+                                    int64_t* nextChange = nullptr);

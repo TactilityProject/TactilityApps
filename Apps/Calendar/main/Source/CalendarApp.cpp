@@ -6,6 +6,8 @@
 #include <lvgl/fonts.h>
 #include <lvgl/icons/shared.h>
 #include <lvgl/grid_navigation.h>
+#include <lvgl/theme.h>
+#include <lvgl/widgets/card.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/system_bars.h>
 #include <tactility/error.h>
@@ -68,6 +70,11 @@ void showSettings(CalendarContext* context, bool visible) {
             context->page != CalendarPage::Month || context->dayAgendaVisible);
         lv_obj_set_hidden(context->selectedDayPanel,
             context->page != CalendarPage::Month || !context->dayAgendaVisible);
+    }
+    if (!visible) {
+        lv_obj_t* focus = context->page == CalendarPage::Agenda ? context->agendaPanel
+            : context->dayAgendaVisible ? context->selectedDayEvents : context->monthGrid;
+        if (focus != nullptr) lv_group_focus_obj(focus);
     }
 }
 
@@ -144,6 +151,7 @@ void invalidateCalendarData(CalendarContext* context) {
     context->events.clear();
     context->upcomingEvents.clear();
     context->fullCalendarAvailable = false;
+    context->fullCalendarHasTiming = false;
     context->upcomingWindowStart[0] = '\0';
     context->upcomingWindowEnd[0] = '\0';
     copyText(context->status, sizeof(context->status),
@@ -174,6 +182,7 @@ void setCalendarPage(CalendarContext* context, CalendarPage page) {
     } else {
         refreshEventList(context);
     }
+    lv_group_focus_obj(page == CalendarPage::Month ? context->monthGrid : context->agendaPanel);
 }
 
 void onPreviousPage(void* userData) {
@@ -241,39 +250,69 @@ void refreshEventList(CalendarContext* context) {
         context->upcomingEventsGeneration == context->settingsGeneration.load() &&
         calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
                                         context->upcomingWindowEnd);
+    context->agendaUsesLocalCalendar =
+        context->fullCalendarAvailable &&
+        context->fullCalendarGeneration == context->settingsGeneration.load();
     context->agendaCoverageExpired = !covered;
-    if (!covered) {
+    context->agendaWindowStart = 0;
+    context->agendaNextRefresh = 0;
+    std::vector<CalendarEvent> localEvents;
+    const std::vector<CalendarEvent>* shownEvents = &context->upcomingEvents;
+    if (context->agendaUsesLocalCalendar) {
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        if (now < 1735689600) {
+            lv_obj_t* unavailable = lv_label_create(context->agendaPanel);
+            lv_label_set_text(unavailable, "Set the device clock to view the Agenda.");
+            lv_obj_set_width(unavailable, LV_PCT(100));
+            lv_label_set_long_mode(unavailable, LV_LABEL_LONG_MODE_WRAP);
+            return;
+        }
+        context->agendaWindowStart = now;
+        const bool expandedComplete = calendarExpandEventsForInterval(
+            context->events, now, now + 30 * 24 * 60 * 60, localEvents,
+            &context->agendaNextRefresh);
+        const bool complete = context->fullCalendarHasTiming && expandedComplete;
+        if (!complete && covered) {
+            context->agendaUsesLocalCalendar = false;
+        } else if (!complete) {
+            lv_obj_t* warning = lv_label_create(context->agendaPanel);
+            lv_label_set_text(warning,
+                "Some cached events cannot be calculated. Sync may be needed.");
+            lv_obj_set_width(warning, LV_PCT(100));
+            lv_label_set_long_mode(warning, LV_LABEL_LONG_MODE_WRAP);
+        }
+        if (context->agendaUsesLocalCalendar) shownEvents = &localEvents;
+    } else if (!covered) {
         lv_obj_t* unavailable = lv_label_create(context->agendaPanel);
-        lv_label_set_text(unavailable,
-            "Cached Agenda does not cover the current 30-day window. Sync to refresh.");
         lv_obj_set_width(unavailable, LV_PCT(100));
         lv_label_set_long_mode(unavailable, LV_LABEL_LONG_MODE_WRAP);
+        lv_label_set_text(unavailable,
+            "Cached Agenda does not cover the current 30-day window. Sync to refresh.");
         return;
     }
 
-    if (context->upcomingEvents.empty()) {
+    if (shownEvents->empty()) {
         lv_obj_t* empty = lv_label_create(context->agendaPanel);
-        lv_label_set_text(empty, "No events in the next 30 days.");
+        lv_label_set_text(empty, "No events found in the next 30 days.");
         lv_obj_set_width(empty, LV_PCT(100));
         lv_label_set_long_mode(empty, LV_LABEL_LONG_MODE_WRAP);
         return;
     }
 
-    for (const CalendarEvent& event : context->upcomingEvents) {
-        lv_obj_t* card = lv_button_create(context->agendaPanel);
+    for (const CalendarEvent& event : *shownEvents) {
+        lv_obj_t* card = lvgl_card_create(context->agendaPanel);
         lv_obj_set_width(card, LV_PCT(100));
         lv_obj_set_height(card, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_gap(card, 4, 0);
         lv_obj_set_scrollable(card, false);
-        lv_obj_set_scroll_on_focus(card, true);
+        lv_obj_set_clickable(card, false);
 
         lv_obj_t* date = lv_label_create(card);
         lv_label_set_text(date, event.start);
         lv_obj_set_width(date, LV_PCT(100));
         lv_label_set_long_mode(date, LV_LABEL_LONG_MODE_WRAP);
         lv_obj_set_style_text_font(date, lvgl_get_text_font(FONT_SIZE_SMALL), 0);
-        lv_obj_set_style_text_opa(date, LV_OPA_70, 0);
 
         lv_obj_t* summary = lv_label_create(card);
         lv_label_set_text(summary, event.summary);
@@ -285,14 +324,25 @@ void refreshEventList(CalendarContext* context) {
 void onAgendaCoverageTimer(lv_timer_t* timer) {
     auto* context = static_cast<CalendarContext*>(lv_timer_get_user_data(timer));
     if (context->agendaPanel == nullptr || context->page != CalendarPage::Agenda ||
-        context->dayAgendaVisible || context->settingsVisible ||
-        context->agendaCoverageExpired) {
+        context->dayAgendaVisible || context->settingsVisible) {
         return;
     }
 
-    if (context->upcomingEventsGeneration != context->settingsGeneration.load() ||
-        !calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
-                                         context->upcomingWindowEnd)) {
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (context->agendaUsesLocalCalendar) {
+        if ((context->agendaWindowStart == 0 && now >= 1735689600) ||
+            (context->agendaWindowStart != 0 &&
+             (now < context->agendaWindowStart || now >= context->agendaNextRefresh))) {
+            const int32_t scrollY = lv_obj_get_scroll_y(context->agendaPanel);
+            refreshEventList(context);
+            lv_obj_update_layout(context->agendaPanel);
+            lv_obj_scroll_to_y(context->agendaPanel, scrollY, LV_ANIM_OFF);
+        }
+        return;
+    }
+    const bool covered = context->upcomingEventsGeneration == context->settingsGeneration.load() &&
+        calendarUpcomingWindowCoversNow(context->upcomingWindowStart, context->upcomingWindowEnd);
+    if (covered == context->agendaCoverageExpired) {
         refreshEventList(context);
     }
 }
@@ -300,23 +350,10 @@ void onAgendaCoverageTimer(lv_timer_t* timer) {
 void onDayClicked(lv_event_t* event);
 
 void setDaySelectedStyle(lv_obj_t* day, bool selected) {
-    lv_obj_set_style_bg_opa(day, selected ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
-    if (selected) {
-        lv_obj_set_style_bg_color(day, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
-    }
-
-    lv_obj_t* number = lv_obj_get_child(day, 0);
-    if (number != nullptr) {
-        lv_obj_set_style_text_color(number,
-            selected ? lv_color_white() : lv_obj_get_style_text_color(day, LV_PART_MAIN),
-            LV_PART_MAIN);
-    }
-    if (lv_obj_get_child_count(day) > 1) {
-        lv_obj_t* marker = lv_obj_get_child(day, 1);
-        lv_obj_set_style_bg_color(marker, selected
-            ? lv_color_white()
-            : lv_palette_main(LV_PALETTE_BLUE), LV_PART_MAIN);
-    }
+    lv_obj_set_style_border_width(day, selected ? 2 : 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(day, lvgl_theme_is_mono()
+        ? lv_obj_get_style_text_color(lv_obj_get_parent(day), LV_PART_MAIN)
+        : lv_theme_get_color_secondary(day), LV_PART_MAIN);
 }
 
 void refreshMonth(CalendarContext* context) {
@@ -377,19 +414,13 @@ void refreshMonth(CalendarContext* context) {
         lv_obj_set_user_data(day, reinterpret_cast<void*>(static_cast<intptr_t>(dayNumber)));
         lv_obj_add_event_cb(day, onDayClicked, LV_EVENT_CLICKED, context);
 
-        const bool selected = context->selectedYear == context->displayYear &&
-            context->selectedMonth == context->displayMonth &&
-            context->selectedDay == dayNumber;
-        setDaySelectedStyle(day, selected);
-
         lv_obj_t* number = lv_label_create(day);
         char numberText[3] {};
         snprintf(numberText, sizeof(numberText), "%d", dayNumber);
         lv_label_set_text(number, numberText);
         lv_obj_set_style_text_align(number, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        if (selected) {
-            lv_obj_set_style_text_color(number, lv_color_white(), LV_PART_MAIN);
-        }
+        const lv_color_t textColor = lv_obj_get_style_text_color(context->monthGrid, LV_PART_MAIN);
+        lv_obj_set_style_text_color(number, textColor, LV_PART_MAIN);
 
         char dateText[11] {};
         calendarFormatDateKey(dateText, sizeof(dateText),
@@ -404,10 +435,13 @@ void refreshMonth(CalendarContext* context) {
             lv_obj_set_style_radius(marker, LV_RADIUS_CIRCLE, LV_PART_MAIN);
             lv_obj_set_style_border_width(marker, 0, LV_PART_MAIN);
             lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(marker, selected
-                ? lv_color_white()
-                : lv_palette_main(LV_PALETTE_BLUE), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(marker, lvgl_theme_is_mono()
+                ? textColor : lv_theme_get_color_secondary(marker), LV_PART_MAIN);
         }
+        const bool selected = context->selectedYear == context->displayYear &&
+            context->selectedMonth == context->displayMonth &&
+            context->selectedDay == dayNumber;
+        setDaySelectedStyle(day, selected);
     }
 }
 
@@ -455,12 +489,13 @@ void refreshMonthAgenda(CalendarContext* context) {
         const CalendarEvent& event = monthEvents[i];
         if (!calendarEventOverlapsDay(event, dateText)) continue;
 
-        lv_obj_t* card = lv_button_create(context->selectedDayEvents);
+        lv_obj_t* card = lvgl_card_create(context->selectedDayEvents);
         lv_obj_set_width(card, LV_PCT(100));
         lv_obj_set_height(card, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_gap(card, 2, LV_PART_MAIN);
         lv_obj_set_scrollable(card, false);
+        lv_obj_set_clickable(card, false);
 
         lv_obj_t* time = lv_label_create(card);
         lv_label_set_text(time, event.start + 11);
@@ -499,6 +534,7 @@ void onDayClicked(lv_event_t* event) {
         }
     }
     refreshMonthAgenda(context);
+    lv_group_focus_obj(context->selectedDayEvents);
 }
 
 void onBackToMonth(lv_event_t* event) {
@@ -506,6 +542,7 @@ void onBackToMonth(lv_event_t* event) {
     context->dayAgendaVisible = false;
     lv_obj_set_hidden(context->selectedDayPanel, true);
     lv_obj_set_hidden(context->monthPanel, false);
+    lv_group_focus_obj(context->monthGrid);
 }
 
 void changeDisplayedMonth(CalendarContext* context, int offset) {
@@ -614,7 +651,8 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
                         std::vector<CalendarEvent>& cachedEvents,
                         std::vector<CalendarEvent>& cachedUpcomingEvents,
                         char cachedWindowStart[17], char cachedWindowEnd[17],
-                        bool& cachedFullCalendarAvailable) {
+                        bool& cachedFullCalendarAvailable,
+                        bool& cachedFullCalendarHasTiming) {
     if (context->settingsGeneration.load() != expectedGeneration) return false;
     lvgl_lock();
     if (context->settingsGeneration.load() != expectedGeneration) {
@@ -624,6 +662,7 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
     if (updateFullCalendar) {
         context->events = std::move(events);
         context->fullCalendarAvailable = true;
+        context->fullCalendarHasTiming = true;
         context->fullCalendarGeneration = expectedGeneration;
         refreshMonth(context);
         refreshMonthAgenda(context);
@@ -637,11 +676,13 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
                  upcomingWindowEnd);
         refreshEventList(context);
     }
+    if (updateFullCalendar && !updateUpcoming) refreshEventList(context);
     cachedEvents = context->events;
     cachedUpcomingEvents = context->upcomingEvents;
     copyText(cachedWindowStart, 17, context->upcomingWindowStart);
     copyText(cachedWindowEnd, 17, context->upcomingWindowEnd);
     cachedFullCalendarAvailable = context->fullCalendarAvailable;
+    cachedFullCalendarHasTiming = context->fullCalendarHasTiming;
     lvgl_unlock();
     return true;
 }
@@ -713,7 +754,9 @@ void calendarLoadCachedEvents(CalendarContext* context) {
     bool found = false;
     bool matchesSettings = false;
     bool fullCalendarAvailable = false;
+    bool fullCalendarHasTiming = false;
     if (!calendarLoadCache(settings, events, upcomingEvents, fullCalendarAvailable,
+                           fullCalendarHasTiming,
                            context->upcomingWindowStart,
                            sizeof(context->upcomingWindowStart),
                            context->upcomingWindowEnd,
@@ -727,9 +770,11 @@ void calendarLoadCachedEvents(CalendarContext* context) {
     context->events = std::move(events);
     context->upcomingEvents = std::move(upcomingEvents);
     context->fullCalendarAvailable = fullCalendarAvailable;
+    context->fullCalendarHasTiming = fullCalendarHasTiming;
     context->fullCalendarGeneration = cacheGeneration;
     context->upcomingEventsGeneration = cacheGeneration;
-    if (calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
+    if (context->fullCalendarAvailable ||
+        calendarUpcomingWindowCoversNow(context->upcomingWindowStart,
                                         context->upcomingWindowEnd)) {
         snprintf(context->status, sizeof(context->status),
             "Loaded %zu cached events. Sync to update.", context->events.size());
@@ -868,6 +913,9 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_border_width(context->selectedDayEvents, 0, LV_PART_MAIN);
     lv_obj_set_scroll_dir(context->selectedDayEvents, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(context->selectedDayEvents, LV_SCROLLBAR_MODE_AUTO);
+    if (lv_group_t* group = lv_group_get_default()) {
+        lv_group_add_obj(group, context->selectedDayEvents);
+    }
     lv_obj_set_hidden(context->selectedDayPanel, true);
     refreshMonthAgenda(context);
 
@@ -880,6 +928,9 @@ void calendarCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_border_width(context->agendaPanel, 0, LV_PART_MAIN);
     lv_obj_set_scroll_dir(context->agendaPanel, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(context->agendaPanel, LV_SCROLLBAR_MODE_AUTO);
+    if (lv_group_t* group = lv_group_get_default()) {
+        lv_group_add_obj(group, context->agendaPanel);
+    }
 
     refreshEventList(context);
     context->agendaCoverageTimer = lv_timer_create(onAgendaCoverageTimer, 60000, context);
@@ -957,6 +1008,9 @@ void calendarProcessRequests(CalendarContext* context) {
         const bool anySucceeded = calendarSyncCalendar(settings, sync);
         char message[sizeof(context->status)] {};
         bool cached = true;
+        bool agendaClockValid = false;
+        bool localAgendaComplete = false;
+        bool previousUpcomingCovered = false;
         size_t downloadedCount = 0;
         bool stale = context->settingsGeneration.load() != syncGeneration;
         if (anySucceeded && !stale) {
@@ -966,16 +1020,28 @@ void calendarProcessRequests(CalendarContext* context) {
             char cachedWindowStart[17] {};
             char cachedWindowEnd[17] {};
             bool cachedFullCalendarAvailable = false;
+            bool cachedFullCalendarHasTiming = false;
             stale = !updateCalendarData(
                 context, syncGeneration, sync.fullSucceeded, std::move(sync.events),
                 sync.upcomingSucceeded, std::move(sync.upcomingEvents),
                 sync.upcomingWindowStart, sync.upcomingWindowEnd,
                 cachedEvents, cachedUpcomingEvents, cachedWindowStart, cachedWindowEnd,
-                cachedFullCalendarAvailable);
+                cachedFullCalendarAvailable, cachedFullCalendarHasTiming);
             if (!stale && context->settingsGeneration.load() == syncGeneration) {
                 cached = calendarSaveCache(settings, cachedEvents, cachedUpcomingEvents,
-                                           cachedFullCalendarAvailable,
+                                           cachedFullCalendarAvailable, cachedFullCalendarHasTiming,
                                            cachedWindowStart, cachedWindowEnd);
+                if (sync.fullSucceeded && !sync.upcomingSucceeded) {
+                    const int64_t now = static_cast<int64_t>(time(nullptr));
+                    agendaClockValid = now >= 1735689600;
+                    if (agendaClockValid) {
+                        std::vector<CalendarEvent> agendaEvents;
+                        localAgendaComplete = calendarExpandEventsForInterval(
+                            cachedEvents, now, now + 30 * 24 * 60 * 60, agendaEvents);
+                        previousUpcomingCovered = calendarUpcomingWindowCoversNow(
+                            cachedWindowStart, cachedWindowEnd);
+                    }
+                }
                 stale = context->settingsGeneration.load() != syncGeneration;
             } else if (!stale) {
                 stale = true;
@@ -997,8 +1063,11 @@ void calendarProcessRequests(CalendarContext* context) {
             snprintf(message, sizeof(message), "Agenda updated; full refresh failed: %.38s%s",
                      sync.fullError, cached ? "" : "; cache not saved.");
         } else if (sync.fullSucceeded) {
-            snprintf(message, sizeof(message), "Month updated; agenda refresh failed: %.36s%s",
-                     sync.upcomingError, cached ? "" : "; cache not saved.");
+            const char* agendaStatus = !agendaClockValid ? "Agenda unavailable"
+                : localAgendaComplete ? "Agenda rebuilt"
+                : previousUpcomingCovered ? "Agenda uses previous report" : "Agenda incomplete";
+            snprintf(message, sizeof(message), "%s; upcoming report failed: %.22s%s",
+                     agendaStatus, sync.upcomingError, cached ? "" : "; cache not saved.");
         } else {
             copyText(message, sizeof(message), sync.fullError);
         }
