@@ -151,6 +151,7 @@ void invalidateCalendarData(CalendarContext* context) {
     context->events.clear();
     context->upcomingEvents.clear();
     context->fullCalendarAvailable = false;
+    context->fullCalendarHasTiming = false;
     context->upcomingWindowStart[0] = '\0';
     context->upcomingWindowEnd[0] = '\0';
     copyText(context->status, sizeof(context->status),
@@ -267,17 +268,20 @@ void refreshEventList(CalendarContext* context) {
             return;
         }
         context->agendaWindowStart = now;
-        const bool complete = calendarExpandEventsForInterval(
+        const bool expandedComplete = calendarExpandEventsForInterval(
             context->events, now, now + 30 * 24 * 60 * 60, localEvents,
             &context->agendaNextRefresh);
-        if (!complete) {
+        const bool complete = context->fullCalendarHasTiming && expandedComplete;
+        if (!complete && covered) {
+            context->agendaUsesLocalCalendar = false;
+        } else if (!complete) {
             lv_obj_t* warning = lv_label_create(context->agendaPanel);
             lv_label_set_text(warning,
                 "Some cached events cannot be calculated. Sync may be needed.");
             lv_obj_set_width(warning, LV_PCT(100));
             lv_label_set_long_mode(warning, LV_LABEL_LONG_MODE_WRAP);
         }
-        shownEvents = &localEvents;
+        if (context->agendaUsesLocalCalendar) shownEvents = &localEvents;
     } else if (!covered) {
         lv_obj_t* unavailable = lv_label_create(context->agendaPanel);
         lv_obj_set_width(unavailable, LV_PCT(100));
@@ -647,7 +651,8 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
                         std::vector<CalendarEvent>& cachedEvents,
                         std::vector<CalendarEvent>& cachedUpcomingEvents,
                         char cachedWindowStart[17], char cachedWindowEnd[17],
-                        bool& cachedFullCalendarAvailable) {
+                        bool& cachedFullCalendarAvailable,
+                        bool& cachedFullCalendarHasTiming) {
     if (context->settingsGeneration.load() != expectedGeneration) return false;
     lvgl_lock();
     if (context->settingsGeneration.load() != expectedGeneration) {
@@ -657,6 +662,7 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
     if (updateFullCalendar) {
         context->events = std::move(events);
         context->fullCalendarAvailable = true;
+        context->fullCalendarHasTiming = true;
         context->fullCalendarGeneration = expectedGeneration;
         refreshMonth(context);
         refreshMonthAgenda(context);
@@ -676,6 +682,7 @@ bool updateCalendarData(CalendarContext* context, uint32_t expectedGeneration,
     copyText(cachedWindowStart, 17, context->upcomingWindowStart);
     copyText(cachedWindowEnd, 17, context->upcomingWindowEnd);
     cachedFullCalendarAvailable = context->fullCalendarAvailable;
+    cachedFullCalendarHasTiming = context->fullCalendarHasTiming;
     lvgl_unlock();
     return true;
 }
@@ -747,7 +754,9 @@ void calendarLoadCachedEvents(CalendarContext* context) {
     bool found = false;
     bool matchesSettings = false;
     bool fullCalendarAvailable = false;
+    bool fullCalendarHasTiming = false;
     if (!calendarLoadCache(settings, events, upcomingEvents, fullCalendarAvailable,
+                           fullCalendarHasTiming,
                            context->upcomingWindowStart,
                            sizeof(context->upcomingWindowStart),
                            context->upcomingWindowEnd,
@@ -761,6 +770,7 @@ void calendarLoadCachedEvents(CalendarContext* context) {
     context->events = std::move(events);
     context->upcomingEvents = std::move(upcomingEvents);
     context->fullCalendarAvailable = fullCalendarAvailable;
+    context->fullCalendarHasTiming = fullCalendarHasTiming;
     context->fullCalendarGeneration = cacheGeneration;
     context->upcomingEventsGeneration = cacheGeneration;
     if (context->fullCalendarAvailable ||
@@ -998,6 +1008,9 @@ void calendarProcessRequests(CalendarContext* context) {
         const bool anySucceeded = calendarSyncCalendar(settings, sync);
         char message[sizeof(context->status)] {};
         bool cached = true;
+        bool agendaClockValid = false;
+        bool localAgendaComplete = false;
+        bool previousUpcomingCovered = false;
         size_t downloadedCount = 0;
         bool stale = context->settingsGeneration.load() != syncGeneration;
         if (anySucceeded && !stale) {
@@ -1007,16 +1020,28 @@ void calendarProcessRequests(CalendarContext* context) {
             char cachedWindowStart[17] {};
             char cachedWindowEnd[17] {};
             bool cachedFullCalendarAvailable = false;
+            bool cachedFullCalendarHasTiming = false;
             stale = !updateCalendarData(
                 context, syncGeneration, sync.fullSucceeded, std::move(sync.events),
                 sync.upcomingSucceeded, std::move(sync.upcomingEvents),
                 sync.upcomingWindowStart, sync.upcomingWindowEnd,
                 cachedEvents, cachedUpcomingEvents, cachedWindowStart, cachedWindowEnd,
-                cachedFullCalendarAvailable);
+                cachedFullCalendarAvailable, cachedFullCalendarHasTiming);
             if (!stale && context->settingsGeneration.load() == syncGeneration) {
                 cached = calendarSaveCache(settings, cachedEvents, cachedUpcomingEvents,
-                                           cachedFullCalendarAvailable,
+                                           cachedFullCalendarAvailable, cachedFullCalendarHasTiming,
                                            cachedWindowStart, cachedWindowEnd);
+                if (sync.fullSucceeded && !sync.upcomingSucceeded) {
+                    const int64_t now = static_cast<int64_t>(time(nullptr));
+                    agendaClockValid = now >= 1735689600;
+                    if (agendaClockValid) {
+                        std::vector<CalendarEvent> agendaEvents;
+                        localAgendaComplete = calendarExpandEventsForInterval(
+                            cachedEvents, now, now + 30 * 24 * 60 * 60, agendaEvents);
+                        previousUpcomingCovered = calendarUpcomingWindowCoversNow(
+                            cachedWindowStart, cachedWindowEnd);
+                    }
+                }
                 stale = context->settingsGeneration.load() != syncGeneration;
             } else if (!stale) {
                 stale = true;
@@ -1038,8 +1063,11 @@ void calendarProcessRequests(CalendarContext* context) {
             snprintf(message, sizeof(message), "Agenda updated; full refresh failed: %.38s%s",
                      sync.fullError, cached ? "" : "; cache not saved.");
         } else if (sync.fullSucceeded) {
-            snprintf(message, sizeof(message), "Month updated; agenda refresh failed: %.36s%s",
-                     sync.upcomingError, cached ? "" : "; cache not saved.");
+            const char* agendaStatus = !agendaClockValid ? "Agenda unavailable"
+                : localAgendaComplete ? "Agenda rebuilt"
+                : previousUpcomingCovered ? "Agenda uses previous report" : "Agenda incomplete";
+            snprintf(message, sizeof(message), "%s; upcoming report failed: %.22s%s",
+                     agendaStatus, sync.upcomingError, cached ? "" : "; cache not saved.");
         } else {
             copyText(message, sizeof(message), sync.fullError);
         }

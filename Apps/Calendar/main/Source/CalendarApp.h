@@ -34,6 +34,7 @@ struct CalendarContext {
     std::vector<CalendarEvent> events;
     std::vector<CalendarEvent> upcomingEvents;
     bool fullCalendarAvailable = false;
+    bool fullCalendarHasTiming = false;
     uint32_t fullCalendarGeneration = 0;
     uint32_t upcomingEventsGeneration = 0;
     char upcomingWindowStart[17] {};

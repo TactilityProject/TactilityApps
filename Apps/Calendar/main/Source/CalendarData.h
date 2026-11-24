@@ -27,6 +27,9 @@ struct CalendarEvent {
     char timingEnd[17] {};
     char timingDuration[40] {};
     char timingOccurrenceStart[17] {};
+    // Offset at the original DTEND when it uses a different time zone.
+    int32_t timingEndOffset = 0;
+    bool timingEndOffsetValid = false;
     char recurrenceRule[192] {};
     char recurrenceLocalId[20] {};
     char recurrenceTimeZone[96] {};

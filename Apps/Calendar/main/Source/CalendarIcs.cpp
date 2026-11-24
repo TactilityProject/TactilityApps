@@ -304,7 +304,8 @@ bool dateKeyFromSerial(int64_t serial, char output[11]) {
                                  static_cast<int>(day));
 }
 
-bool parseDurationSeconds(const std::string& value, int64_t& seconds) {
+bool parseDurationSeconds(const std::string& value, int64_t& seconds,
+                          bool allowZero = false) {
     if (value.size() < 3 || (value[0] != 'P' && value[0] != 'p')) return false;
     size_t position = 1;
     bool inTime = false;
@@ -368,7 +369,7 @@ bool parseDurationSeconds(const std::string& value, int64_t& seconds) {
     }
     if (!hasValue || (inTime && !hasTimeValue)) return false;
     seconds = total;
-    return seconds > 0;
+    return allowZero || seconds > 0;
 }
 
 bool applyEventDuration(const std::string& startValue, const std::string& duration,
@@ -638,7 +639,9 @@ bool transitionDate(const TimeZoneTransition& transition, int year, IcsDateTime&
 }
 
 bool timeZoneOffsetAt(const std::string& tzid, const IcsDateTime& dateTime,
-                      const std::vector<TimeZoneTransition>& transitions, int& offset) {
+                      const std::vector<TimeZoneTransition>& transitions, int& offset,
+                      bool* inGap = nullptr) {
+    if (inGap != nullptr) *inGap = false;
     bool hasFallback = false;
     int fallbackOffset = 0;
     int fallbackYear = 10000;
@@ -662,8 +665,9 @@ bool timeZoneOffsetAt(const std::string& tzid, const IcsDateTime& dateTime,
                 hasLatest = true;
                 latestTransition = localTime;
                 const int gap = transition.offsetTo - transition.offsetFrom;
-                latestOffset = gap > 0 && target < localTime + gap
-                    ? transition.offsetFrom : transition.offsetTo;
+                const bool gapAtTarget = gap > 0 && target < localTime + gap;
+                latestOffset = gapAtTarget ? transition.offsetFrom : transition.offsetTo;
+                if (inGap != nullptr) *inGap = gapAtTarget;
             }
         };
         considerTransition(start);
@@ -687,6 +691,34 @@ bool timeZoneOffsetAt(const std::string& tzid, const IcsDateTime& dateTime,
         return true;
     }
     return false;
+}
+
+bool getCachedTimeZoneTransitions(const CalendarEvent& event,
+                                  std::vector<TimeZoneTransition>& transitions) {
+    if (event.timeZoneTransitionsIncomplete || event.timeZoneTransitionCount == 0) return false;
+    transitions.reserve(event.timeZoneTransitionCount);
+    for (uint8_t i = 0; i < event.timeZoneTransitionCount; ++i) {
+        const CalendarTimeZoneTransition& cached = event.timeZoneTransitions[i];
+        TimeZoneTransition transition {};
+        transition.tzid = event.recurrenceTimeZone;
+        transition.start = cached.start;
+        transition.offsetFrom = cached.offsetFrom;
+        transition.offsetTo = cached.offsetTo;
+        transition.recurrenceMonth = cached.recurrenceMonth;
+        transition.recurrenceMonthDay = cached.recurrenceMonthDay;
+        transition.recurrenceWeekday = cached.recurrenceWeekday;
+        transition.recurrenceOrdinal = cached.recurrenceOrdinal;
+        transition.repeatsYearly = cached.repeatsYearly;
+        transitions.push_back(std::move(transition));
+    }
+    return true;
+}
+
+bool cachedTimeZoneOffsetAt(const CalendarEvent& event, const IcsDateTime& dateTime,
+                            int& offset) {
+    std::vector<TimeZoneTransition> transitions;
+    if (!getCachedTimeZoneTransitions(event, transitions)) return false;
+    return timeZoneOffsetAt(event.recurrenceTimeZone, dateTime, transitions, offset);
 }
 
 std::string timezoneIdFromParameters(const std::string& parameters) {
@@ -926,10 +958,43 @@ void parseVEvents(const std::string& calendarData,
                     if (!endValue.empty()) {
                         if (!parseIcsDateTime(endValue, parsedEnd) ||
                             parsedStart.dateOnly != parsedEnd.dateOnly ||
-                            (parsedStart.utc != parsedEnd.utc && eventTimeZone.empty()) ||
-                            ((parsedEnd.utc || parsedEnd.dateOnly) && !endTimeZone.empty()) ||
-                            (!parsedEnd.utc && endTimeZone != eventTimeZone)) {
+                            ((parsedEnd.utc || parsedEnd.dateOnly) && !endTimeZone.empty())) {
                             event.timingIncomplete = true;
+                        } else if (!parsedEnd.dateOnly && !parsedEnd.utc &&
+                                   endTimeZone != eventTimeZone) {
+                            bool supported = !endTimeZone.empty() &&
+                                (parsedStart.utc || !eventTimeZone.empty());
+                            for (const TimeZoneTransition& transition : timeZoneTransitions) {
+                                if (transition.tzid != endTimeZone) continue;
+                                IcsDateTime transitionStart {};
+                                if (!transition.recurrenceSupported ||
+                                    !parseIcsDateTime(transition.start, transitionStart) ||
+                                    transitionStart.dateOnly || transitionStart.utc) {
+                                    supported = false;
+                                }
+                            }
+                            int offset = 0;
+                            if (supported && timeZoneOffsetAt(endTimeZone, parsedEnd,
+                                                              timeZoneTransitions, offset)) {
+                                event.timingEndOffset = offset;
+                                event.timingEndOffsetValid = true;
+                            } else {
+                                event.timingIncomplete = true;
+                            }
+                        } else if (parsedEnd.utc != parsedStart.utc &&
+                                   eventTimeZone.empty() && endTimeZone.empty()) {
+                            event.timingIncomplete = true;
+                        }
+                        if (!event.timingIncomplete &&
+                            (event.timingEndOffsetValid || parsedEnd.utc != parsedStart.utc) &&
+                            strcmp(event.endDateExclusive, event.startDate) <= 0) {
+                            char nextDate[11] {};
+                            if (incrementDateKey(event.startDate, nextDate)) {
+                                copyText(event.endDateExclusive, sizeof(event.endDateExclusive),
+                                         nextDate);
+                            } else {
+                                event.timingIncomplete = true;
+                            }
                         }
                     }
                     copyText(event.timingStart, sizeof(event.timingStart), eventStart.c_str());
@@ -1541,6 +1606,46 @@ bool recurrenceDateTimeFromLocalId(const char* localId, IcsDateTime& dateTime) {
     return parseIcsDateTime(value, dateTime);
 }
 
+bool recurrenceExists(const CalendarEvent& event, const IcsDateTime& start,
+                      const IcsDateTime& candidate,
+                      const std::vector<TimeZoneTransition>& transitions, bool& complete) {
+    // A supplied DTSTART in a gap uses the pre-gap offset; generated slots are omitted.
+    if (dateSerial(start) == dateSerial(candidate) ||
+        event.recurrenceLocalId[0] != 'L') return true;
+    IcsDateTime occurrence = start;
+    occurrence.year = candidate.year;
+    occurrence.month = candidate.month;
+    occurrence.day = candidate.day;
+    if (event.timeZoneTransitionsIncomplete) {
+        complete = false;
+        return true;
+    }
+    if (event.recurrenceTimeZone[0] != '\0') {
+        int offset = 0;
+        bool inGap = false;
+        if (!timeZoneOffsetAt(event.recurrenceTimeZone, occurrence, transitions, offset, &inGap)) {
+            complete = false;
+            return true;
+        }
+        return !inGap;
+    }
+    tm local {};
+    local.tm_year = occurrence.year - 1900;
+    local.tm_mon = occurrence.month - 1;
+    local.tm_mday = occurrence.day;
+    local.tm_hour = occurrence.hour;
+    local.tm_min = occurrence.minute;
+    local.tm_sec = occurrence.second;
+    local.tm_isdst = -1;
+    if (mktime(&local) == static_cast<time_t>(-1)) {
+        complete = false;
+        return true;
+    }
+    return local.tm_year == occurrence.year - 1900 && local.tm_mon == occurrence.month - 1 &&
+        local.tm_mday == occurrence.day && local.tm_hour == occurrence.hour &&
+        local.tm_min == occurrence.minute && local.tm_sec == occurrence.second;
+}
+
 bool recurrenceUntilAllows(const CalendarEvent& event, const RecurrenceRule& rule,
                            const IcsDateTime& candidate, bool& complete) {
     if (rule.until.empty()) return true;
@@ -1575,24 +1680,8 @@ bool recurrenceUntilAllows(const CalendarEvent& event, const RecurrenceRule& rul
             complete = false;
             return false;
         }
-        std::vector<TimeZoneTransition> transitions;
-        transitions.reserve(event.timeZoneTransitionCount);
-        for (uint8_t i = 0; i < event.timeZoneTransitionCount; ++i) {
-            const CalendarTimeZoneTransition& cached = event.timeZoneTransitions[i];
-            TimeZoneTransition transition {};
-            transition.tzid = event.recurrenceTimeZone;
-            transition.start = cached.start;
-            transition.offsetFrom = cached.offsetFrom;
-            transition.offsetTo = cached.offsetTo;
-            transition.recurrenceMonth = cached.recurrenceMonth;
-            transition.recurrenceMonthDay = cached.recurrenceMonthDay;
-            transition.recurrenceWeekday = cached.recurrenceWeekday;
-            transition.recurrenceOrdinal = cached.recurrenceOrdinal;
-            transition.repeatsYearly = cached.repeatsYearly;
-            transitions.push_back(std::move(transition));
-        }
         int offset = 0;
-        if (!timeZoneOffsetAt(event.recurrenceTimeZone, occurrence, transitions, offset)) {
+        if (!cachedTimeZoneOffsetAt(event, occurrence, offset)) {
             complete = false;
             return false;
         }
@@ -1756,6 +1845,10 @@ bool expandRecurringEvent(const std::vector<CalendarEvent>& events,
     const int64_t lookback = std::min<int64_t>(std::max<int64_t>(durationDays, 1), 3660);
     const int64_t scanStart = std::max(startDay, monthStart - lookback);
     if (durationDays > lookback) complete = false;
+    std::vector<TimeZoneTransition> transitions;
+    if (master.recurrenceTimeZone[0] != '\0') {
+        getCachedTimeZoneTransitions(master, transitions);
+    }
     int occurrenceCount = 0;
     if (rule.hasCount) {
         for (int64_t serial = startDay; serial < scanStart; ++serial) {
@@ -1770,6 +1863,7 @@ bool expandRecurringEvent(const std::vector<CalendarEvent>& events,
                 return false;
             }
             if (recurrenceMatchesDate(start, candidate, rule) &&
+                recurrenceExists(master, start, candidate, transitions, complete) &&
                 ++occurrenceCount >= rule.count) {
                 return true;
             }
@@ -1786,7 +1880,8 @@ bool expandRecurringEvent(const std::vector<CalendarEvent>& events,
             complete = false;
             return false;
         }
-        if (!recurrenceMatchesDate(start, candidate, rule)) continue;
+        if (!recurrenceMatchesDate(start, candidate, rule) ||
+            !recurrenceExists(master, start, candidate, transitions, complete)) continue;
         if (rule.hasCount && ++occurrenceCount > rule.count) break;
         bool untilComplete = true;
         if (!recurrenceUntilAllows(master, rule, candidate, untilComplete)) {
@@ -1912,25 +2007,10 @@ bool eventInstant(const CalendarEvent& event, const IcsDateTime& dateTime,
         instant = civilSeconds(dateTime);
         return true;
     }
+    if (!dateTime.dateOnly && event.timeZoneTransitionsIncomplete) return false;
     if (!dateTime.dateOnly && event.recurrenceTimeZone[0] != '\0') {
-        if (event.timeZoneTransitionsIncomplete || event.timeZoneTransitionCount == 0) return false;
-        std::vector<TimeZoneTransition> transitions;
-        for (uint8_t i = 0; i < event.timeZoneTransitionCount; ++i) {
-            const CalendarTimeZoneTransition& cached = event.timeZoneTransitions[i];
-            TimeZoneTransition transition {};
-            transition.tzid = event.recurrenceTimeZone;
-            transition.start = cached.start;
-            transition.offsetFrom = cached.offsetFrom;
-            transition.offsetTo = cached.offsetTo;
-            transition.recurrenceMonth = cached.recurrenceMonth;
-            transition.recurrenceMonthDay = cached.recurrenceMonthDay;
-            transition.recurrenceWeekday = cached.recurrenceWeekday;
-            transition.recurrenceOrdinal = cached.recurrenceOrdinal;
-            transition.repeatsYearly = cached.repeatsYearly;
-            transitions.push_back(std::move(transition));
-        }
         int offset = 0;
-        if (!timeZoneOffsetAt(event.recurrenceTimeZone, dateTime, transitions, offset)) return false;
+        if (!cachedTimeZoneOffsetAt(event, dateTime, offset)) return false;
         instant = civilSeconds(dateTime) - offset;
         return true;
     }
@@ -1977,8 +2057,12 @@ bool eventInterval(const CalendarEvent& event, int64_t& start, int64_t& end) {
         } else {
             int64_t originalStartInstant = 0;
             int64_t originalEndInstant = 0;
-            if (!eventInstant(event, original, originalStartInstant) ||
-                !eventInstant(event, originalEnd, originalEndInstant)) return false;
+            if (!eventInstant(event, original, originalStartInstant)) return false;
+            if (event.timingEndOffsetValid) {
+                originalEndInstant = civilSeconds(originalEnd) - event.timingEndOffset;
+            } else if (!eventInstant(event, originalEnd, originalEndInstant)) {
+                return false;
+            }
             exactSeconds = originalEndInstant - originalStartInstant;
         }
     } else if (event.timingDuration[0] != '\0') {
@@ -1988,7 +2072,7 @@ bool eventInterval(const CalendarEvent& event, int64_t& start, int64_t& end) {
         const size_t timeIndex = duration.find_first_of("Tt");
         const std::string datePart = duration.substr(0, timeIndex);
         int64_t dateSeconds = 0;
-        if (datePart.size() > 1 && !parseDurationSeconds(datePart, dateSeconds)) return false;
+        if (datePart.size() > 1 && !parseDurationSeconds(datePart, dateSeconds, true)) return false;
         nominalDays = dateSeconds / 86400;
         exactSeconds = total - dateSeconds;
         if (original.dateOnly && exactSeconds != 0) return false;
