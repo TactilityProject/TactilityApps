@@ -573,6 +573,15 @@ void MapView::fillRegionList() {
     regionList.layoutFullScreen(width, height, overlay.font());
 }
 
+int MapView::dialogRegionIndex() const {
+    for (int i = 0; dialogRegion[0] != '\0' && i < regionCount; i++) {
+        if (strcmp(regions[i].name, dialogRegion) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 int MapView::selectedRegion() const {
     const int row = regionList.selected();
     if (row < 0 || row >= regionRowCount || regionRowList[row].members > 1) {
@@ -764,6 +773,7 @@ void MapView::chooseRegionAction(int action) {
             char message[96];
             snprintf(message, sizeof(message), "%s has newer map data (about %.0f MB). Update now?", regionTitle(meta), meta.bytes / 1e6);
             dialogPurpose = DialogPurpose::Update;
+            snprintf(dialogRegion, sizeof(dialogRegion), "%s", meta.name);
             dialog.open(message, "Update now", false);
             dialog.layout(width, height, overlay.font());
             break;
@@ -787,6 +797,7 @@ void MapView::chooseRegionAction(int action) {
             snprintf(message, sizeof(message), "Terrain for %s: %d tiles, about %.1f MB download, %.1f MB on the card. Download?",
                 regionTitle(meta), static_cast<int>(tiles), static_cast<double>(tiles) * 0.115, static_cast<double>(tiles) * 0.131);
             dialogPurpose = DialogPurpose::Terrain;
+            snprintf(dialogRegion, sizeof(dialogRegion), "%s", meta.name);
             dialog.open(message, "Download", false);
             dialog.layout(width, height, overlay.font());
             break;
@@ -837,6 +848,7 @@ void MapView::askRenameRegion() {
         return;
     }
     promptPurpose = PromptPurpose::RenameRegion;
+    snprintf(dialogRegion, sizeof(dialogRegion), "%s", meta.name);
     prompt.open("Name of this region", regionTitle(meta));
     prompt.layout(width, height, overlay.font());
     dirty = true;
@@ -858,7 +870,7 @@ void MapView::confirmPrompt() {
         renameRegionGroup(prompt.text());
         return;
     }
-    const int index = selectedRegion();
+    const int index = dialogRegionIndex();
     if (index < 0) {
         return;
     }
@@ -900,16 +912,16 @@ void MapView::confirmDialog() {
         return;
     }
     if (dialogPurpose == DialogPurpose::Terrain) {
-        if (screen == Screen::Regions && selectedRegion() >= 0) {
-            const RegionMeta& meta = regions[selectedRegion()];
+        if (screen == Screen::Regions && dialogRegionIndex() >= 0) {
+            const RegionMeta& meta = regions[dialogRegionIndex()];
             downloader.downloadTerrain(meta.name);
             showToast("Downloading terrain");
         }
         return;
     }
     if (dialogPurpose == DialogPurpose::Update) {
-        if (screen == Screen::Regions && selectedRegion() >= 0) {
-            const RegionMeta& meta = regions[selectedRegion()];
+        if (screen == Screen::Regions && dialogRegionIndex() >= 0) {
+            const RegionMeta& meta = regions[dialogRegionIndex()];
             downloader.update(meta.name);
             returnToMenu = false;
             showRegion(meta);
@@ -935,13 +947,16 @@ void MapView::askDeleteRegion() {
     char message[80];
     snprintf(message, sizeof(message), "Delete %s? Tiles other regions use are kept.", regionTitle(regions[index]));
     dialogPurpose = DialogPurpose::Delete;
+    snprintf(dialogRegion, sizeof(dialogRegion), "%s", regions[index].name);
     dialog.open(message, "Delete", true);
     dialog.layout(width, height, overlay.font());
     dirty = true;
 }
 
 void MapView::deleteRegion() {
-    const int index = selectedRegion();
+    // The map the dialog named, found by its folder: nothing when it is gone
+    const int index = dialogRegionIndex();
+    dialogRegion[0] = '\0';
     if (screen != Screen::Regions || index < 0) {
         return;
     }

@@ -740,6 +740,10 @@ private:
     /** The region of the download that was paused from the details card, so it can be resumed there. */
     char pausedRegion[REGION_NAME_MAX + 1] = "";
     char cancelRegion[REGION_NAME_MAX + 1] = "";
+    /** The folder of the map a region dialog or rename prompt was opened for: the list can change while it is open. */
+    char dialogRegion[REGION_NAME_MAX + 1] = "";
+    /** The index of dialogRegion in regions, -1 when it is gone. */
+    int dialogRegionIndex() const;
     TransferRate transferRate;
     DownloadCard downloadCard;
     Rect pillRect {};

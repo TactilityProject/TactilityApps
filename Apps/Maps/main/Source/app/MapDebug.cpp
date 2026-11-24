@@ -21,19 +21,26 @@ void MapView::pollDebug(uint32_t now) {
     if (now - lastMirrorFlush >= 1000) {
         lastMirrorFlush = now;
         auto* text = static_cast<char*>(largeAlloc(8 * 1024 + 1));
-        if (text != nullptr && takeMirroredLog(text, 8 * 1024 + 1) > 0) {
+        const size_t length = text != nullptr ? peekMirroredLog(text, 8 * 1024 + 1) : 0;
+        if (length > 0) {
             char path[PATH_MAX_LENGTH];
             snprintf(path, sizeof(path), "%s/scriptlog.txt", rootPath);
+            // The lines stay kept until they are on the card; a short write lets go of what was written only
+            size_t written = 0;
             auto append = [&]() {
                 FILE* file = fopen(path, "a");
                 if (file == nullptr) {
                     return false;
                 }
-                fputs(text, file);
-                fclose(file);
-                return true;
+                written = fwrite(text, 1, length, file);
+                const bool closed = fclose(file) == 0;
+                if (!closed) {
+                    written = 0;
+                }
+                return written == length;
             };
             runOnCard(io, append);
+            dropMirroredLog(written);
         }
         largeFree(text);
     }
@@ -45,7 +52,9 @@ void MapView::pollDebug(uint32_t now) {
     }
     if (waitingTrailsUntil != 0) {
         const Downloader::Status status = downloader.status();
-        if ((status.trails && status.state == Downloader::State::Downloading) || static_cast<int32_t>(now - waitingTrailsUntil) >= 0) {
+        // A quiet query shows Downloading at once, one asked for Connecting while the server answers
+        const bool running = status.trails && (status.state == Downloader::State::Downloading || status.state == Downloader::State::Connecting);
+        if (running || static_cast<int32_t>(now - waitingTrailsUntil) >= 0) {
             logInfo("debug: waittrails %s", status.trails ? "a trails query runs" : "timed out");
             waitingTrailsUntil = 0;
         }

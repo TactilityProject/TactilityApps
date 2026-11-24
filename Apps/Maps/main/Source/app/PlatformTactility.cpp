@@ -78,14 +78,15 @@ namespace {
  * a spinlock needs xPortEnterCriticalTimeout, which Tactility does not export).
  */
 constexpr size_t MIRROR_BYTES = 8 * 1024;
-SemaphoreHandle_t mirrorLock = nullptr;
+/** Set once, after the buffer (release), read by every task that logs (acquire). */
+std::atomic<SemaphoreHandle_t> mirrorLock { nullptr };
 char* mirrorBuffer = nullptr;
 size_t mirrorUsed = 0;
 char mirrorWord[48] = "";
 
-/** Whether the message contains one of the words ("Trails|Browse"). */
-bool mirrored(const char* message) {
-    const char* word = mirrorWord;
+/** Whether the message contains one of the words ("Trails|Browse"). Called with the words copied under the lock. */
+bool mirrored(const char* words, const char* message) {
+    const char* word = words;
     while (*word != '\0') {
         const char* end = strchr(word, '|');
         const size_t length = end != nullptr ? static_cast<size_t>(end - word) : strlen(word);
@@ -105,7 +106,15 @@ bool mirrored(const char* message) {
 }
 
 void mirror(const char* level, const char* message) {
-    if (mirrorLock == nullptr || mirrorWord[0] == '\0' || !mirrored(message)) {
+    SemaphoreHandle_t lock = mirrorLock.load(std::memory_order_acquire);
+    if (lock == nullptr) {
+        return;
+    }
+    char words[sizeof(mirrorWord)];
+    xSemaphoreTake(lock, portMAX_DELAY);
+    memcpy(words, mirrorWord, sizeof(words));
+    xSemaphoreGive(lock);
+    if (words[0] == '\0' || !mirrored(words, message)) {
         return;
     }
     char line[200];
@@ -114,42 +123,50 @@ void mirror(const char* level, const char* message) {
         return;
     }
     const size_t bytes = std::min(static_cast<size_t>(length), sizeof(line) - 1);
-    xSemaphoreTake(mirrorLock, portMAX_DELAY);
+    xSemaphoreTake(lock, portMAX_DELAY);
     if (mirrorUsed + bytes <= MIRROR_BYTES) {
         memcpy(mirrorBuffer + mirrorUsed, line, bytes);
         mirrorUsed += bytes;
     }
-    xSemaphoreGive(mirrorLock);
+    xSemaphoreGive(lock);
 }
 
 } // namespace
 
 void setLogMirror(const char* word) {
-    if (word != nullptr && word[0] != '\0' && mirrorLock == nullptr) {
-        // Never freed: a few KB for the rest of the app session, only when a script asks for it. The lock is made
+    // Called by the map task only (debug scripts)
+    if (word != nullptr && word[0] != '\0' && mirrorLock.load(std::memory_order_acquire) == nullptr) {
+        // Never freed: a few KB for the rest of the app session, only when a script asks for it. The lock is published
         // last: mirror() starts once it is there
         mirrorBuffer = static_cast<char*>(heap_caps_malloc(MIRROR_BYTES, MALLOC_CAP_SPIRAM));
         if (mirrorBuffer != nullptr) {
-            mirrorLock = xSemaphoreCreateMutex();
+            SemaphoreHandle_t made = xSemaphoreCreateMutex();
+            if (made == nullptr) {
+                heap_caps_free(mirrorBuffer);
+                mirrorBuffer = nullptr;
+            }
+            mirrorLock.store(made, std::memory_order_release);
         }
     }
-    if (mirrorLock == nullptr) {
+    SemaphoreHandle_t lock = mirrorLock.load(std::memory_order_acquire);
+    if (lock == nullptr) {
         return;
     }
-    xSemaphoreTake(mirrorLock, portMAX_DELAY);
+    xSemaphoreTake(lock, portMAX_DELAY);
     snprintf(mirrorWord, sizeof(mirrorWord), "%s", word != nullptr ? word : "");
-    xSemaphoreGive(mirrorLock);
+    xSemaphoreGive(lock);
 }
 
-size_t takeMirroredLog(char* out, size_t size) {
+size_t peekMirroredLog(char* out, size_t size) {
     if (out == nullptr || size == 0) {
         return 0;
     }
     out[0] = '\0';
-    if (mirrorLock == nullptr) {
+    SemaphoreHandle_t lock = mirrorLock.load(std::memory_order_acquire);
+    if (lock == nullptr) {
         return 0;
     }
-    xSemaphoreTake(mirrorLock, portMAX_DELAY);
+    xSemaphoreTake(lock, portMAX_DELAY);
     size_t taken = 0;
     if (mirrorBuffer != nullptr && mirrorUsed > 0) {
         // Whole lines that fit
@@ -158,12 +175,23 @@ size_t takeMirroredLog(char* out, size_t size) {
             taken--;
         }
         memcpy(out, mirrorBuffer, taken);
-        memmove(mirrorBuffer, mirrorBuffer + taken, mirrorUsed - taken);
-        mirrorUsed -= taken;
     }
-    xSemaphoreGive(mirrorLock);
+    xSemaphoreGive(lock);
     out[taken] = '\0';
     return taken;
+}
+
+void dropMirroredLog(size_t bytes) {
+    SemaphoreHandle_t lock = mirrorLock.load(std::memory_order_acquire);
+    if (lock == nullptr || bytes == 0) {
+        return;
+    }
+    xSemaphoreTake(lock, portMAX_DELAY);
+    // Only the map task takes lines out, so the first bytes are still the ones it wrote
+    const size_t dropped = std::min(bytes, mirrorUsed);
+    memmove(mirrorBuffer, mirrorBuffer + dropped, mirrorUsed - dropped);
+    mirrorUsed -= dropped;
+    xSemaphoreGive(lock);
 }
 
 void logInfo(const char* format, ...) {

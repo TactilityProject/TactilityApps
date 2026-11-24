@@ -817,6 +817,27 @@ bool TileWorker::loadTrails(Lane& lane, const TileKey& tile, IoPriority priority
     return false;
 }
 
+bool TileWorker::lookForTrails(Lane& lane) {
+    (void)lane;
+    lock();
+    if (trailLookCount == 0) {
+        unlock();
+        return false;
+    }
+    const TileKey tile = trailLooks[--trailLookCount];
+    unlock();
+    TrailJobData look { this, nullptr, tile, false, true };
+    io->run(IoPriority::Visible, [](IoTask& task, void* context) {
+        (void)task;
+        auto* data = static_cast<TrailJobData*>(context);
+        if (data->worker->terrainRegion(data->tile, true) < 0) {
+            data->worker->noteMissingTrails(data->tile);
+        }
+        return true;
+    }, &look);
+    return true;
+}
+
 bool TileWorker::loadTerrain(Lane& lane, const TileKey& tile, IoPriority priority) {
     lane.terrain.clearPatch();
     TerrainSpan span {};
@@ -975,6 +996,23 @@ void TileWorker::want(const TileKey* tiles, int count, int visibleCount) {
         missingNext = 0;
     }
     memcpy(wanted, tiles, sizeof(TileKey) * wantedCount);
+    // Trail files of the tiles on screen, each z12 tile once: a tile from the cache (rendered for the ring) has not
+    // looked for them
+    for (int i = 0; i < visibleWanted; i++) {
+        if (wanted[i].z < TRAIL_ZOOM) {
+            continue;
+        }
+        const TileKey parent = ancestorOf(wanted[i], TRAIL_ZOOM);
+        bool known = false;
+        for (int j = 0; j < TRAILS_LOOKED && !known; j++) {
+            known = trailsLooked[j] == parent && trailsLooked[j].z == TRAIL_ZOOM;
+        }
+        if (!known && trailLookCount < TRAIL_LOOKS) {
+            trailLooks[trailLookCount++] = parent;
+            trailsLooked[trailsLookedNext] = parent;
+            trailsLookedNext = (trailsLookedNext + 1) % TRAILS_LOOKED;
+        }
+    }
     // The visible tiles count as just used, so tiles rendered for the ring evict others first. One that was drawn
     // from coarser data while it was still in the ring is a gap now that it is on screen.
     for (int i = 0; i < visibleWanted; i++) {
@@ -2056,7 +2094,7 @@ void TileWorker::loop(Lane& lane) {
         // Tiles on screen first, then the SD card cache, then the tiles around the screen, then conversions
         bool visible = true;
         if (!claimNext(lane, true, tile, pixels)) {
-            if (loadLabels(lane) || writeOne(lane)) {
+            if (loadLabels(lane) || writeOne(lane) || lookForTrails(lane)) {
                 continue;
             }
             visible = false;

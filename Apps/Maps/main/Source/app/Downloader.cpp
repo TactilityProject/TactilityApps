@@ -1249,6 +1249,7 @@ void Downloader::runDownload() {
     connections[0].owner = this;
     connections[0].index = 0;
     connections[0].body = &bodies[0];
+    connections[0].shortReadMs = 0;
     const bool tileJson = ensureTileJson(connections[0]);
     giveClient(connections[0]);
     bodies[0].release();
@@ -1518,12 +1519,25 @@ constexpr uint32_t TERRAIN_AFTER_BROWSE_MS = 2000;
 } // namespace
 
 bool Downloader::runTrails(const RegionMeta& region, bool quiet) {
-    if (!runTrailsArea(region.name, region.box, quiet, false)) {
+    // Over the whole z12 tiles the box touches: the files then hold every trail of their tiles, and a browsed block
+    // inside those tiles (trailsCovered) has all of them
+    const TileRange range = tileRange(region.box, TRAIL_ZOOM);
+    const double size = static_cast<double>(TILE_SIZE);
+    BoundingBox box {};
+    box.west = worldXToLon(range.minX * size + 0.5, TRAIL_ZOOM);
+    box.east = worldXToLon((range.maxX + 1) * size - 0.5, TRAIL_ZOOM);
+    box.north = worldYToLat(range.minY * size + 0.5, TRAIL_ZOOM);
+    box.south = worldYToLat((range.maxY + 1) * size - 0.5, TRAIL_ZOOM);
+    if (!runTrailsArea(region.name, box, quiet, false)) {
         return false;
     }
-    // Every trail of the region is on the card: the idle-time sweep and the browsed blocks inside it skip it from now on
+    // Every trail of the region is on the card: the idle-time sweep and the browsed blocks inside it skip it from now
+    // on. Without the marker the region is asked for again later.
     MarkerJob marker { rootPath, region.name, false };
-    io->run(IoPriority::Background, writeTrailsMarkerJob, &marker);
+    if (!storeGivingWay(writeTrailsMarkerJob, &marker)) {
+        logError("Trails for %s: trails.ok not written", region.name);
+        return false;
+    }
     trailRegionsStale = true;
     return true;
 }
@@ -1531,6 +1545,13 @@ bool Downloader::runTrails(const RegionMeta& region, bool quiet) {
 bool Downloader::runTrailsArea(const char* regionName, const BoundingBox& box, bool quiet, bool markEmpty) {
     trailsStatus = 0;
     trailsYielded = false;
+    // Every query at least TRAILS_GAP_MS after the last one: a region's query (asked for) waits out the rest of it
+    while (trailsQueryMs != 0 && nowMs() - trailsQueryMs < TRAILS_GAP_MS && !cancelRequested && !stopRequested) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (cancelRequested || stopRequested) {
+        return false;
+    }
     if (!wifiConnected()) {
         if (!quiet) {
             setStatus(State::Failed, "No Wi-Fi connection");
@@ -1630,6 +1651,9 @@ bool Downloader::runTrailsArea(const char* regionName, const BoundingBox& box, b
     }
     largeFree(post);
     dropClient(connection);
+    trailsQueryMs = nowMs();
+    // The short read steps are this query's only: downloads and updates use connections[0] next
+    connection.shortReadMs = 0;
     const size_t received = connection.body->size();
     logInfo("Trails for %s: %u bytes in %u ms (HTTP %d)", regionName, static_cast<unsigned>(received), static_cast<unsigned>(nowMs() - start), status);
     // The answer, gzip or plain JSON, read in pieces into the parser; the lines collected per z12 tile. The tiler grows
@@ -1690,8 +1714,15 @@ bool Downloader::runTrailsArea(const char* regionName, const BoundingBox& box, b
         GrowArray<uint8_t> file;
         for (int i = 0; ok && i < tiler->tileCount() && !cancelRequested && !stopRequested; i++) {
             file.clear();
-            if (!tiler->buildTile(i, file, markEmpty)) {
+            if (!markEmpty && !tiler->tileHasLines(i)) {
+                // No trail in this tile: no file (only browsed blocks mark the tiles they asked for)
                 continue;
+            }
+            if (!tiler->buildTile(i, file, markEmpty)) {
+                // No memory for the file: the area stays without trails.ok / is asked for again
+                logError("Trails for %s: 12/%d/%d not built", regionName, tiler->tileAt(i).x, tiler->tileAt(i).y);
+                ok = false;
+                break;
             }
             // Written like a height file: it gives way to the map's card work and is tried again (the first browsed
             // block on the T-Deck lost its files to that, 23 Nov)
@@ -2731,7 +2762,6 @@ void Downloader::runPendingTrails() {
         box.east = worldXToLon((block.x + 1) * size - 0.5, block.z);
         box.north = worldYToLat(block.y * size + 0.5, block.z);
         box.south = worldYToLat((block.y + 1) * size - 0.5, block.z);
-        trailsQueryMs = nowMs();
         logInfo("Trails: block %d/%d/%d of the browsed map", block.z, block.x, block.y);
         const bool done = runTrailsArea(BROWSE_REGION, box, true, true);
         trailsQueryMs = nowMs();
@@ -2777,7 +2807,6 @@ void Downloader::runPendingTrails() {
             return;
         }
         logInfo("Trails: %s has no trails.ok, its trails are fetched", name);
-        trailsQueryMs = nowMs();
         const bool done = runTrails(region, true);
         trailsQueryMs = nowMs();
         releaseIdle();
@@ -2918,6 +2947,7 @@ void Downloader::runUpdate(bool manual) {
     connection.body = &bodies[0];
     connection.received = 0;
     connection.lastFolder[0] = '\0';
+    connection.shortReadMs = 0;
     if (!ensureTileJson(connection)) {
         giveClient(connection);
         setStatus(State::Failed, "OpenFreeMap is not reachable");

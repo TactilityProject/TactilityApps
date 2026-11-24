@@ -84,6 +84,8 @@ public:
     void endRoute(int route, const TrailRoute& style, bool keep);
     int tileCount() const { return tileTotal; }
     TileKey tileAt(int index) const;
+    /** Whether a tile got lines: buildTile() is false for a tile without them and when out of memory. */
+    bool tileHasLines(int index) const { return tiles != nullptr && index >= 0 && index < tileTotal && tiles[index].size() > 0; }
     /**
      * The .trl bytes of one tile into out (replacing its content). False when the tile has no lines, unless evenEmpty:
      * then a file without routes (the header only) says that the tile was asked for.

@@ -8,6 +8,8 @@
   on the map or rename all of them. Each map keeps its own folder.
 - A tile that failed while browsing is asked for again after 30 s at the earliest, and a tile the screen waits for is
   written to the card in one go (one tile was fetched again every 20 s while the count on the pill grew).
+- A delete, rename, terrain or update question acts on the map it named, found by its folder, even when the list
+  changed while it was open.
 
 **Marked trails**
 - Hiking and cycling routes are drawn in the outdoor style (like peaks); the standard style leaves them out.
@@ -25,6 +27,10 @@
 - Trails of a place shown from a downloaded map no longer stay away without a word: a block was dropped when no
   browsed map existed yet, a block that left the queue was never asked again in that session, and the trail files
   of a map downloaded only up to z11 (or from z13 on) were not looked for.
+- A region's query covers the whole z12 tiles its box touches. `trails.ok` is written only when every file was
+  built and stored and the marker itself was written; otherwise the region is asked for again later.
+- Queries asked for in a region's menu also start at least 10 s after the last one.
+- A tile that comes on screen from the cache (drawn earlier around the screen) looks for its trails too.
 
 ## 0.9.0
 
