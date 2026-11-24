@@ -36,8 +36,6 @@ struct Settings {
     bool outdoorStyle = false;
     /** Hillshade and contour lines where the heights were downloaded (Terrain in the region's actions). */
     bool terrain = true;
-    /** Marked hiking and cycling routes from OpenStreetMap through the Overpass API: opt-in, off by default. */
-    bool trails = false;
     /** Developer options, only in settings.txt: the monochrome palette on any display, and stall probes. */
     bool devMonochrome = false;
     bool devProbe = false;

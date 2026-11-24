@@ -20,7 +20,6 @@ enum class SettingItem : uint8_t {
     RouteMode,
     WalkTrails,
     Terrain,
-    Trails,
     Count
 };
 

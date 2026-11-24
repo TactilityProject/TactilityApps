@@ -23,7 +23,6 @@ void fillSettingsList(ListView& list, const Settings& settings, bool monochrome)
     list.add("Route mode", routeProfileName(static_cast<RouteProfile>(std::clamp(settings.routeProfile, 0, 2))));
     list.add("Walk prefers paths", settings.walkTrails ? "On" : "Off");
     list.add("Terrain", settings.terrain ? "On" : "Off");
-    list.add("Marked trails", settings.trails ? "On" : "Off");
     // In the order of SettingItem: what each does and when to change it, under its name
     static const char* const DESCRIPTIONS[] = {
         "Keeps drawn tiles: faster revisits, uses card",
@@ -36,7 +35,6 @@ void fillSettingsList(ListView& list, const Settings& settings, bool monochrome)
         "The mode new routes start with",
         "On for hikes, Off for the shortest way",
         "Shading, contours; downloads terrain",
-        "Hiking, cycling routes (needs TLS 1.3)",
     };
     static_assert(sizeof(DESCRIPTIONS) / sizeof(DESCRIPTIONS[0]) == static_cast<size_t>(SettingItem::Count));
     list.setDescriptions(DESCRIPTIONS, static_cast<int>(SettingItem::Count));

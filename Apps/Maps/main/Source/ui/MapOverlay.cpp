@@ -18,7 +18,7 @@ constexpr const char* ATTRIBUTION_FIRST = "\xC2\xA9 OpenMapTiles";
 constexpr const char* ATTRIBUTION_SECOND = "\xC2\xA9 OpenStreetMap contributors";
 constexpr const char* ATTRIBUTION_MARK = "\xC2\xA9";
 /** While terrain is drawn: the elevation sources (AWS Terrain Tiles; the full lines are in About). */
-constexpr const char* ATTRIBUTION_TERRAIN = "Terrain: AWS Terrain Tiles";
+constexpr const char* ATTRIBUTION_TERRAIN = "Terrain: Copernicus EU-DEM, USGS";
 
 } // namespace
 

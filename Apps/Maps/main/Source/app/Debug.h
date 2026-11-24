@@ -27,7 +27,8 @@ bool saveBmp(const char* path, const uint16_t* pixels, int width, int height);
  * ones, of that region only when one is named),
  * "waitsearchindex" waits until the build is over, "filecheck <path>" logs the size and CRC-32 of a file under the
  * app's folder (to compare an index built on the device with the PC's). "terrain <region>" (or "heights") downloads the region's
- * elevation now (Download heights), "trails <region>" its marked trails.
+ * elevation now (Download heights), "trails <region>" its marked trails, "showtrails <0|1>" draws trails in any style,
+ * "logmirror <word>" copies log lines with the word into scriptlog.txt.
  */
 class DebugScript {
 public:
@@ -58,6 +59,12 @@ public:
         Memory,
         /** "restart": restarts the board. */
         Restart,
+        /** "showtrails <0|1>": marked trails drawn or not, whatever the style, until the style changes. */
+        ShowTrails,
+        /** "logmirror <word|word...>": log lines with one of the words also go to scriptlog.txt (no serial log needed). */
+        LogMirror,
+        /** "waittrails": waits until a trails query runs (at most 3 minutes). */
+        WaitTrails,
         /** "followgpx <file>": follows the track of a GPX file in the app's folder. */
         FollowGpx
     };

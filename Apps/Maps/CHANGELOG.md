@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.1 (in work)
+
+**Downloaded maps**
+- Maps with the same name (for example several areas named "Slovakia") are one row of the list, with their size
+  together and a count. The row opens to the maps, numbered, each with its own actions; it can also show all of them
+  on the map or rename all of them. Each map keeps its own folder.
+- A tile that failed while browsing is asked for again after 30 s at the earliest, and a tile the screen waits for is
+  written to the card in one go (one tile was fetched again every 20 s while the count on the pill grew).
+
+**Marked trails**
+- Hiking and cycling routes are drawn in the outdoor style (like peaks); the standard style leaves them out.
+- They are always downloaded (the Settings row is gone): Tactility speaks TLS 1.3 since 23 Nov 2026, which the
+  trail server needs. Older Tactility cannot fetch them.
+- They come by themselves while the map is left alone, one query at a time:
+  - for the browsed map, a small block (four z12 tiles, about 20 km across), nearest to the screen first;
+  - for downloaded regions without them, one region at a time;
+  - with every region download, and by "Download trails" in a region's menu.
+- Order: tiles for the screen, then their terrain, then trails, then idle-time updates of regions.
+- A waiting query gives the connection to browsing as soon as a tile is wanted, and is asked again later.
+- Queries are at least 10 s apart. A busy server (429, 502-504) is asked again after a minute for a block, after 5
+  minutes for a region. A tile asked for without trails gets an empty file, a region with all of them `trails.ok`.
+- The download card says that the trail server can take up to a minute.
+- Trails of a place shown from a downloaded map no longer stay away without a word: a block was dropped when no
+  browsed map existed yet, a block that left the queue was never asked again in that session, and the trail files
+  of a map downloaded only up to z11 (or from z13 on) were not looked for.
+
 ## 0.9.0
 
 **Map**

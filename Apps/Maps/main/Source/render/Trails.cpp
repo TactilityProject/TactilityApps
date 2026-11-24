@@ -597,9 +597,9 @@ void TrailTiler::appendLine(int index, int route, int slot, const int16_t* point
     }
 }
 
-bool TrailTiler::buildTile(int index, GrowArray<uint8_t>& out) {
+bool TrailTiler::buildTile(int index, GrowArray<uint8_t>& out, bool evenEmpty) {
     out.clear();
-    if (tiles == nullptr || index < 0 || index >= tileTotal || tiles[index].size() == 0) {
+    if (tiles == nullptr || index < 0 || index >= tileTotal || (tiles[index].size() == 0 && !evenEmpty)) {
         return false;
     }
     const GrowArray<uint8_t>& buffer = tiles[index];

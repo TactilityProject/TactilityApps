@@ -44,7 +44,12 @@ void MapView::fillDownloadCard() {
     };
     // Line 1 says what was fetched, line 2 how big it is and how fast, line 3 the state in words.
     const char* name = statusTitle[0] != '\0' ? statusTitle : status.region;
-    if (running && status.total > 0) {
+    if (running && status.trails) {
+        // A trails query: no tiles to count, the server takes up to a minute
+        add("%s", status.message[0] != '\0' ? status.message : "Downloading trails");
+        add("The trail server can take");
+        add("up to a minute to answer.");
+    } else if (running && status.total > 0) {
         formatTileLine(name, status.done, status.total, lines[count], sizeof(lines[count]));
         rows[count] = lines[count];
         count++;
@@ -157,6 +162,11 @@ void MapView::pollDownloader(uint32_t now) {
     const int missingCount = worker.takeMissingTerrain(arrived, Downloader::MAX_ARRIVED);
     for (int i = 0; i < missingCount; i++) {
         downloader.queueTerrain(arrived[i]);
+    }
+    // And those without trail files ask for them (nothing happens while Marked trails is off)
+    const int missingTrailCount = worker.takeMissingTrails(arrived, Downloader::MAX_ARRIVED);
+    for (int i = 0; i < missingTrailCount; i++) {
+        downloader.queueTrails(arrived[i]);
     }
     if (!resumeChecked && !downloader.isBusy()) {
         // A download that was interrupted continues when the map opens again (never in place of a running one)

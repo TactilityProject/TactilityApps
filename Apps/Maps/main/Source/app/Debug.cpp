@@ -158,6 +158,20 @@ DebugScript::Step DebugScript::next(uint32_t now) {
             snprintf(step.name, sizeof(step.name), "%s", argument);
             return step;
         }
+        if (strcmp(command, "waittrails") == 0) {
+            step.action = Action::WaitTrails;
+            return step;
+        }
+        if (strcmp(command, "logmirror") == 0) {
+            step.action = Action::LogMirror;
+            snprintf(step.name, sizeof(step.name), "%s", argument);
+            return step;
+        }
+        if (strcmp(command, "showtrails") == 0) {
+            step.action = Action::ShowTrails;
+            step.zoom = atoi(argument);
+            return step;
+        }
         if (strcmp(command, "restart") == 0) {
             // "restart": the board restarts (a failed app load leaves Tactility with less memory until it does)
             step.action = Action::Restart;

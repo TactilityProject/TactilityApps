@@ -59,7 +59,7 @@ const char* const ABOUT_PARAGRAPHS[] = {
     "\xC2\xA9 OpenMapTiles \xC2\xA9 OpenStreetMap contributors",
     "Map data \xC2\xA9 OpenStreetMap contributors, available under the Open Database Licence (ODbL): openstreetmap.org/copyright",
     "",
-    "Vector tiles \xC2\xA9 OpenMapTiles (CC BY 4.0, openmaptiles.org), served by OpenFreeMap (openfreemap.org).",
+    "Vector tiles \xC2\xA9 OpenMapTiles (openmaptiles.org), served by OpenFreeMap (openfreemap.org).",
     "",
     "Root certificates of Google Trust Services and Let's Encrypt are included to reach OpenFreeMap over HTTPS.",
     "",
@@ -67,16 +67,9 @@ const char* const ABOUT_PARAGRAPHS[] = {
     "",
     "#Elevation",
     "Terrain (Download terrain in a region's actions; Settings, Terrain) comes from AWS Terrain Tiles (tilezen/joerd, open data on AWS).",
-    "ArcticDEM (north of 60\xC2\xB0N) created from DigitalGlobe, Inc. imagery and funded under NSF awards 1043681, 1559691, and 1542736.",
-    "Australia terrain data \xC2\xA9 Commonwealth of Australia (Geoscience Australia).",
-    "Austria terrain data \xC2\xA9 offene Daten \xC3\x96sterreichs - Digitales Gel\xC3\xA4ndemodell (DGM) \xC3\x96sterreich.",
-    "Canada terrain data contains information licensed under the Open Government Licence - Canada.",
     "Europe terrain data produced using Copernicus data and information funded by the European Union - EU-DEM layers.",
-    "Mexico terrain data source: INEGI, Continental relief.",
-    "New Zealand terrain data: Crown copyright Land Information New Zealand (LINZ).",
-    "Norway terrain data \xC2\xA9 Kartverket.",
-    "United Kingdom terrain data \xC2\xA9 Environment Agency copyright and/or database right 2015. All rights reserved.",
-    "United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data courtesy of the U.S. Geological Survey; global ETOPO1 ocean bathymetry courtesy of NOAA.",
+    "Austria terrain data \xC2\xA9 offene Daten \xC3\x96sterreichs - Digitales Gel\xC3\xA4ndemodell (DGM) \xC3\x96sterreich.",
+    "United States 3DEP (formerly NED) and global GMTED2010 and SRTM terrain data courtesy of the U.S. Geological Survey.",
     "Root certificates of Amazon and Starfield are included to reach the elevation tiles over HTTPS.",
     "",
     "#Marked trails",
@@ -98,7 +91,10 @@ enum RegionAction : int {
     REGION_RENAME,
     REGION_DELETE,
     REGION_TERRAIN,
-    REGION_TRAILS
+    REGION_TRAILS,
+    REGION_GROUP_OPEN,
+    REGION_GROUP_SHOW,
+    REGION_GROUP_RENAME
 };
 
 } // namespace
@@ -422,6 +418,20 @@ void MapView::handleListAction(UiAction action) {
         }
         return;
     }
+    if (action == UiAction::Back && screen == Screen::Regions && regionGroup[0] != '\0') {
+        // Out of a group of maps to all maps, on the group's row
+        char group[sizeof(regionGroup)];
+        snprintf(group, sizeof(group), "%s", regionGroup);
+        regionGroup[0] = '\0';
+        fillRegionList();
+        for (int row = 0; row < regionRowCount; row++) {
+            if (regionRowList[row].members > 1 && sameRegionTitle(regions[regionRowList[row].region].title, group)) {
+                regionList.select(row);
+                break;
+            }
+        }
+        return;
+    }
     if (action == UiAction::Back) {
         closeScreen();
         return;
@@ -479,6 +489,9 @@ void MapView::openRegions() {
     };
     runOnCard(io, read);
     const int selected = screen == Screen::Regions ? regionList.selected() : 0;
+    if (screen != Screen::Regions) {
+        regionGroup[0] = '\0';
+    }
     fillRegionList();
     regionList.select(selected);
     if (screen != Screen::Regions) {
@@ -490,29 +503,69 @@ void MapView::openRegions() {
 
 void MapView::fillRegionList() {
     regionList.clear();
-    regionList.setTitle("Downloaded maps");
+    regionRowCount = regionRows(regions, regionCount, regionGroup, regionRowList);
+    if (regionGroup[0] != '\0' && regionRowCount == 0) {
+        // The group's last map was deleted or renamed: all maps again
+        regionGroup[0] = '\0';
+        regionRowCount = regionRows(regions, regionCount, nullptr, regionRowList);
+    }
+    regionList.setTitle(regionGroup[0] != '\0' ? regionGroup : "Downloaded maps");
     if (regionCount == 0) {
         regionList.setHint("No maps yet. Menu, Download.");
     } else {
         setListHint(regionList, "Enter: actions  R: rename  X: delete", "Tap: actions  Swipe right: back");
     }
     const Downloader::Status status = downloader.status();
-    for (int i = 0; i < regionCount; i++) {
+    const bool downloading = status.state == Downloader::State::Downloading || status.state == Downloader::State::Connecting;
+    for (int row = 0; row < regionRowCount; row++) {
+        const int i = regionRowList[row].region;
         const RegionMeta& meta = regions[i];
         char label[ListView::TEXT_LENGTH];
         char detail[ListView::TEXT_LENGTH];
-        const bool active = (status.state == Downloader::State::Downloading || status.state == Downloader::State::Connecting) &&
-            strcmp(status.region, meta.name) == 0;
+        if (regionRowList[row].members > 1) {
+            // A group: its size together, its newest date, a state any of its maps has
+            RegionRow members[TileStore::MAX_REGIONS];
+            const int count = regionRows(regions, regionCount, meta.title, members);
+            uint64_t bytes = 0;
+            const char* newest = "";
+            const char* state = "";
+            for (int m = 0; m < count; m++) {
+                const RegionMeta& member = regions[members[m].region];
+                bytes += member.bytes;
+                if (strcmp(member.date, newest) > 0) {
+                    newest = member.date;
+                }
+                if (downloading && strcmp(status.region, member.name) == 0) {
+                    state = ", downloading";
+                } else if (!member.isComplete() && state[0] == '\0') {
+                    state = ", paused";
+                } else if (isOutdated(member) && state[0] == '\0') {
+                    state = ", outdated";
+                }
+            }
+            snprintf(label, sizeof(label), "%s  %d maps%s", meta.title, count, state);
+            snprintf(detail, sizeof(detail), "%.1f MB %s", bytes / 1e6, newest[0] != '\0' ? newest + 2 : "");
+            regionList.add(label, detail);
+            continue;
+        }
+        // Inside a group the maps have one title, numbered to tell them apart
+        char title[sizeof(meta.title) + 8];
+        if (regionGroup[0] != '\0') {
+            snprintf(title, sizeof(title), "%d. %s", row + 1, regionTitle(meta));
+        } else {
+            snprintf(title, sizeof(title), "%s", regionTitle(meta));
+        }
+        const bool active = downloading && strcmp(status.region, meta.name) == 0;
         if (active || !meta.isComplete()) {
             const int64_t done = active ? status.done : meta.done;
-            snprintf(label, sizeof(label), "%s  %s %d%%", regionTitle(meta), active ? "downloading" : "paused",
+            snprintf(label, sizeof(label), "%s  %s %d%%", title, active ? "downloading" : "paused",
                 static_cast<int>(meta.total > 0 ? done * 100 / meta.total : 0));
         } else if (status.state == Downloader::State::Updating && strcmp(status.region, meta.name) == 0) {
-            snprintf(label, sizeof(label), "%s  updating %d%%", regionTitle(meta), static_cast<int>(status.total > 0 ? status.done * 100 / status.total : 0));
+            snprintf(label, sizeof(label), "%s  updating %d%%", title, static_cast<int>(status.total > 0 ? status.done * 100 / status.total : 0));
         } else if (isOutdated(meta)) {
-            snprintf(label, sizeof(label), "%s  outdated", regionTitle(meta));
+            snprintf(label, sizeof(label), "%s  outdated", title);
         } else {
-            snprintf(label, sizeof(label), "%s  %s", regionTitle(meta), strcmp(meta.name, BROWSE_REGION) == 0 ? "viewed online" : "complete");
+            snprintf(label, sizeof(label), "%s  %s", title, strcmp(meta.name, BROWSE_REGION) == 0 ? "viewed online" : "complete");
         }
         snprintf(detail, sizeof(detail), "%.1f MB %s", meta.bytes / 1e6, meta.date[0] != '\0' ? meta.date + 2 : "");
         regionList.add(label, detail);
@@ -520,11 +573,136 @@ void MapView::fillRegionList() {
     regionList.layoutFullScreen(width, height, overlay.font());
 }
 
-void MapView::openRegionActions() {
-    if (regionList.selected() >= regionCount) {
+int MapView::selectedRegion() const {
+    const int row = regionList.selected();
+    if (row < 0 || row >= regionRowCount || regionRowList[row].members > 1) {
+        return -1;
+    }
+    return regionRowList[row].region;
+}
+
+void MapView::selectRegionRow(int index) {
+    for (int row = 0; row < regionRowCount; row++) {
+        const RegionRow& entry = regionRowList[row];
+        if (entry.region == index ||
+            (entry.members > 1 && index >= 0 && index < regionCount && sameRegionTitle(regions[entry.region].title, regions[index].title) &&
+                regions[index].title[0] != '\0')) {
+            regionList.select(row);
+            return;
+        }
+    }
+    regionList.select(std::min(regionList.selected(), std::max(regionRowCount - 1, 0)));
+}
+
+void MapView::openGroupActions(int row) {
+    const RegionMeta& first = regions[regionRowList[row].region];
+    snprintf(actionGroup, sizeof(actionGroup), "%s", first.title);
+    actionRegion[0] = '\0';
+    beginPopup(Popup::RegionActions, first.title);
+    auto add = [&](const char* label, int action) {
+        menu.add(label);
+        popupActions[popupActionCount++] = action;
+    };
+    add("Open", REGION_GROUP_OPEN);
+    add("Show all on map", REGION_GROUP_SHOW);
+    if (canType()) {
+        add("Rename all", REGION_GROUP_RENAME);
+    }
+    layoutPopup();
+}
+
+void MapView::chooseGroupAction(int action) {
+    RegionRow members[TileStore::MAX_REGIONS];
+    const int count = regionRows(regions, regionCount, actionGroup, members);
+    if (count == 0) {
+        showToast("The list changed");
         return;
     }
-    const RegionMeta& meta = regions[regionList.selected()];
+    switch (action) {
+        case REGION_GROUP_OPEN:
+            snprintf(regionGroup, sizeof(regionGroup), "%s", actionGroup);
+            fillRegionList();
+            regionList.select(0);
+            break;
+        case REGION_GROUP_SHOW: {
+            // All of the group's boxes on the screen at once
+            RegionMeta all = regions[members[0].region];
+            for (int m = 1; m < count; m++) {
+                const RegionMeta& member = regions[members[m].region];
+                all.box.west = std::min(all.box.west, member.box.west);
+                all.box.east = std::max(all.box.east, member.box.east);
+                all.box.south = std::min(all.box.south, member.box.south);
+                all.box.north = std::max(all.box.north, member.box.north);
+                all.maxZoom = std::max(all.maxZoom, member.maxZoom);
+            }
+            returnToMenu = false;
+            showRegion(all);
+            screen = Screen::Map;
+            break;
+        }
+        case REGION_GROUP_RENAME: {
+            char message[48];
+            snprintf(message, sizeof(message), "Name of these %d maps", count);
+            promptPurpose = PromptPurpose::RenameGroup;
+            prompt.open(message, actionGroup);
+            prompt.layout(width, height, overlay.font());
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void MapView::renameRegionGroup(const char* title) {
+    RegionRow members[TileStore::MAX_REGIONS];
+    const int count = regionRows(regions, regionCount, actionGroup, members);
+    const Downloader::Status status = downloader.status();
+    int failed = 0;
+    for (int m = 0; m < count; m++) {
+        RegionMeta& meta = regions[members[m].region];
+        if (downloader.isBusy() && strcmp(status.region, meta.name) == 0) {
+            // Its meta.json is being written by the download
+            failed++;
+            continue;
+        }
+        char path[PATH_MAX_LENGTH];
+        snprintf(path, sizeof(path), "%s/maps/%s/meta.json", rootPath, meta.name);
+        RegionMeta stored {};
+        auto write = [&] {
+            if (!readRegionMeta(path, stored)) {
+                return false;
+            }
+            setRegionTitle(stored, title);
+            return writeRegionMeta(path, stored);
+        };
+        if (runOnCard(io, write)) {
+            setRegionTitle(meta, title);
+        } else {
+            failed++;
+        }
+    }
+    if (failed > 0) {
+        showToast(failed == count ? "Could not save the name" : "Some maps kept their name");
+    }
+    const int first = members[0].region;
+    if (regionGroup[0] != '\0' && sameRegionTitle(regionGroup, actionGroup)) {
+        snprintf(regionGroup, sizeof(regionGroup), "%s", regions[first].title);
+    }
+    fillRegionList();
+    selectRegionRow(first);
+}
+
+void MapView::openRegionActions() {
+    const int row = regionList.selected();
+    if (row >= 0 && row < regionRowCount && regionRowList[row].members > 1) {
+        openGroupActions(row);
+        return;
+    }
+    const int index = selectedRegion();
+    if (index < 0) {
+        return;
+    }
+    const RegionMeta& meta = regions[index];
     const Downloader::Status status = downloader.status();
     const bool active = downloader.isBusy() && strcmp(status.region, meta.name) == 0;
     snprintf(actionRegion, sizeof(actionRegion), "%s", meta.name);
@@ -544,9 +722,7 @@ void MapView::openRegionActions() {
     }
     if (meta.isComplete() && !active && strcmp(meta.name, BROWSE_REGION) != 0) {
         add("Download terrain", REGION_TERRAIN);
-        if (settings.trails) {
-            add("Download trails", REGION_TRAILS);
-        }
+        add("Download trails", REGION_TRAILS);
     }
     if (canType()) {
         add("Rename", REGION_RENAME);
@@ -556,6 +732,11 @@ void MapView::openRegionActions() {
 }
 
 void MapView::chooseRegionAction(int action) {
+    if (action == REGION_GROUP_OPEN || action == REGION_GROUP_SHOW || action == REGION_GROUP_RENAME) {
+        chooseGroupAction(action);
+        dirty = true;
+        return;
+    }
     // The list may have been rebuilt since the popup opened, so the region is found again by its folder name
     int found = -1;
     for (int i = 0; i < regionCount; i++) {
@@ -570,7 +751,7 @@ void MapView::chooseRegionAction(int action) {
         return;
     }
     // The steps that follow (rename, delete, update) work on the selected row
-    regionList.select(found);
+    selectRegionRow(found);
     const RegionMeta& meta = regions[found];
     switch (action) {
         case REGION_SHOW:
@@ -611,7 +792,7 @@ void MapView::chooseRegionAction(int action) {
             break;
         }
         case REGION_TRAILS:
-            // One query to the Overpass API for the region's box (opt-in: Settings, Marked trails)
+            // One query to the Overpass API for the region's box (they also come by themselves in idle time)
             downloader.downloadTrails(meta.name);
             showToast("Downloading trails");
             break;
@@ -634,13 +815,21 @@ bool MapView::isOutdated(const RegionMeta& meta) const {
 }
 
 void MapView::askRenameRegion() {
-    if (regionList.selected() >= regionCount) {
-        return;
-    }
     if (!canType()) {
         return;
     }
-    const RegionMeta& meta = regions[regionList.selected()];
+    const int row = regionList.selected();
+    if (row >= 0 && row < regionRowCount && regionRowList[row].members > 1) {
+        snprintf(actionGroup, sizeof(actionGroup), "%s", regions[regionRowList[row].region].title);
+        chooseGroupAction(REGION_GROUP_RENAME);
+        dirty = true;
+        return;
+    }
+    const int index = selectedRegion();
+    if (index < 0) {
+        return;
+    }
+    const RegionMeta& meta = regions[index];
     const Downloader::Status status = downloader.status();
     if (downloader.isBusy() && strcmp(status.region, meta.name) == 0) {
         // Its meta.json is being written by the download
@@ -662,10 +851,18 @@ void MapView::confirmPrompt() {
         openCatalogResults(prompt.text());
         return;
     }
-    if (screen != Screen::Regions || regionList.selected() >= regionCount) {
+    if (screen != Screen::Regions) {
         return;
     }
-    RegionMeta& meta = regions[regionList.selected()];
+    if (promptPurpose == PromptPurpose::RenameGroup) {
+        renameRegionGroup(prompt.text());
+        return;
+    }
+    const int index = selectedRegion();
+    if (index < 0) {
+        return;
+    }
+    RegionMeta& meta = regions[index];
     setRegionTitle(meta, prompt.text());
     char path[PATH_MAX_LENGTH];
     snprintf(path, sizeof(path), "%s/maps/%s/meta.json", rootPath, meta.name);
@@ -681,9 +878,8 @@ void MapView::confirmPrompt() {
     if (!runOnCard(io, write)) {
         showToast("Could not save the name");
     }
-    const int selected = regionList.selected();
     fillRegionList();
-    regionList.select(selected);
+    selectRegionRow(index);
 }
 
 void MapView::confirmDialog() {
@@ -704,16 +900,16 @@ void MapView::confirmDialog() {
         return;
     }
     if (dialogPurpose == DialogPurpose::Terrain) {
-        if (screen == Screen::Regions && regionList.selected() < regionCount) {
-            const RegionMeta& meta = regions[regionList.selected()];
+        if (screen == Screen::Regions && selectedRegion() >= 0) {
+            const RegionMeta& meta = regions[selectedRegion()];
             downloader.downloadTerrain(meta.name);
             showToast("Downloading terrain");
         }
         return;
     }
     if (dialogPurpose == DialogPurpose::Update) {
-        if (screen == Screen::Regions && regionList.selected() < regionCount) {
-            const RegionMeta& meta = regions[regionList.selected()];
+        if (screen == Screen::Regions && selectedRegion() >= 0) {
+            const RegionMeta& meta = regions[selectedRegion()];
             downloader.update(meta.name);
             returnToMenu = false;
             showRegion(meta);
@@ -725,11 +921,19 @@ void MapView::confirmDialog() {
 }
 
 void MapView::askDeleteRegion() {
-    if (regionList.selected() >= regionCount) {
+    const int row = regionList.selected();
+    if (row >= 0 && row < regionRowCount && regionRowList[row].members > 1) {
+        // Each map of a group is deleted on its own, from inside the group
+        showToast("Open the group to delete its maps");
+        dirty = true;
+        return;
+    }
+    const int index = selectedRegion();
+    if (index < 0) {
         return;
     }
     char message[80];
-    snprintf(message, sizeof(message), "Delete %s? Tiles other regions use are kept.", regionTitle(regions[regionList.selected()]));
+    snprintf(message, sizeof(message), "Delete %s? Tiles other regions use are kept.", regionTitle(regions[index]));
     dialogPurpose = DialogPurpose::Delete;
     dialog.open(message, "Delete", true);
     dialog.layout(width, height, overlay.font());
@@ -737,23 +941,24 @@ void MapView::askDeleteRegion() {
 }
 
 void MapView::deleteRegion() {
-    if (screen != Screen::Regions || regionList.selected() >= regionCount) {
+    const int index = selectedRegion();
+    if (screen != Screen::Regions || index < 0) {
         return;
     }
-    const char* name = regions[regionList.selected()].name;
+    const char* name = regions[index].name;
     downloader.remove(name);
     store.removeRegion(name);
     worker.lock();
     worker.cache().clear();
     worker.unlock();
     // The list without it, the files go in the background
-    for (int i = regionList.selected(); i + 1 < regionCount; i++) {
+    for (int i = index; i + 1 < regionCount; i++) {
         regions[i] = regions[i + 1];
     }
     regionCount--;
     const int selected = regionList.selected();
     fillRegionList();
-    regionList.select(selected);
+    regionList.select(std::min(selected, std::max(regionRowCount - 1, 0)));
     dirty = true;
 }
 
@@ -804,7 +1009,8 @@ void MapView::switchMapStyle() {
     palette = settings.outdoorStyle ? &outdoorPalette() : &colorPalette();
     theme = uiTheme(*palette, monochrome);
     worker.setPalette(palette);
-    // Peaks show in the outdoor style only
+    // Peaks and marked trails show in the outdoor style only (trails are downloaded in both)
+    worker.setTrails(palette->outdoor);
     applyLabelSettings();
     char path[PATH_MAX_LENGTH];
     snprintf(path, sizeof(path), "%s/settings.txt", rootPath);
@@ -848,11 +1054,6 @@ void MapView::toggleSetting(SettingItem item) {
             settings.walkTrails = !settings.walkTrails;
             navigator.setPreferTrails(settings.walkTrails);
             break;
-        case SettingItem::Trails:
-            settings.trails = !settings.trails;
-            worker.setTrails(settings.trails);
-            downloader.setTrailsWithDownloads(settings.trails);
-            break;
         case SettingItem::Terrain:
             settings.terrain = !settings.terrain;
             worker.setTerrain(settings.terrain);
@@ -882,7 +1083,6 @@ void MapView::toggleSetting(SettingItem item) {
         worker.setSdCache(settings.sdCache);
         worker.setDeflatePrepared(settings.deflatePrepared);
         worker.setTerrain(settings.terrain);
-        worker.setTrails(settings.trails);
         pointerAcceleration.setSpeed(settings.pointerSpeed);
         applyLabelSettings();
         showToast("Could not save the settings");

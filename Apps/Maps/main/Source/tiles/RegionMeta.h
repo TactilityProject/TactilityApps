@@ -43,6 +43,21 @@ const char* regionTitle(const RegionMeta& meta);
  * name that is taken. "Zuid-Holland" gives "zuidholl", with number 2 "zuidhol2"; a title without letters gives "area".
  */
 void regionFolderName(const char* title, int number, char* out, size_t size);
+/** Whether two titles are the same, ASCII letters in any case ("Slovakia", "slovakia"). */
+bool sameRegionTitle(const char* a, const char* b);
+/** A row of the downloaded maps list: one region, or members > 1 regions with the same title. */
+struct RegionRow {
+    /** The region (the group's first). */
+    int region;
+    int members;
+};
+/**
+ * The rows of the downloaded maps list for count regions, at most count. With group null or empty, regions with the
+ * same title (sameRegionTitle; never the browsed map, never one without a title) are one row where the first of them
+ * is; with group set, the regions titled group, one row each. The folders stay apart: each region keeps its own box
+ * for updates and the download limits.
+ */
+int regionRows(const RegionMeta* regions, int count, const char* group, RegionRow* rows);
 bool readRegionMeta(const char* path, RegionMeta& meta);
 bool formatRegionMeta(const RegionMeta& meta, char* out, size_t size);
 bool parseRegionMeta(const char* text, RegionMeta& meta);

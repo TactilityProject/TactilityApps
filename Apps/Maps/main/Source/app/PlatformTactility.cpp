@@ -10,7 +10,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <freertos/FreeRTOS.h>
 #include <cstdarg>
 #include <cstdio>
 
@@ -68,6 +71,101 @@ uint32_t nowMs() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000);
 }
 
+namespace {
+
+/**
+ * The log mirror of debug scripts (setLogMirror): lines with the word, in PSRAM, under a mutex (made with the buffer;
+ * a spinlock needs xPortEnterCriticalTimeout, which Tactility does not export).
+ */
+constexpr size_t MIRROR_BYTES = 8 * 1024;
+SemaphoreHandle_t mirrorLock = nullptr;
+char* mirrorBuffer = nullptr;
+size_t mirrorUsed = 0;
+char mirrorWord[48] = "";
+
+/** Whether the message contains one of the words ("Trails|Browse"). */
+bool mirrored(const char* message) {
+    const char* word = mirrorWord;
+    while (*word != '\0') {
+        const char* end = strchr(word, '|');
+        const size_t length = end != nullptr ? static_cast<size_t>(end - word) : strlen(word);
+        if (length > 0) {
+            for (const char* p = message; *p != '\0'; p++) {
+                if (strncmp(p, word, length) == 0) {
+                    return true;
+                }
+            }
+        }
+        if (end == nullptr) {
+            break;
+        }
+        word = end + 1;
+    }
+    return false;
+}
+
+void mirror(const char* level, const char* message) {
+    if (mirrorLock == nullptr || mirrorWord[0] == '\0' || !mirrored(message)) {
+        return;
+    }
+    char line[200];
+    const int length = snprintf(line, sizeof(line), "%u %s%s\n", static_cast<unsigned>(esp_timer_get_time() / 1000), level, message);
+    if (length <= 0) {
+        return;
+    }
+    const size_t bytes = std::min(static_cast<size_t>(length), sizeof(line) - 1);
+    xSemaphoreTake(mirrorLock, portMAX_DELAY);
+    if (mirrorUsed + bytes <= MIRROR_BYTES) {
+        memcpy(mirrorBuffer + mirrorUsed, line, bytes);
+        mirrorUsed += bytes;
+    }
+    xSemaphoreGive(mirrorLock);
+}
+
+} // namespace
+
+void setLogMirror(const char* word) {
+    if (word != nullptr && word[0] != '\0' && mirrorLock == nullptr) {
+        // Never freed: a few KB for the rest of the app session, only when a script asks for it. The lock is made
+        // last: mirror() starts once it is there
+        mirrorBuffer = static_cast<char*>(heap_caps_malloc(MIRROR_BYTES, MALLOC_CAP_SPIRAM));
+        if (mirrorBuffer != nullptr) {
+            mirrorLock = xSemaphoreCreateMutex();
+        }
+    }
+    if (mirrorLock == nullptr) {
+        return;
+    }
+    xSemaphoreTake(mirrorLock, portMAX_DELAY);
+    snprintf(mirrorWord, sizeof(mirrorWord), "%s", word != nullptr ? word : "");
+    xSemaphoreGive(mirrorLock);
+}
+
+size_t takeMirroredLog(char* out, size_t size) {
+    if (out == nullptr || size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (mirrorLock == nullptr) {
+        return 0;
+    }
+    xSemaphoreTake(mirrorLock, portMAX_DELAY);
+    size_t taken = 0;
+    if (mirrorBuffer != nullptr && mirrorUsed > 0) {
+        // Whole lines that fit
+        taken = std::min(mirrorUsed, size - 1);
+        while (taken > 0 && mirrorBuffer[taken - 1] != '\n') {
+            taken--;
+        }
+        memcpy(out, mirrorBuffer, taken);
+        memmove(mirrorBuffer, mirrorBuffer + taken, mirrorUsed - taken);
+        mirrorUsed -= taken;
+    }
+    xSemaphoreGive(mirrorLock);
+    out[taken] = '\0';
+    return taken;
+}
+
 void logInfo(const char* format, ...) {
     char message[160];
     va_list args;
@@ -75,6 +173,7 @@ void logInfo(const char* format, ...) {
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
     LOG_I(TAG, "%s", message);
+    mirror("", message);
 }
 
 void logError(const char* format, ...) {
@@ -84,6 +183,7 @@ void logError(const char* format, ...) {
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
     LOG_E(TAG, "%s", message);
+    mirror("E ", message);
 }
 
 void logMemory(const char* label) {

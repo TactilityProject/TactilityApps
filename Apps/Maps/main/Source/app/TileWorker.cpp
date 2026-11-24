@@ -464,6 +464,29 @@ void TileWorker::noteMissingTerrain(const TileKey& tile) {
     unlock();
 }
 
+void TileWorker::noteMissingTrails(const TileKey& tile) {
+    lock();
+    bool known = false;
+    for (int i = 0; i < missingTrailsCount && !known; i++) {
+        known = missingTrails[i] == tile;
+    }
+    if (!known && missingTrailsCount < MAX_MISSING_TERRAIN) {
+        missingTrails[missingTrailsCount++] = tile;
+    }
+    unlock();
+}
+
+int TileWorker::takeMissingTrails(TileKey* out, int max) {
+    lock();
+    const int count = std::min(missingTrailsCount, max);
+    for (int i = 0; i < count; i++) {
+        out[i] = missingTrails[i];
+    }
+    missingTrailsCount = 0;
+    unlock();
+    return count;
+}
+
 int TileWorker::takeMissingTerrain(TileKey* out, int max) {
     lock();
     const int count = std::min(missingTerrainCount, max);
@@ -528,7 +551,7 @@ int TileWorker::terrainRegion(const TileKey& tile, bool trails) {
     for (int r = 0; r < store->regionCount() && found < 0; r++) {
         const bool named = trails ? trailPath(path, sizeof(path), store->root(), store->regionName(r), tile)
                                   : terrainPath(path, sizeof(path), store->root(), store->regionName(r), tile);
-        if (store->mayHave(r, tile) && named && fileExists(path)) {
+        if (store->mayHaveArea(r, tile) && named && fileExists(path)) {
             found = r;
         }
     }
@@ -739,19 +762,47 @@ struct TrailJobData {
     FileBuffer* file;
     TileKey tile;
     bool found;
+    /** The tile is on screen: only then is a missing trail file asked for. */
+    bool visible;
 };
 
 } // namespace
 
 bool TileWorker::loadTrails(Lane& lane, const TileKey& tile, IoPriority priority) {
     lane.renderer.setTrails(nullptr, 0);
-    if (!trailsOn.load() || tile.z < TRAIL_ZOOM) {
+    if (tile.z < TRAIL_ZOOM) {
         return false;
     }
-    TrailJobData job { this, &lane.trailFile, ancestorOf(tile, TRAIL_ZOOM), false };
+    lock();
+    bool visible = false;
+    for (int i = 0; i < visibleWanted && !visible; i++) {
+        visible = wanted[i] == tile;
+    }
+    unlock();
+    if (!trailsOn.load()) {
+        // Not drawn (standard style), but downloaded all the same: a tile on screen only looks whether its trail file
+        // is there (the answer is kept per z12 tile), and asks for it when it is not
+        if (visible) {
+            TrailJobData look { this, nullptr, ancestorOf(tile, TRAIL_ZOOM), false, true };
+            io->run(priority, [](IoTask& task, void* context) {
+                (void)task;
+                auto* data = static_cast<TrailJobData*>(context);
+                if (data->worker->terrainRegion(data->tile, true) < 0) {
+                    data->worker->noteMissingTrails(data->tile);
+                }
+                return true;
+            }, &look);
+        }
+        return false;
+    }
+    TrailJobData job { this, &lane.trailFile, ancestorOf(tile, TRAIL_ZOOM), false, visible };
     const bool ran = io->run(priority, [](IoTask& task, void* context) {
         auto* data = static_cast<TrailJobData*>(context);
         const int region = data->worker->terrainRegion(data->tile, true);
+        if (region < 0 && data->visible) {
+            // Never asked for (a tile without trails has an empty file): the downloader may fetch them (Marked trails)
+            data->worker->noteMissingTrails(data->tile);
+        }
         char path[PATH_MAX_LENGTH];
         data->found = region >= 0 && trailPath(path, sizeof(path), data->worker->store->root(), data->worker->store->regionName(region), data->tile) &&
             task.readFile(path, *data->file);

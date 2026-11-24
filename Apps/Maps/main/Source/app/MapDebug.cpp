@@ -17,13 +17,40 @@
 namespace maps {
 
 void MapView::pollDebug(uint32_t now) {
+    // Mirrored log lines (logmirror) go to scriptlog.txt once a second
+    if (now - lastMirrorFlush >= 1000) {
+        lastMirrorFlush = now;
+        auto* text = static_cast<char*>(largeAlloc(8 * 1024 + 1));
+        if (text != nullptr && takeMirroredLog(text, 8 * 1024 + 1) > 0) {
+            char path[PATH_MAX_LENGTH];
+            snprintf(path, sizeof(path), "%s/scriptlog.txt", rootPath);
+            auto append = [&]() {
+                FILE* file = fopen(path, "a");
+                if (file == nullptr) {
+                    return false;
+                }
+                fputs(text, file);
+                fclose(file);
+                return true;
+            };
+            runOnCard(io, append);
+        }
+        largeFree(text);
+    }
     if (waitingRoute && navigator.state() != Navigator::State::Searching) {
         waitingRoute = false;
     }
     if (waitingSearchIndex && searchIndexJob.state() != SearchIndexJob::State::Busy) {
         waitingSearchIndex = false;
     }
-    if (!waitingIdle && !waitingRoute && !waitingSearchIndex) {
+    if (waitingTrailsUntil != 0) {
+        const Downloader::Status status = downloader.status();
+        if ((status.trails && status.state == Downloader::State::Downloading) || static_cast<int32_t>(now - waitingTrailsUntil) >= 0) {
+            logInfo("debug: waittrails %s", status.trails ? "a trails query runs" : "timed out");
+            waitingTrailsUntil = 0;
+        }
+    }
+    if (!waitingIdle && !waitingRoute && !waitingSearchIndex && waitingTrailsUntil == 0) {
         runDebugStep(script.next(now), now);
     } else if (viewTimed && !dirty) {
         waitingIdle = false;
@@ -119,6 +146,17 @@ void MapView::runDebugStep(const DebugScript::Step& step, uint32_t now) {
             followGpxFile(path);
             break;
         }
+        case DebugScript::Action::WaitTrails:
+            waitingTrailsUntil = now + 180000;
+            break;
+        case DebugScript::Action::LogMirror:
+            setLogMirror(step.name);
+            break;
+        case DebugScript::Action::ShowTrails:
+            // Drawing only, whatever the style (they are always downloaded)
+            worker.setTrails(step.zoom != 0);
+            logInfo("debug: marked trails drawn: %s", step.zoom != 0 ? "yes" : "no");
+            break;
         case DebugScript::Action::Restart:
             logInfo("debug: restarting the board");
             saveView();
