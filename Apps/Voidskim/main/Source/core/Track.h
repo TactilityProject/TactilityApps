@@ -9,6 +9,9 @@ namespace hd {
 
 /** Height of a tunnel's roof above the road, in metres. */
 constexpr float TUNNEL_CLEARANCE = 6.0f;
+// The striped curb along an open edge, in metres. The road is this much wider than the track's
+// "width" (half on each side), so the curb sits outside the asphalt rather than eating into it.
+constexpr float CURB_WIDTH = 1.4f;
 
 /** Colours of a track, as 0xRRGGBB. */
 struct TrackTheme {

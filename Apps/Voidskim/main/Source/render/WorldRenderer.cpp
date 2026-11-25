@@ -18,7 +18,6 @@ using Renderer::Object;
 // Jet works in integer world units: 16 per metre keeps a 2 km circuit well inside its range
 constexpr float UNITS_PER_METRE = 16.0f;
 constexpr int CHUNK_SAMPLES = 8; // track samples per mesh, the unit Jet culls by
-constexpr float CURB_WIDTH = 0.7f;
 constexpr float WALL_HEIGHT = 1.1f;
 constexpr float WALL_THICKNESS = 0.5f;
 constexpr float SLAB_DEPTH = 1.6f; // thickness of the track

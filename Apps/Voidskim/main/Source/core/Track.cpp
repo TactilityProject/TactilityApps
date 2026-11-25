@@ -99,7 +99,7 @@ bool Track::load(const std::string& text, std::string& error, const char* diffic
             TrackSample sample;
             sample.position = state.position;
             sample.distance = state.distance;
-            sample.halfWidth = lerpf(startWidth, state.targetWidth, u) * 0.5f;
+            sample.halfWidth = (lerpf(startWidth, state.targetWidth, u) + CURB_WIDTH) * 0.5f;
             sample.gap = gap;
             sample.ramp = ramp;
             sample.base = state.baseHeight + climb * smoothstep(u);
@@ -124,7 +124,7 @@ bool Track::load(const std::string& text, std::string& error, const char* diffic
             TrackSample top;
             top.position = state.position;
             top.distance = state.distance;
-            top.halfWidth = state.width * 0.5f;
+            top.halfWidth = (state.width + CURB_WIDTH) * 0.5f;
             top.base = state.baseHeight;
             top.height = state.baseHeight + rampHeight;
             top.ramp = true;

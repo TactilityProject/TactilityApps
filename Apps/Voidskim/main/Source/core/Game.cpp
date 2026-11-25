@@ -927,15 +927,16 @@ void Game::render() {
 }
 
 void Game::drawFps() {
-    // Bottom left: out of the way of the HUD and the touch controls (which start a little higher)
+    // Bottom centre, between the touch controls on either side
     const int s = textScale();
     char text[16];
     snprintf(text, sizeof(text), "%d FPS", fps);
     const int width = textWidth(text, s) + 4 * s;
     const int height = 7 * s + 4 * s;
+    const int x = (canvas.width - width) / 2;
     const int y = canvas.height - height;
-    fillRect(canvas, 0, y, width, height, 0x0000);
-    drawText(canvas, 2 * s, y + 2 * s, text, s, fps >= 20 ? rgb565(0x80ED99) : fps >= 12 ? ACCENT : RED);
+    fillRect(canvas, x, y, width, height, 0x0000);
+    drawText(canvas, x + 2 * s, y + 2 * s, text, s, fps >= 20 ? rgb565(0x80ED99) : fps >= 12 ? ACCENT : RED);
 }
 
 void Game::drawMenu() {
