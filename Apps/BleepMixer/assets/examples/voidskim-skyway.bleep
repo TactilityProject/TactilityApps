@@ -1,0 +1,102 @@
+# Skyway: night, high above the void, mostly unfenced. Tense E Phrygian over a droning E:
+# the clashing F, a creeping chromatic descent, and a tritone that never quite resolves.
+# Two A sections, a C Am B lift falling chromatically, then a stripped drone-and-kick section
+# climbing chromatically back to the top
+
+bpm 146
+
+bar
+lead    E-5 --- --- --- --- --- --- --- --- --- --- --- F-5 --- --- ---
+harmony E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4
+bass    E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    E-5 --- --- --- --- --- --- --- ... ... ... ... ... ... ... ...
+harmony F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5
+bass    F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... S.. ... H.. ...
+
+bar
+lead    G-5 --- --- --- F#5 --- --- --- F-5 --- --- --- E-5 --- --- ---
+harmony E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4
+bass    E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    A#5 --- --- --- --- --- --- --- B-5 --- --- --- --- --- --- ---
+harmony A#3 E-4 A#3 E-4 A#3 E-4 A#3 E-4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4
+bass    A#1 A#1 A#1 A#1 A#1 A#1 A#1 A#1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1
+drums   K.. ... H.. ... K.. ... H.. ... S.. S.. S.. S.. S.. S.. S.. S..
+
+bar
+lead    B-5 --- --- --- --- --- --- --- C-6 --- --- --- B-5 --- --- ---
+harmony E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4
+bass    E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    C-6 --- --- --- B-5 --- --- --- A-5 --- --- --- ... ... ... ...
+harmony F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5 F-4 C-5
+bass    F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... S.. ... H.. ...
+
+bar
+lead    G-5 --- F#5 --- F-5 --- E-5 --- D#5 --- --- --- E-5 --- --- ---
+harmony E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4
+bass    E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    A#5 --- --- --- B-5 --- --- --- C-6 --- --- --- B-5 --- --- ---
+harmony A#3 E-4 A#3 E-4 A#3 E-4 A#3 E-4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4
+bass    A#1 A#1 A#1 A#1 A#1 A#1 A#1 A#1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1
+drums   K.. ... H.. ... K.. ... H.. ... S.. S.. S.. S.. S.. S.. S.. S..
+
+bar
+lead    G-5 --- --- --- --- --- --- --- E-5 --- --- --- G-5 --- --- ---
+harmony C-4 G-4 C-4 G-4 C-4 G-4 C-4 G-4 C-4 G-4 C-4 G-4 C-4 G-4 C-4 G-4
+bass    C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2 C-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    A-5 --- --- --- --- --- --- --- C-6 --- --- --- B-5 --- A-5 ---
+harmony A-3 E-4 A-3 E-4 A-3 E-4 A-3 E-4 A-3 E-4 A-3 E-4 A-3 E-4 A-3 E-4
+bass    A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1 A-1
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    B-5 --- --- --- --- --- --- --- --- --- --- --- D#6 --- --- ---
+harmony B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4
+bass    B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1
+drums   K.. ... H.. ... S.. ... H.. ... K.. ... H.. ... S.. ... H.. ...
+
+bar
+lead    F#6 --- --- --- F-6 --- --- --- E-6 --- --- --- D#6 --- --- ---
+harmony B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4
+bass    B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1
+drums   K.. ... S.. ... K.. ... S.. ... S.. S.. S.. S.. S.. S.. S.. S..
+
+bar
+lead    ... ... ... ... ... ... ... ... B-6 --- --- --- --- --- --- ---
+harmony ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ...
+bass    E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2
+drums   K.. ... ... ... K.. ... ... ... K.. ... ... ... K.. ... ... ...
+
+bar
+lead    C-7 --- --- --- --- --- --- --- ... ... ... ... ... ... ... ...
+harmony ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ...
+bass    F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2 F-2
+drums   K.. ... ... ... K.. ... ... ... K.. ... ... ... K.. ... H.. ...
+
+bar
+lead    B-5 --- --- --- C-6 --- --- --- B-5 --- --- --- A#5 --- --- ---
+harmony E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4 E-4 B-4
+bass    E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2 E-2
+drums   K.. ... H.. ... K.. ... H.. ... K.. ... H.. ... K.. ... H.. ...
+
+bar
+lead    A#5 --- B-5 --- C-6 --- C#6 --- D-6 --- D#6 --- E-6 --- --- ---
+harmony A#3 E-4 A#3 E-4 A#3 E-4 A#3 E-4 B-3 F#4 B-3 F#4 B-3 F#4 B-3 F#4
+bass    A#1 A#1 A#1 A#1 A#1 A#1 A#1 A#1 B-1 B-1 B-1 B-1 B-1 B-1 B-1 B-1
+drums   K.. ... H.. ... K.. ... H.. ... S.. S.. S.. S.. S.. S.. S.. S..

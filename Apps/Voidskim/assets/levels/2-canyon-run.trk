@@ -1,0 +1,55 @@
+# Canyon Run: an hourglass through the canyon, crossing itself once at the waist: one way
+# climbs onto a bridge, the other runs through a tunnel underneath. The far loop is wide and fast,
+# the near one tight. Two jumps and no barriers: watch the edges.
+
+name Canyon Run
+laps 3
+width 16
+walls none
+colour sky #3A1C71
+colour horizon #FFAF7B
+colour below #1A0B12
+colour road #4A3B36
+colour road2 #42342F
+colour edge #F2E8CF
+colour edge2 #BC4749
+colour wall #D17A22
+colour ramp #FFD166
+colour structure #5C3D2E
+colour scenery #8C5A3C
+
+straight 58
+# near loop: tight
+curve 125 45
+straight 63.9
+curve 125 45
+# up the waist onto the bridge
+straight 50
+height 9
+straight 45
+straight 50
+# down off the bridge, then across the abyss
+height 0
+straight 45
+straight 5
+ramp 8 1.6
+gap 26
+straight 71
+# far loop: wide, with a kink
+curve -125 55
+straight 17.2
+curve 20 60
+curve -40 60
+curve 20 60
+straight 17.2
+curve -125 55
+# back down the waist, under the bridge
+# across the abyss
+straight 50
+ramp 8 1.6
+gap 28
+straight 72
+tunnel on
+straight 44
+tunnel off
+straight 40

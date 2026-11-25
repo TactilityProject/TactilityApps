@@ -1,0 +1,60 @@
+# Skyway: narrow and high, with no barriers and three jumps. For experts.
+name Skyway
+laps 3
+width 14
+walls none
+colour sky #000814
+colour horizon #7B2CBF
+colour below #000000
+colour road #2B2D42
+colour road2 #24263A
+colour edge #F8F9FA
+colour edge2 #00B4D8
+colour wall #00B4D8
+colour ramp #FF006E
+colour structure #3C096C
+colour scenery #5A189A
+
+straight 85.2
+curve 45 70
+straight 20
+ramp 8 1.8
+gap 32
+straight 66
+curve -60 45
+curve 120 40
+straight 16.0
+curve -45 55
+straight 20
+ramp 8 1.8
+gap 30
+straight 54
+curve 90 60
+width 12
+straight 110
+curve 30 70
+curve -60 70
+curve 30 70
+straight 120
+curve -20 70
+curve 40 70
+curve -20 70
+straight 107.9
+curve -30 60
+curve 60 60
+curve 105 50
+straight 53
+ramp 8 2
+gap 34
+width 14
+straight 100
+curve -30 80
+curve 60 80
+curve -30 80
+straight 110
+curve 20 70
+curve -40 70
+curve 20 70
+straight 107.2
+curve 75 50
+straight 46.1

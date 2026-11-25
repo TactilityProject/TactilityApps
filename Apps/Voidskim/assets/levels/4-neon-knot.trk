@@ -1,0 +1,71 @@
+# Neon Knot: a city at night. Left and right bends, S-bends and long diagonal straights, crossing
+# itself twice: each time one pass climbs onto a bridge and the other dives into a tunnel.
+
+name Neon Knot
+laps 3
+width 16
+walls none
+colour sky #05010F
+colour horizon #FF2E88
+colour below #020008
+colour road #2A2D3E
+colour road2 #24273A
+colour edge #F8F9FA
+colour edge2 #FF2E88
+colour wall #00F0FF
+colour ramp #FFE600
+colour structure #3A2A6B
+colour scenery #5A2D91
+
+straight 60.0
+curve 135.1 65
+straight 47.6
+height 3.9
+straight 23.8
+height 8.6
+straight 23.8
+height 9
+straight 47.6
+height 7.1
+straight 23.8
+height 2.3
+straight 23.8
+height 0
+straight 23.8
+curve -135.1 65
+straight 25.0
+curve -105.0 80
+straight 25.0
+curve -60.0 45
+straight 20.0
+tunnel on
+straight 20.0
+curve 30.0 45
+tunnel off
+curve 30.0 45
+straight 60.0
+curve -60.0 45
+straight 25.0
+curve 42.0 55
+height 1.6
+curve 21.0 55
+height 5.5
+curve 21.0 55
+height 9
+curve 21.0 55
+straight 40.0
+height 8.6
+straight 20.0
+height 4.6
+straight 20.0
+height 0
+curve -135.2 80
+straight 40.0
+curve -135.0 45
+straight 110.5
+tunnel on
+straight 44.2
+tunnel off
+straight 22.1
+curve -30.0 55
+straight 30.0

@@ -1,0 +1,101 @@
+# Harbor Loop: racing along the water at sunset. Bright D major at full speed: a hooky lead
+# over galloping 16th-note bass, bubbling arpeggios and a driving rock beat.
+# D Bm G A riff twice, an Em A F#m Bm build, then a G A D A chorus that runs back to the top.
+
+bpm 152
+
+bar
+lead    A-4 --- D-5 --- F#5 --- D-5 --- A-5 --- --- --- F#5 --- E-5 ---
+harmony D-4 F#4 A-4 D-5 A-4 F#4 A-4 D-5 D-4 F#4 A-4 D-5 A-4 F#4 A-4 D-5
+bass    D-3 --- D-3 D-4 D-3 --- D-3 D-4 D-3 --- D-3 D-4 D-3 --- D-3 D-4
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    F#5 --- D-5 --- B-4 --- D-5 --- F#5 --- --- --- E-5 --- D-5 ---
+harmony B-3 D-4 F#4 B-4 F#4 D-4 F#4 B-4 B-3 D-4 F#4 B-4 F#4 D-4 F#4 B-4
+bass    B-2 --- B-2 B-3 B-2 --- B-2 B-3 B-2 --- B-2 B-3 B-2 --- B-2 B-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    D-5 --- G-5 --- B-4 --- G-5 --- F#5 --- E-5 --- D-5 --- B-4 ---
+harmony G-4 B-4 D-5 G-5 D-5 B-4 D-5 G-5 G-4 B-4 D-5 G-5 D-5 B-4 D-5 G-5
+bass    G-2 --- G-2 G-3 G-2 --- G-2 G-3 G-2 --- G-2 G-3 G-2 --- G-2 G-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    C#5 --- E-5 --- A-5 --- --- --- G-5 --- F#5 --- E-5 --- C#5 ---
+harmony A-3 C#4 E-4 A-4 E-4 C#4 E-4 A-4 A-3 C#4 E-4 A-4 E-4 C#4 E-4 A-4
+bass    A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    D-5 --- D-5 F#5 A-5 --- D-5 F#5 A-5 --- B-5 --- A-5 --- F#5 ---
+harmony D-4 F#4 A-4 D-5 A-4 F#4 A-4 D-5 D-4 F#4 A-4 D-5 A-4 F#4 A-4 D-5
+bass    D-3 --- D-3 D-4 D-3 --- D-3 D-4 D-3 --- D-3 D-4 D-3 --- D-3 D-4
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    B-4 --- B-4 D-5 F#5 --- B-4 D-5 F#5 --- A-5 --- F#5 --- D-5 ---
+harmony B-3 D-4 F#4 B-4 F#4 D-4 F#4 B-4 B-3 D-4 F#4 B-4 F#4 D-4 F#4 B-4
+bass    B-2 --- B-2 B-3 B-2 --- B-2 B-3 B-2 --- B-2 B-3 B-2 --- B-2 B-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    G-5 --- F#5 --- E-5 --- D-5 --- E-5 --- F#5 --- G-5 --- B-5 ---
+harmony G-4 B-4 D-5 G-5 D-5 B-4 D-5 G-5 G-4 B-4 D-5 G-5 D-5 B-4 D-5 G-5
+bass    G-2 --- G-2 G-3 G-2 --- G-2 G-3 G-2 --- G-2 G-3 G-2 --- G-2 G-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    A-5 --- --- --- --- --- ... ... E-5 F#5 G-5 --- F#5 --- E-5 ---
+harmony A-3 C#4 E-4 A-4 E-4 C#4 E-4 A-4 A-3 C#4 E-4 A-4 E-4 C#4 E-4 A-4
+bass    A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. S.. ... S.. S.. S.. S.. S.. S..
+
+bar
+lead    E-5 --- G-5 --- B-5 --- G-5 --- E-5 --- B-4 --- E-5 --- G-5 ---
+harmony E-4 G-4 B-4 E-5 B-4 G-4 B-4 E-5 E-4 G-4 B-4 E-5 B-4 G-4 B-4 E-5
+bass    E-3 --- E-3 E-4 E-3 --- E-3 E-4 E-3 --- E-3 E-4 E-3 --- E-3 E-4
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    A-5 --- E-5 --- C#5 --- E-5 --- A-5 --- G-5 --- F#5 --- E-5 ---
+harmony A-3 C#4 E-4 A-4 E-4 C#4 E-4 A-4 A-3 C#4 E-4 A-4 E-4 C#4 E-4 A-4
+bass    A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    F#5 --- A-5 --- C#5 --- A-4 --- C#5 --- F#5 --- A-5 --- F#5 ---
+harmony F#4 A-4 C#5 F#5 C#5 A-4 C#5 F#5 F#4 A-4 C#5 F#5 C#5 A-4 C#5 F#5
+bass    F#3 --- F#3 F#4 F#3 --- F#3 F#4 F#3 --- F#3 F#4 F#3 --- F#3 F#4
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    B-4 --- D-5 --- F#5 --- B-5 --- A-5 --- F#5 --- E-5 --- C#5 ---
+harmony B-3 D-4 F#4 B-4 F#4 D-4 F#4 B-4 B-3 D-4 F#4 B-4 F#4 D-4 F#4 B-4
+bass    B-2 --- B-2 B-3 B-2 --- B-2 B-3 B-2 --- B-2 B-3 B-2 --- B-2 B-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. S.. ... S.. S.. S.. S.. S.. S..
+
+bar
+lead    D-5 --- ... D-5 D-5 --- E-5 --- G-5 --- ... G-5 F#5 --- E-5 ---
+harmony G-4 B-4 D-5 G-5 B-4 D-5 G-5 D-5 G-4 B-4 D-5 G-5 B-4 D-5 G-5 D-5
+bass    G-2 --- G-2 G-3 G-2 --- G-2 G-3 G-2 --- G-2 G-3 G-2 --- G-2 G-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    E-5 --- ... E-5 E-5 --- F#5 --- A-5 --- ... A-5 G-5 --- E-5 ---
+harmony A-3 C#4 E-4 A-4 C#4 E-4 A-4 E-4 A-3 C#4 E-4 A-4 C#4 E-4 A-4 E-4
+bass    A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    F#5 --- ... F#5 F#5 --- A-5 --- B-5 --- A-5 --- F#5 --- D-5 ---
+harmony D-4 F#4 A-4 D-5 F#4 A-4 D-5 A-4 D-4 F#4 A-4 D-5 F#4 A-4 D-5 A-4
+bass    D-3 --- D-3 D-4 D-3 --- D-3 D-4 D-3 --- D-3 D-4 D-3 --- D-3 D-4
+drums   K.. H.. H.. H.. S.. H.. K.. H.. K.. H.. K.. H.. S.. H.. H.. H..
+
+bar
+lead    E-5 --- --- --- C#5 --- --- --- A-4 --- B-4 --- C#5 --- E-5 ---
+harmony A-3 C#4 E-4 A-4 C#4 E-4 A-4 E-4 A-3 C#4 E-4 A-4 C#4 E-4 A-4 E-4
+bass    A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3 A-2 --- A-2 A-3
+drums   K.. H.. H.. H.. S.. H.. K.. H.. S.. ... S.. S.. S.. S.. S.. S..

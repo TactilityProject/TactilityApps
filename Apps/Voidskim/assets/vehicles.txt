@@ -1,0 +1,54 @@
+# Voidskim crafts. Edit freely: see the README for every property.
+# Speeds are in m/s, accelerations in m/s^2, turn rate in radians per second.
+#
+# Arrow: the fastest at the top end, slow to get there, with the least boost.
+# Swift: the all-rounder.
+# Bulwark: the slowest at the top end but the quickest off the line, with the biggest boost tank.
+# Heavy, with very little grip: it slides wide through corners.#
+# Balanced so that all three average the same speed over a lap (within 0.1% on the stock tracks,
+# driven well): what one gains in top speed, another makes up in acceleration, grip or boost.
+
+vehicle Arrow
+shape dart
+colour #E63946
+accent #F1FAEE
+speed 69
+accel 22.4
+brake 45
+turn 1.9
+grip 4
+boost 15
+boosttime 2.0
+recharge 0.18
+mass 1.0
+air 0.3
+
+vehicle Swift
+shape wing
+colour #3A86FF
+accent #FFD60A
+speed 66
+accel 25
+brake 50
+turn 2.2
+grip 5.5
+boost 20
+boosttime 2.5
+recharge 0.22
+mass 1.0
+air 0.4
+
+vehicle Bulwark
+shape hauler
+colour #2A9D8F
+accent #E9C46A
+speed 64.5
+accel 28.5
+brake 40
+turn 2.1
+grip 2.0
+boost 32
+boosttime 4.0
+recharge 0.3
+mass 1.8
+air 0.25
