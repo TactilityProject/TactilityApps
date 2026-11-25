@@ -22,8 +22,8 @@
 #include "w_file.h"
 #include "z_zone.h"
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/task.h>
 
 typedef struct
 {

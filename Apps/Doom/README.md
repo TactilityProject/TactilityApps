@@ -8,9 +8,9 @@ Runs the classic 1993 DOOM engine directly on device, using the bundled sharewar
 
 ## Requirements
 
-- M5Stack Tab5 (ESP32-P4) - this app is locked to that device via its manifest
+- An ESP32, ESP32-S3, ESP32-C6, ESP32-P4 or ESP32-S31 device with PSRAM. On the ESP32-P4 and ESP32-S31, scaling and rotation run on the PPA hardware; other chips and the linux/macOS simulator use a software scaler
 - An SD card (required by the device for storage in general)
-- A keyboard for gameplay: the Tab5's own keyboard accessory, or a USB keyboard. Without one attached, the game runs but can't receive input beyond touch-to-exit
+- A keyboard or a touch screen (on-screen touch controls)
 - Optional: a full IWAD on the SD card (see below) for the complete game instead of the 3-level shareware episode
 
 ## Controls
@@ -21,7 +21,9 @@ Runs the classic 1993 DOOM engine directly on device, using the bundled sharewar
 - **Enter**: Confirm (menus)
 - **Tab**: Automap
 - **Escape**: Menu
-- **Touch the screen**: Exit back to Tactility at any time
+- **Escape, then Quit Game**: Exit back to Tactility
+
+Touch controls are shown on devices with a touch screen. They hide when you press a key on a keyboard, and come back when you touch the screen. They sit above the status bar: a D-pad bottom-left, Fire/Use/weapon switch bottom-right, and Menu/Map in the top corners. On a portrait screen with enough room, the game moves to the top and the controls get a larger panel of their own below it. In menus Fire confirms and Use goes back. Multi-touch works, so you can move and fire at once.
 
 ## Adding WADs
 
@@ -37,8 +39,3 @@ If no IWAD is found on the SD card, the app falls back to the bundled shareware 
 ## Saves and settings
 
 Save games and `default.cfg` (key bindings, volume, etc.) are stored in the app's own Tactility user data folder, separate from the WAD folder above - so they persist even if you're only running the bundled shareware WAD with no SD card WAD folder present.
-
-## Known limitations
-
-- Touch input is exit-only; there's no on-screen touch controls for movement/actions, so a keyboard is effectively required to actually play
-- Locked to Tab5/ESP32-P4 for now

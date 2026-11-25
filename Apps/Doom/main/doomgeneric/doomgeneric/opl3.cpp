@@ -44,12 +44,15 @@
 // app is built without exceptions, so a failed allocation returns null.
 // ---------------------------------------------------------------------------
 
+// Host builds link libstdc++ normally, so only ESP builds need these.
+#ifdef ESP_PLATFORM
 void* operator new(size_t size) noexcept { return malloc(size); }
 void* operator new[](size_t size) noexcept { return malloc(size); }
 void operator delete(void* ptr) noexcept { free(ptr); }
 void operator delete[](void* ptr) noexcept { free(ptr); }
 void operator delete(void* ptr, size_t) noexcept { free(ptr); }
 void operator delete[](void* ptr, size_t) noexcept { free(ptr); }
+#endif
 
 namespace {
 

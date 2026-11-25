@@ -84,7 +84,8 @@ struct color colors[256];
 
 #else  // CMAP256
 
-static struct color colors[256];
+// Not static: the Tactility renderer (DoomMain.cpp) reads the palette directly.
+struct color colors[256];
 
 
 #endif  // CMAP256
@@ -320,6 +321,11 @@ void I_UpdateNoBlit (void)
 
 void I_FinishUpdate (void)
 {
+    // The Tactility renderer (DoomMain.cpp) reads I_VideoBuffer and the palette
+    // directly: it adds the touch overlay and converts to the panel's format in
+    // its own pass, so the RGB565 conversion below is skipped.
+    DG_DrawFrame();
+    return;
     int y;
     int x_offset, y_offset, x_offset_end;
     unsigned char *line_in, *line_out;

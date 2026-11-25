@@ -1086,7 +1086,7 @@ static void D_Endoom(void)
     // I_Quit() when "Quit Game" is chosen in the menu. There is no process to
     // exit on this target - exit() lands in _exit() and aborts, taking the
     // whole device down instead of closing the app. I_Quit() already calls
-    // doomEsp_RequestStop() after the atexit handlers have run, which unwinds
+    // doomMain_RequestStop() after the atexit handlers have run, which unwinds
     // the doom task cleanly, exactly as touch-to-exit does.
 }
 
@@ -1370,7 +1370,7 @@ void D_DoomMain (void)
     // I_Quit(), i.e. while the game loop is still on the stack, and
     // M_SaveDefaults() does unlocked fopen/fwrite. On this target the display
     // and the SD card can share an SPI bus, so file access has to hold the
-    // path's mutex. doomEsp_Run() saves the config itself once the loop has
+    // path's mutex. doomMain_Run() saves the config itself once the loop has
     // stopped, with the lock held, and that covers both the menu's "Quit Game"
     // and touch-to-exit - the latter never reached I_Quit() anyway.
 

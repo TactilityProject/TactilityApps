@@ -126,7 +126,7 @@ void Z_Init (void)
 // Z_Shutdown
 //
 // Frees the zone buffer allocated by Z_Init (via I_ZoneBase/AutoAllocMemory).
-// Without this, every doomEsp_Run() call leaks the full zone size (default
+// Without this, every doomMain_Run() call leaks the full zone size (default
 // 6 MiB) because mainzone is a plain malloc'd block with no other owner.
 void Z_Shutdown (void)
 {

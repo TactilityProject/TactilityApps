@@ -101,6 +101,7 @@ set(DOOM_SOURCES
     ${DOOMGENERIC_DIR}/doomgeneric/i_video.c
     ${DOOMGENERIC_DIR}/doomgeneric/doomgeneric.c
     ${DOOMGENERIC_DIR}/doomgeneric_tactility.c
+    ${DOOMGENERIC_DIR}/doomgeneric_touch.c
 )
 
 tactility_component_register(
@@ -108,6 +109,20 @@ tactility_component_register(
     INCLUDE_DIRS "Source" "${DOOMGENERIC_DIR}/doomgeneric"
     REQUIRES TactilitySDK driver esp_driver_ppa esp_mm
 )
+
+# ESP-IDF sets COMPONENT_LIB; host (linux/macOS) builds name the library after the project.
+if (NOT DEFINED COMPONENT_LIB)
+    set(COMPONENT_LIB ${PROJECT_NAME})
+endif()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_link_options(${PROJECT_NAME} PRIVATE -Wl,-undefined,dynamic_lookup)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}>
+                ${CMAKE_BINARY_DIR}/lib${PROJECT_NAME}.so
+        COMMENT "Publishing lib${PROJECT_NAME}.so for the posix app loader"
+    )
+endif()
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     DOOMGENERIC_RESX=320
@@ -136,3 +151,7 @@ set_source_files_properties(${DOOM_C_SOURCES} PROPERTIES COMPILE_FLAGS
 set_source_files_properties(${DOOM_CXX_SOURCES} PROPERTIES COMPILE_FLAGS
     "-Wno-error -Wno-unused-variable -Wno-unused-but-set-variable -Wno-maybe-uninitialized -Wno-format -Wno-misleading-indentation"
 )
+
+# The firmware's sdkconfig builds apps with -Og (debug). Doom is CPU bound on the ESP32/ESP32-S3
+# (software rendering + OPL synthesis), so build this app with full optimisation.
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2)

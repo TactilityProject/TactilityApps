@@ -45,8 +45,8 @@
   // The lock MUST be recursive: OPL_Render() holds it while firing timer
   // callbacks, and those callbacks call back into OPL_WriteRegister() /
   // OPL_SetCallback(), which take it again on the same task.
-  #include <freertos/FreeRTOS.h>
-  #include <freertos/semphr.h>
+  #include <tactility/freertos/freertos.h>
+  #include <tactility/freertos/semphr.h>
   typedef SemaphoreHandle_t dg_mutex_t;
   static void dg_mutex_init (dg_mutex_t *m)   { *m = xSemaphoreCreateRecursiveMutex (); }
   static void dg_mutex_destroy (dg_mutex_t *m){ if (*m) { vSemaphoreDelete (*m); *m = NULL; } }

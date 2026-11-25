@@ -1,10 +1,9 @@
 #include "doomgeneric.h"
-#include "esp_log.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/task.h>
+#include <tactility/time.h>
 
-// Hook functions implemented in DoomEsp.cpp
+// Hook functions implemented in DoomMain.cpp
 extern void doom_draw_frame(const uint32_t *buffer);
 extern int doom_get_key(int* pressed, unsigned char* key);
 
@@ -21,7 +20,7 @@ void DG_SleepMs(uint32_t ms) {
 }
 
 uint32_t DG_GetTicksMs() {
-    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+    return (uint32_t)(get_micros_since_boot() / 1000ULL);
 }
 
 int DG_GetKey(int* pressed, unsigned char* key) {
