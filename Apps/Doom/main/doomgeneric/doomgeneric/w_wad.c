@@ -242,7 +242,7 @@ wad_file_t *W_AddFile (char *filename)
 // W_Shutdown
 //
 // Closes every wad_file_t opened via W_AddFile and frees lumpinfo/lumphash. Without this, each
-// doomEsp_Run() leaks one FILE* per loaded WAD, exhausting the small file-descriptor pool of this
+// doomMain_Run() leaks one FILE* per loaded WAD, exhausting the small file-descriptor pool of this
 // SD/FATFS stack after only a few runs and failing every other fopen() in the app, including the
 // next app's own ELF load.
 void W_Shutdown (void)

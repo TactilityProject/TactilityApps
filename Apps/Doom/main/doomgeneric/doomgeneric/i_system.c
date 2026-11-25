@@ -56,7 +56,7 @@
 #endif
 
 #define DEFAULT_RAM 6 /* MiB */
-#define MIN_RAM     6  /* MiB */
+#define MIN_RAM     3  /* MiB: lowered so 4 MiB PSRAM devices (ESP32) can run the shareware WAD */
 
 
 typedef struct atexit_listentry_s atexit_listentry_t;
@@ -243,9 +243,9 @@ void I_BindVariables(void)
 // I_Quit
 //
 
-// Implemented in DoomEsp.cpp - signals the doom loop's worker task to exit, so
+// Implemented in DoomMain.cpp - signals the doom loop's worker task to exit, so
 // choosing "Quit" from the in-game menu closes the app the same way touch-to-exit does.
-extern void doomEsp_RequestStop(void);
+extern void doomMain_RequestStop(void);
 
 void I_Quit (void)
 {
@@ -267,7 +267,7 @@ void I_Quit (void)
     exit(0);
 #endif
 
-    doomEsp_RequestStop();
+    doomMain_RequestStop();
 }
 
 #if !defined(_WIN32) && !defined(__MACOSX__) && !defined(__DJGPP__)
@@ -361,6 +361,9 @@ static int ZenityErrorBox(char *message)
 //
 
 static boolean already_quitting = false;
+
+// DoomMain.cpp: unwinds back to the app with the message. Doesn't return.
+void doomMain_FatalError(const char* message) __attribute__((noreturn));
 
 void I_Error (char *error, ...)
 {
@@ -472,7 +475,10 @@ void I_Error (char *error, ...)
 
     exit(-1);
 #else
-    exit(-1);
+    // Tactility: return to the app instead of exit(), which would abort the whole device.
+    // Reset so the next run's errors aren't treated as recursive.
+    already_quitting = false;
+    doomMain_FatalError(msgbuf);
 #endif
 }
 

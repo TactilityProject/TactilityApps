@@ -8,7 +8,7 @@
 pixel_t* DG_ScreenBuffer = NULL;
 
 // Frees the frame buffer allocated in doomgeneric_Create(). Called from
-// DoomEsp.cpp after the game loop stops, so a second run reallocates fresh
+// DoomMain.cpp after the game loop stops, so a second run reallocates fresh
 // rather than leaking DOOMGENERIC_RESX*RESY*4 bytes per run.
 void doomgeneric_Shutdown(void)
 {

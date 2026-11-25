@@ -11,10 +11,10 @@ extern "C" {
 #include <tactility/device.h>
 #include <tactility/drivers/audio_stream.h>
 
-#include <esp_log.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/task.h>
+#include <tactility/log.h>
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/semphr.h>
+#include <tactility/freertos/task.h>
 
 #include <atomic>
 #include <cstdio>
@@ -70,6 +70,9 @@ constexpr int32_t SFX_VOLUME_MAX = 127;
 // music passage stay just inside full scale (~29200 of 32767). Raising this
 // makes effects louder but starts clipping when several fire at once.
 constexpr int32_t SFX_SCALE = 128;
+
+// Above the doom task (5). Capped for FreeRTOS ports with fewer priority levels (the host port has 10).
+constexpr UBaseType_t MIXER_TASK_PRIORITY = configMAX_PRIORITIES > 10 ? 10 : configMAX_PRIORITIES - 1;
 
 // Music make-up gain, applied on top of the menu's "Music Volume" setting.
 //
@@ -135,7 +138,7 @@ void mixerTask(void* /*arg*/) {
     AudioStreamHandle outputHandle = nullptr;
     error_t error = audio_stream_open_output(streamDevice, &config, &outputHandle);
     if (error != ERROR_NONE) {
-        ESP_LOGE(TAG, "Failed to open output stream: %s", error_to_string(error));
+        LOG_E(TAG, "Failed to open output stream: %s", error_to_string(error));
         xSemaphoreGive(stoppedSem);
         vTaskDelete(nullptr);
         return;
@@ -256,12 +259,12 @@ void mixerTask(void* /*arg*/) {
             // (e.g. USB audio attach/detach) re-bound the output direction to a different
             // codec device - the old handle is now permanently dead. Close and reopen against
             // whatever codec is current instead of retrying the same dead handle forever.
-            ESP_LOGW(TAG, "Mixer write failed (%s) - reopening", error_to_string(writeError));
+            LOG_W(TAG, "Mixer write failed (%s) - reopening", error_to_string(writeError));
             audio_stream_close(outputHandle);
             outputHandle = nullptr;
             error_t reopenError = audio_stream_open_output(streamDevice, &config, &outputHandle);
             if (reopenError != ERROR_NONE) {
-                ESP_LOGE(TAG, "Failed to reopen output stream: %s", error_to_string(reopenError));
+                LOG_E(TAG, "Failed to reopen output stream: %s", error_to_string(reopenError));
             }
             // A failing write returns immediately rather than blocking for the
             // buffer to drain. Without a delay here this loop spins flat out at
@@ -430,7 +433,7 @@ void doomAudio_Init() {
     if (channelsMutex == nullptr) {
         channelsMutex = xSemaphoreCreateMutex();
         if (channelsMutex == nullptr) {
-            ESP_LOGE(TAG, "Failed to allocate channel mutex - sound disabled");
+            LOG_E(TAG, "Failed to allocate channel mutex - sound disabled");
             return;
         }
     }
@@ -452,7 +455,7 @@ void doomAudio_Init() {
     });
 
     if (!streamDevice) {
-        ESP_LOGW(TAG, "No audio stream device found - sound disabled");
+        LOG_W(TAG, "No audio stream device found - sound disabled");
         return;
     }
 
@@ -470,9 +473,15 @@ void doomAudio_Init() {
     // fails to block starves core 0's idle task and trips the watchdog. 10 is well
     // above the app and LVGL tasks - enough to keep audio glitch-free - while still
     // leaving the system schedulable.
-    BaseType_t created = xTaskCreatePinnedToCore(mixerTask, "doom_audio", 8192, nullptr, 10, &mixerTaskHandle, 0);
+    BaseType_t created =
+#ifdef ESP_PLATFORM
+        xTaskCreatePinnedToCore(mixerTask, "doom_audio", 8192, nullptr, MIXER_TASK_PRIORITY, &mixerTaskHandle, 0);
+#else
+        // The POSIX FreeRTOS port has no core affinity.
+        xTaskCreate(mixerTask, "doom_audio", 8192, nullptr, MIXER_TASK_PRIORITY, &mixerTaskHandle);
+#endif
     if (created != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create audio mixer task");
+        LOG_E(TAG, "Failed to create audio mixer task");
         mixerTaskHandle = nullptr;
         streamDevice = nullptr;
     }
@@ -487,7 +496,7 @@ void doomAudio_Shutdown() {
     }
 
     // sfxinfo->driver_data (see Sound_StartSound) caches a pointer into zone memory, but S_sfx[]
-    // is a global static array that outlives a single doomEsp_Run(). Z_Shutdown() frees the whole
+    // is a global static array that outlives a single doomMain_Run(). Z_Shutdown() frees the whole
     // zone on every exit path, so without this reset, the next run's Sound_StartSound would see
     // driver_data already set, skip re-caching, and read freed/reused memory. Must run before
     // Z_Shutdown() frees the zone these pointers point into.
