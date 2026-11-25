@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <rect width="96" height="96" fill="#2B1650"/>
+  <!-- Step grid: four channels of a tracker pattern -->
+  <g>
+    <rect x="12" y="70" width="14" height="14" rx="2" fill="#FFC94A"/>
+    <rect x="30" y="70" width="14" height="14" rx="2" fill="#4B3577"/>
+    <rect x="48" y="70" width="14" height="14" rx="2" fill="#4CC9F0"/>
+    <rect x="66" y="70" width="14" height="14" rx="2" fill="#FF6B8B"/>
+  </g>
+  <!-- Beamed eighth notes -->
+  <g fill="#FFFFFF">
+    <ellipse cx="29" cy="52" rx="10" ry="7.5" transform="rotate(-20 29 52)"/>
+    <ellipse cx="65" cy="45" rx="10" ry="7.5" transform="rotate(-20 65 45)"/>
+    <rect x="35" y="18" width="5" height="34"/>
+    <rect x="71" y="11" width="5" height="34"/>
+    <polygon points="35,18 76,11 76,21 35,28"/>
+  </g>
+</svg>

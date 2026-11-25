@@ -1,3 +1,6 @@
 [submodule "TactilityAppPublisher"]
 	path = TactilityAppPublisher
 	url = https://github.com/TactilityProject/TactilityAppPublisher.git
+[submodule "Libraries/Jet"]
+	path = Libraries/Jet
+	url = https://github.com/cubecoders/jet

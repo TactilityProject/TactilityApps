@@ -1,0 +1,40 @@
+# Harbor Loop: wide and open, with no barriers. On easy, the four corners are fenced.
+name Harbor Loop
+laps 3
+width 20
+walls none
+colour sky #0B3D91
+colour horizon #FF9E5E
+colour below #061224
+colour road #3B4252
+colour road2 #343A48
+colour wall #2EC4B6
+colour ramp #F5C518
+colour structure #3D4A6B
+colour scenery #5B6BBF
+
+# The jump: across the abyss, the far cliff in view. Too slow and you fall short
+straight 70
+ramp 8 1.6
+gap 22
+straight 140
+walls both easy
+curve 90 55
+walls none easy
+straight 140
+walls both easy
+curve 90 55
+walls none easy
+straight 80
+curve -25 60
+curve 50 60
+curve -25 60
+straight 98.6
+walls both easy
+curve 90 55
+walls none easy
+straight 140
+walls both easy
+curve 90 55
+walls none easy
+straight 40
