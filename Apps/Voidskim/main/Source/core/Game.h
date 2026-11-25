@@ -128,7 +128,7 @@ private:
     bool settingsFromPause = false; // opened from the pause menu: return there, over the frozen race
     bool showFps = false;
     bool steerOnRight = false; // touch controls mirrored: the steering buttons right, the others left
-    int quality = 0; // 3D resolution: 0 low (default), 1 medium, 2 high (full); the HUD and menus stay sharp
+    int quality = 1; // 3D resolution: 0 low, 1 medium (default), 2 high (full); the HUD and menus stay sharp
     void applyQuality();
     // Frames per second, counted over half a second
     float fpsTime = 0.0f;
