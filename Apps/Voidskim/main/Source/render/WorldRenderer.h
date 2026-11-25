@@ -27,6 +27,14 @@ public:
     /** Renders into an RGB565 buffer of width x height pixels. */
     bool init(uint16_t* framebuffer, int width, int height);
 
+    /**
+     * The 3D resolution, as a percentage of the buffer's width and height (25..100). Below 100 the
+     * world renders into a smaller buffer of its own, which render() scales up into the frame, so
+     * whatever is drawn on top afterwards (HUD, menus) keeps the full resolution.
+     * Takes effect at the next build().
+     */
+    void setResolutionPercent(int percent);
+
     /** Builds the meshes for a track and its racers. Replaces whatever was there. */
     void build(const RaceSim& race);
 
@@ -56,9 +64,19 @@ private:
     std::vector<Renderer::Material*> engines; // per racer, recoloured when boosting
     std::vector<float> rolls; // per racer: the smoothed bank angle, in degrees
     std::vector<uint16_t> skyRows;
+    // The frame (from init) and where the 3D is rendered: the frame itself, or a smaller buffer
+    uint16_t* output = nullptr;
+    int outputWidth = 0;
+    int outputHeight = 0;
+    int resolutionPercent = 100;
+    std::vector<uint16_t> lowResolution;
+    std::vector<uint16_t> columnSource; // per output column: the low resolution column it shows
     uint16_t* framebuffer = nullptr;
-    int width = 0;
+    int width = 0; // of the 3D rendering
     int height = 0;
+
+    void applyResolution();
+    void scaleUp();
     uint32_t skyTop = 0, skyHorizon = 0, below = 0;
 
     // Chase camera state, in metres

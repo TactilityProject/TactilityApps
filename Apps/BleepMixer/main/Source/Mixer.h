@@ -42,6 +42,8 @@ struct Context {
     int shownPlayPosition = -1;
 
     std::atomic<Request> request { Request::None };
+    // Saving before opening another song: once the song is saved, the list opens
+    bool openAfterSave = false;
     // Open dialog: paths and labels of the songs found, item 0 is "New song"
     std::vector<std::string> openPaths;
     std::vector<std::string> openLabels;
@@ -75,5 +77,7 @@ bleep::Song newSong();
 void runRequest(Context& ctx, Request request);
 /** Saves under a new name, asking for it. Call from any task. */
 void askSaveAs(Context& ctx);
+/** Opens another song: asks to save, discard or cancel first when there are unsaved changes. */
+void askOpen(Context& ctx);
 /** Turns user input into a safe file name (may return empty) */
 std::string sanitiseName(const char* text);

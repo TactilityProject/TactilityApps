@@ -57,10 +57,10 @@ public:
 private:
     enum class Screen { Menu, Settings, Controls, Race, Paused, Results };
     enum MenuRow { RowTrack, RowCraft, RowOpponents, RowDifficulty, RowStart, RowSettings, RowQuit, MenuRowCount };
-    enum SettingsRow { SettingsAudio, SettingsControls, SettingsBack, SettingsRowCount };
+    enum SettingsRow { SettingsAudio, SettingsQuality, SettingsFps, SettingsTouchLayout, SettingsControls, SettingsBack, SettingsRowCount };
     // The Controls screen: one row per control, then these
     enum ControlsRow { ControlsDefaults = CONTROL_COUNT, ControlsBack, ControlsRowCount };
-    enum PauseRow { PauseResume, PauseRestart, PauseQuit, PauseRowCount };
+    enum PauseRow { PauseResume, PauseRestart, PauseSettings, PauseQuit, PauseRowCount };
 
     // Touch buttons during a race, as bits for touchHeld
     enum TouchButton : uint32_t {
@@ -125,6 +125,15 @@ private:
     Rect slotRects[CONTROL_COUNT][KeyBindings::SLOTS];
     KeyBindings bindings;
     bool settingsChanged = false; // to save when leaving the settings
+    bool settingsFromPause = false; // opened from the pause menu: return there, over the frozen race
+    bool showFps = false;
+    bool steerOnRight = false; // touch controls mirrored: the steering buttons right, the others left
+    int quality = 0; // 3D resolution: 0 low (default), 1 medium, 2 high (full); the HUD and menus stay sharp
+    void applyQuality();
+    // Frames per second, counted over half a second
+    float fpsTime = 0.0f;
+    int fpsFrames = 0;
+    int fps = 0;
     bool previewDirty = true;
 
     // Input edges and repeat
@@ -200,13 +209,19 @@ private:
     void updateRace(const InputState& input, float frameTime);
     void updatePaused(const InputState& input);
     void updateResults(const InputState& input, float frameTime);
+    /** @return the TouchButton bits held */
     uint32_t touchButtonsAt(const InputState& input) const;
-    void layoutTouchButtons(Rect& pause, int& leftX, int& rightX, int& padY, int& padRadius,
-                            int& accelX, int& accelY, int& accelRadius, int& brakeX, int& brakeY,
-                            int& boostX, int& boostY, int& smallRadius) const;
+    struct TouchLayout {
+        Rect pause;
+        int leftX = 0, rightX = 0, steerY = 0; // the steering buttons, as big as GO (accelRadius)
+        int accelX = 0, accelY = 0, accelRadius = 0;
+        int brakeX = 0, brakeY = 0, boostX = 0, boostY = 0, smallRadius = 0;
+    };
+    TouchLayout layoutTouchControls() const;
 
     void drawMenu();
     void drawSettings();
+    void drawFps();
     void drawControls();
     /** A centred panel of rows on a dimmed screen: @return the y of the first row */
     int drawListPanel(const char* title, int rows, int rowH, int panelW);

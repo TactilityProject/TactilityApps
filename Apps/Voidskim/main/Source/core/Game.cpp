@@ -98,6 +98,7 @@ bool Game::init(uint16_t* framebuffer, int width, int height, const GameConfig& 
         return false;
     }
     loadSettings();
+    applyQuality();
     loadRecords();
     previewDirty = true;
     return true;
@@ -270,40 +271,48 @@ void Game::updateInputEdges(const InputState& input, float frameTime) {
     }
 }
 
-void Game::layoutTouchButtons(Rect& pause, int& leftX, int& rightX, int& padY, int& padRadius,
-                              int& accelX, int& accelY, int& accelRadius, int& brakeX, int& brakeY,
-                              int& boostX, int& boostY, int& smallRadius) const {
+Game::TouchLayout Game::layoutTouchControls() const {
+    TouchLayout l;
     const int unit = std::min(canvas.width, canvas.height);
     const int margin = unit / 30 + 2;
-    padRadius = unit * 12 / 100;
-    accelRadius = unit * 14 / 100;
-    smallRadius = unit * 10 / 100;
-    padY = canvas.height - margin - padRadius;
-    leftX = margin + padRadius;
-    rightX = leftX + padRadius * 2 + margin;
-    accelX = canvas.width - margin - accelRadius;
+    l.accelRadius = unit * 105 / 1000;
+    l.smallRadius = unit * 75 / 1000;
+    l.accelX = canvas.width - margin - l.accelRadius;
     if (canvas.height > canvas.width) {
-        // Portrait: no room beside the steering pad, so stack them in one column, brake at the bottom
-        brakeX = accelX;
-        brakeY = canvas.height - margin - smallRadius;
-        accelY = brakeY - smallRadius - margin - accelRadius;
-        boostX = accelX;
-        boostY = accelY - accelRadius - margin - smallRadius;
+        // Portrait: no room beside the steering buttons, so stack them in one column, brake at the bottom
+        l.brakeX = l.accelX;
+        l.brakeY = canvas.height - margin - l.smallRadius;
+        l.accelY = l.brakeY - l.smallRadius - margin - l.accelRadius;
+        l.boostX = l.accelX;
+        l.boostY = l.accelY - l.accelRadius - margin - l.smallRadius;
     } else {
-        accelY = canvas.height - margin - accelRadius;
-        brakeX = accelX - accelRadius - margin - smallRadius;
-        brakeY = canvas.height - margin - smallRadius;
-        boostX = accelX;
-        boostY = accelY - accelRadius - margin - smallRadius;
+        l.accelY = canvas.height - margin - l.accelRadius;
+        l.brakeX = l.accelX - l.accelRadius - margin - l.smallRadius;
+        l.brakeY = canvas.height - margin - l.smallRadius;
+        l.boostX = l.accelX;
+        l.boostY = l.accelY - l.accelRadius - margin - l.smallRadius;
     }
+    // Steering buttons, bottom left, as big as GO
+    l.steerY = canvas.height - margin - l.accelRadius;
+    l.leftX = margin + l.accelRadius;
+    l.rightX = l.leftX + 2 * l.accelRadius + margin;
     const int pauseSize = unit / 9;
-    pause = { canvas.width / 2 - pauseSize / 2, margin, pauseSize, pauseSize };
+    l.pause = { canvas.width / 2 - pauseSize / 2, margin, pauseSize, pauseSize };
+    if (steerOnRight) {
+        // Mirrored: the steering buttons on the right, the others on the left
+        const int w = canvas.width;
+        const int left = l.leftX;
+        l.leftX = w - 1 - l.rightX; // still left of the right button
+        l.rightX = w - 1 - left;
+        l.accelX = w - 1 - l.accelX;
+        l.brakeX = w - 1 - l.brakeX;
+        l.boostX = w - 1 - l.boostX;
+    }
+    return l;
 }
 
 uint32_t Game::touchButtonsAt(const InputState& input) const {
-    Rect pause;
-    int leftX, rightX, padY, padRadius, accelX, accelY, accelRadius, brakeX, brakeY, boostX, boostY, smallRadius;
-    layoutTouchButtons(pause, leftX, rightX, padY, padRadius, accelX, accelY, accelRadius, brakeX, brakeY, boostX, boostY, smallRadius);
+    const TouchLayout l = layoutTouchControls();
     auto inCircle = [](int x, int y, int cx, int cy, int r) {
         const int reach = r * 115 / 100; // fingers are less precise than the outlines
         return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= reach * reach;
@@ -312,12 +321,12 @@ uint32_t Game::touchButtonsAt(const InputState& input) const {
     for (int i = 0; i < input.touchCount; i++) {
         const int x = input.touches[i].x;
         const int y = input.touches[i].y;
-        if (inCircle(x, y, leftX, padY, padRadius)) buttons |= TouchLeft;
-        else if (inCircle(x, y, rightX, padY, padRadius)) buttons |= TouchRight;
-        else if (inCircle(x, y, accelX, accelY, accelRadius)) buttons |= TouchAccelerate;
-        else if (inCircle(x, y, brakeX, brakeY, smallRadius)) buttons |= TouchBrake;
-        else if (inCircle(x, y, boostX, boostY, smallRadius)) buttons |= TouchBoost;
-        else if (pause.contains(x, y)) buttons |= TouchPause;
+        if (inCircle(x, y, l.leftX, l.steerY, l.accelRadius)) buttons |= TouchLeft;
+        else if (inCircle(x, y, l.rightX, l.steerY, l.accelRadius)) buttons |= TouchRight;
+        else if (inCircle(x, y, l.accelX, l.accelY, l.accelRadius)) buttons |= TouchAccelerate;
+        else if (inCircle(x, y, l.brakeX, l.brakeY, l.smallRadius)) buttons |= TouchBrake;
+        else if (inCircle(x, y, l.boostX, l.boostY, l.smallRadius)) buttons |= TouchBoost;
+        else if (l.pause.contains(x, y)) buttons |= TouchPause;
     }
     return buttons;
 }
@@ -325,6 +334,14 @@ uint32_t Game::touchButtonsAt(const InputState& input) const {
 // endregion
 
 void Game::update(const InputState& input, float frameTime) {
+    // One update per rendered frame: count them (before the clamp below)
+    fpsTime += frameTime;
+    fpsFrames++;
+    if (fpsTime >= 0.5f) {
+        fps = (int)(fpsFrames / fpsTime + 0.5f);
+        fpsTime = 0.0f;
+        fpsFrames = 0;
+    }
     frameTime = std::min(frameTime, 0.1f);
     time += frameTime;
     updateInputEdges(input, frameTime);
@@ -372,6 +389,7 @@ void Game::updateMenu(const InputState& input) {
             }
         } else if (row == RowSettings) {
             screen = Screen::Settings;
+            settingsFromPause = false;
             settingsRow = SettingsAudio;
         } else if (row == RowQuit) {
             quit = true;
@@ -436,7 +454,7 @@ void Game::updateRace(const InputState& input, float frameTime) {
         // Keys, trackball and touch are all on/off: ease the steering in and out so the craft
         // turns (and banks) smoothly. Returning to centre or reversing is quicker than turning in.
         const float target = (right ? 1.0f : 0.0f) - (left ? 1.0f : 0.0f);
-        const bool easingOut = target == 0.0f || target * steering < 0.0f;
+        const bool easingOut = std::fabs(target) < std::fabs(steering) || target * steering < 0.0f;
         steering = approach(steering, target, (easingOut ? STEER_RELEASE_RATE : STEER_TURN_IN_RATE) * frameTime);
         local.steer = steering;
         local.throttle = (held & ActionAccelerate) || (touchHeld & TouchAccelerate);
@@ -524,6 +542,12 @@ void Game::updatePaused(const InputState& input) {
         switch (row) {
             case PauseResume: screen = Screen::Race; sfx(Sfx::MenuSelect); break;
             case PauseRestart: startRace(false); screen = Screen::Race; break;
+            case PauseSettings:
+                screen = Screen::Settings;
+                settingsRow = SettingsAudio;
+                settingsFromPause = true;
+                sfx(Sfx::MenuSelect);
+                break;
             case PauseQuit: screen = Screen::Menu; previewDirty = true; break;
         }
     };
@@ -608,6 +632,10 @@ void Game::updateResults(const InputState& input, float frameTime) {
 namespace {
 
 const char* const AUDIO_NAMES[] = { "MUSIC + SFX", "SFX ONLY", "OFF" };
+// Low to high, so stepping right goes up in quality
+const char* const QUALITY_NAMES[] = { "LOW", "MEDIUM", "HIGH" };
+const char* const QUALITY_KEYS[] = { "low", "medium", "high" }; // in settings.txt
+const int QUALITY_PERCENT[] = { 50, 75, 100 }; // of the width and height
 constexpr float CAPTURE_TIMEOUT = 6.0f;
 
 } // namespace
@@ -625,6 +653,23 @@ void Game::loadSettings() {
     if (at != std::string::npos && sscanf(text.c_str() + at, "audio %d", &mode) == 1 && mode >= 0 && mode < 3) {
         audioMode = (AudioMode)mode;
     }
+    char qualitySetting[16] = {};
+    const size_t qualityAt = text.find("quality ");
+    if (qualityAt != std::string::npos && sscanf(text.c_str() + qualityAt, "quality %15s", qualitySetting) == 1) {
+        for (int q = 0; q < 3; q++) {
+            if (strcmp(qualitySetting, QUALITY_KEYS[q]) == 0) quality = q;
+        }
+    }
+    char layoutSetting[16] = {};
+    const size_t layoutAt = text.find("touch_layout ");
+    if (layoutAt != std::string::npos && sscanf(text.c_str() + layoutAt, "touch_layout %15s", layoutSetting) == 1) {
+        steerOnRight = strcmp(layoutSetting, "steer_right") == 0;
+    }
+    int fpsSetting = 0;
+    const size_t fpsAt = text.find("fps ");
+    if (fpsAt != std::string::npos && sscanf(text.c_str() + fpsAt, "fps %d", &fpsSetting) == 1) {
+        showFps = fpsSetting != 0;
+    }
     bindings.parse(text);
 }
 
@@ -640,7 +685,8 @@ void Game::saveSettings() {
         errorMessage = "Could not save " + path;
         return;
     }
-    fprintf(file, "# Voidskim settings\naudio %d\n", (int)audioMode);
+    fprintf(file, "# Voidskim settings\naudio %d\nquality %s\nfps %d\ntouch_layout %s\n", (int)audioMode, QUALITY_KEYS[quality],
+            showFps ? 1 : 0, steerOnRight ? "steer_right" : "steer_left");
     const std::string keys = bindings.serialise();
     fwrite(keys.data(), 1, keys.size(), file);
     fclose(file);
@@ -697,21 +743,46 @@ void Game::finishTimeTrial() {
     if (newRecordTotal || newRecordLap) saveRecords();
 }
 
+void Game::applyQuality() {
+    world.setResolutionPercent(QUALITY_PERCENT[quality]);
+}
+
 void Game::updateSettings(const InputState& input) {
-    auto changeAudio = [&](int delta) {
-        audioMode = (AudioMode)(((int)audioMode + delta + 3) % 3);
-        if (sound != nullptr) sound->setMode(audioMode);
+    // The rows with a value to step through
+    auto change = [&](int row, int delta) {
+        if (row == SettingsAudio) {
+            audioMode = (AudioMode)(((int)audioMode + delta + 3) % 3);
+            if (sound != nullptr) sound->setMode(audioMode);
+        } else if (row == SettingsQuality) {
+            quality = (quality + delta + 3) % 3;
+            applyQuality();
+            // Rebuild the world at the new resolution: the menu's backdrop, or the paused race
+            world.build(race);
+            if (settingsFromPause) world.update(race, localRacer, time, 0.0f);
+        } else if (row == SettingsTouchLayout) {
+            steerOnRight = !steerOnRight;
+        } else {
+            showFps = !showFps;
+        }
         settingsChanged = true;
         sfx(Sfx::MenuMove);
     };
+    auto hasValue = [](int row) {
+        return row == SettingsAudio || row == SettingsQuality || row == SettingsFps || row == SettingsTouchLayout;
+    };
     auto leave = [&]() {
         if (settingsChanged) saveSettings();
-        screen = Screen::Menu;
+        screen = settingsFromPause ? Screen::Paused : Screen::Menu;
         sfx(Sfx::MenuBack);
     };
     auto activate = [&](int row) {
         switch (row) {
-            case SettingsAudio: changeAudio(1); break;
+            case SettingsAudio:
+            case SettingsQuality:
+            case SettingsFps:
+            case SettingsTouchLayout:
+                change(row, 1);
+                break;
             case SettingsControls:
                 screen = Screen::Controls;
                 controlsRow = 0;
@@ -725,8 +796,8 @@ void Game::updateSettings(const InputState& input) {
     if (pressed & (ActionUp | ActionDown)) sfx(Sfx::MenuMove);
     if (pressed & ActionUp) settingsRow = (settingsRow + SettingsRowCount - 1) % SettingsRowCount;
     if (pressed & ActionDown) settingsRow = (settingsRow + 1) % SettingsRowCount;
-    if (settingsRow == SettingsAudio && (pressed & ActionLeft)) changeAudio(-1);
-    if (settingsRow == SettingsAudio && (pressed & ActionRight)) changeAudio(1);
+    if (hasValue(settingsRow) && (pressed & ActionLeft)) change(settingsRow, -1);
+    if (hasValue(settingsRow) && (pressed & ActionRight)) change(settingsRow, 1);
     if (pressed & ActionConfirm) {
         activate(settingsRow);
     } else if (pressed & ActionBack) {
@@ -738,8 +809,8 @@ void Game::updateSettings(const InputState& input) {
         for (int row = 0; row < SettingsRowCount; row++) {
             if (settingsRowRects[row].contains(x, y)) {
                 settingsRow = row;
-                if (row == SettingsAudio) {
-                    changeAudio(x < settingsRowRects[row].x + settingsRowRects[row].w / 2 ? -1 : 1);
+                if (hasValue(row)) {
+                    change(row, x < settingsRowRects[row].x + settingsRowRects[row].w / 2 ? -1 : 1);
                 } else {
                     activate(row);
                 }
@@ -826,14 +897,16 @@ void Game::render() {
             drawMenu();
             break;
         case Screen::Settings:
-            world.updateShowcase(race, time);
-            world.render();
-            drawSettings();
-            break;
         case Screen::Controls:
-            world.updateShowcase(race, time);
-            world.render();
-            drawControls();
+            // Over the menu's fly-around, or over the paused race
+            if (settingsFromPause) {
+                world.render();
+                drawHud();
+            } else {
+                world.updateShowcase(race, time);
+                world.render();
+            }
+            if (screen == Screen::Settings) drawSettings(); else drawControls();
             break;
         case Screen::Race:
             world.render();
@@ -850,6 +923,19 @@ void Game::render() {
             drawResults();
             break;
     }
+    if (showFps) drawFps();
+}
+
+void Game::drawFps() {
+    // Bottom left: out of the way of the HUD and the touch controls (which start a little higher)
+    const int s = textScale();
+    char text[16];
+    snprintf(text, sizeof(text), "%d FPS", fps);
+    const int width = textWidth(text, s) + 4 * s;
+    const int height = 7 * s + 4 * s;
+    const int y = canvas.height - height;
+    fillRect(canvas, 0, y, width, height, 0x0000);
+    drawText(canvas, 2 * s, y + 2 * s, text, s, fps >= 20 ? rgb565(0x80ED99) : fps >= 12 ? ACCENT : RED);
 }
 
 void Game::drawMenu() {
@@ -995,9 +1081,14 @@ void Game::drawSettings() {
         }
         const uint16_t colour = selected ? WHITE : GREY;
         const int textY = y + (rowH - 7 * s) / 2;
-        if (row == SettingsAudio) {
-            drawText(canvas, panelX + 6 * s, textY, "AUDIO", s, colour);
-            const char* value = AUDIO_NAMES[(int)audioMode];
+        if (row == SettingsAudio || row == SettingsQuality || row == SettingsFps || row == SettingsTouchLayout) {
+            const char* label = row == SettingsAudio ? "AUDIO" : row == SettingsQuality ? "3D QUALITY"
+                : row == SettingsFps ? "SHOW FPS" : "TOUCH LAYOUT";
+            drawText(canvas, panelX + 6 * s, textY, label, s, colour);
+            const char* value = row == SettingsAudio ? AUDIO_NAMES[(int)audioMode]
+                : row == SettingsQuality ? QUALITY_NAMES[quality]
+                : row == SettingsFps ? (showFps ? "ON" : "OFF")
+                : (steerOnRight ? "STEER RIGHT" : "STEER LEFT");
             const int valueRight = panelX + panelW - 6 * s;
             const int valueWidth = textWidth(value, s);
             drawText(canvas, valueRight - valueWidth - 10 * s, textY, value, s, selected ? ACCENT : colour);
@@ -1067,9 +1158,8 @@ void Game::drawHud() {
     // Black and white: solid backings, as small text gets lost in the dithered world
     if (config.monochrome) {
         const int barW = std::max(40, w / 5);
-        fillRect(canvas, 0, 0, std::max(barW, textWidth("LAP 9/9", s)) + 8 * s, 30 * s, 0x0000);
+        fillRect(canvas, 0, 0, std::max(barW, textWidth("000 KM/H", s)) + 8 * s, 40 * s, 0x0000);
         fillRect(canvas, w - textWidth("88TH", s * 2) - 8 * s, 0, textWidth("88TH", s * 2) + 8 * s, 29 * s, 0x0000);
-        fillRect(canvas, w / 2 - 20 * s, h - 27 * s, 40 * s, 27 * s, 0x0000);
     }
 
     // Lap and time, top left
@@ -1086,6 +1176,20 @@ void Game::drawHud() {
     const uint16_t boostColour = me.boosting ? WHITE : (me.boostEnergy > 0.3f ? CYAN : RED);
     fillRect(canvas, 4 * s, 24 * s, (int)(barW * me.boostEnergy), 4 * s, boostColour);
     drawRect(canvas, 4 * s - 1, 24 * s - 1, barW + 2, 4 * s + 2, GREY);
+
+    // Speed, under the boost tank: "087 KM/H", the leading zeros in grey
+    snprintf(text, sizeof(text), "%03d", std::clamp((int)(me.speed() * 3.6f), 0, 999));
+    const int speedY = 31 * s;
+    int digit = 0;
+    while (digit < 2 && text[digit] == '0') digit++;
+    char leading[4] = {};
+    memcpy(leading, text, digit);
+    // Each character takes 6 font units (5 wide and a gap): place the parts on that grid, as
+    // textWidth() leaves out the last character's gap
+    const int advance = 6 * s;
+    drawText(canvas, 4 * s, speedY, leading, s, GREY);
+    drawText(canvas, 4 * s + digit * advance, speedY, text + digit, s, WHITE);
+    drawText(canvas, 4 * s + 3 * advance, speedY, " KM/H", s, GREY);
 
     if (timeTrial()) {
         // Time trial, top right: this lap's time, and the best lap to beat
@@ -1111,11 +1215,6 @@ void Game::drawHud() {
     // Minimap below the place
     const int mapSize = std::min(w, h) / 4;
     drawMinimap(w - mapSize - 4 * s, 30 * s, mapSize);
-
-    // Speed, bottom centre
-    snprintf(text, sizeof(text), "%d", (int)(me.speed() * 3.6f));
-    drawTextCentered(canvas, w / 2, h - 25 * s, text, s * 2, WHITE);
-    drawTextCentered(canvas, w / 2, h - 9 * s, "KM/H", s, GREY);
 
     // Messages, centre
     const float t = race.raceTime();
@@ -1173,31 +1272,32 @@ void Game::drawMinimap(int x, int y, int size) {
 }
 
 void Game::drawTouchControls() {
-    Rect pause;
-    int leftX, rightX, padY, padRadius, accelX, accelY, accelRadius, brakeX, brakeY, boostX, boostY, smallRadius;
-    layoutTouchButtons(pause, leftX, rightX, padY, padRadius, accelX, accelY, accelRadius, brakeX, brakeY, boostX, boostY, smallRadius);
+    const TouchLayout l = layoutTouchControls();
     const int s = textScale();
     auto button = [&](int cx, int cy, int r, bool down) {
         blendCircle(canvas, cx, cy, r, down ? RED : 0x0000, down ? 150 : 90);
         drawCircle(canvas, cx, cy, r, WHITE);
     };
-    // Labels centred on their real height. Arrows are shifted towards their tip by a sixth of
-    // their size: that puts the triangle's centroid, where it looks centred, on the circle's centre.
+    // Labels centred on their real height
     auto label = [&](int cx, int cy, const char* text, int scale, uint16_t colour) {
         drawTextCentered(canvas, cx, cy - textHeight(scale) / 2, text, scale, colour);
     };
-    const int arrowSize = padRadius;
-    button(leftX, padY, padRadius, touchHeld & TouchLeft);
-    fillArrow(canvas, leftX - arrowSize / 6, padY, arrowSize, 3, WHITE);
-    button(rightX, padY, padRadius, touchHeld & TouchRight);
-    fillArrow(canvas, rightX + arrowSize / 6, padY, arrowSize, 1, WHITE);
-    button(accelX, accelY, accelRadius, touchHeld & TouchAccelerate);
-    label(accelX, accelY, "GO", std::max(2, s * 2), WHITE);
-    button(brakeX, brakeY, smallRadius, touchHeld & TouchBrake);
-    label(brakeX, brakeY, "BRK", s, WHITE);
-    button(boostX, boostY, smallRadius, touchHeld & TouchBoost);
-    label(boostX, boostY, "BST", s, CYAN);
-    // Pause
+
+    // Steering: arrows shifted towards their tip by a sixth of their size, which puts the
+    // triangle's centroid (where it looks centred) on the circle's centre
+    const int arrowSize = l.accelRadius;
+    button(l.leftX, l.steerY, l.accelRadius, touchHeld & TouchLeft);
+    fillArrow(canvas, l.leftX - arrowSize / 6, l.steerY, arrowSize, 3, WHITE);
+    button(l.rightX, l.steerY, l.accelRadius, touchHeld & TouchRight);
+    fillArrow(canvas, l.rightX + arrowSize / 6, l.steerY, arrowSize, 1, WHITE);
+
+    button(l.accelX, l.accelY, l.accelRadius, touchHeld & TouchAccelerate);
+    label(l.accelX, l.accelY, "GO", std::max(2, s * 3 / 2), WHITE);
+    button(l.brakeX, l.brakeY, l.smallRadius, touchHeld & TouchBrake);
+    label(l.brakeX, l.brakeY, "BRK", s, WHITE);
+    button(l.boostX, l.boostY, l.smallRadius, touchHeld & TouchBoost);
+    label(l.boostX, l.boostY, "BST", s, CYAN);
+    const Rect& pause = l.pause;
     blendRect(canvas, pause.x, pause.y, pause.w, pause.h, 0x0000, 90);
     drawRect(canvas, pause.x, pause.y, pause.w, pause.h, WHITE);
     const int barW = std::max(2, pause.w / 6);
@@ -1211,7 +1311,7 @@ void Game::drawPause() {
     const int h = canvas.height;
     blendRect(canvas, 0, 0, w, h, 0x0000, 120);
     drawTextCentered(canvas, w / 2, h / 5, "PAUSED", s * 3, ACCENT);
-    const char* labels[PauseRowCount] = { "RESUME", "RESTART", "QUIT TO MENU" };
+    const char* labels[PauseRowCount] = { "RESUME", "RESTART", "SETTINGS", "QUIT TO MENU" };
     const int rowH = 14 * s;
     const int panelW = std::min(w - 8, 160 * s);
     const int x = (w - panelW) / 2;

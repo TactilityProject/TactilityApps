@@ -8,6 +8,9 @@ namespace hd {
 
 // Centreline sample spacing, in metres
 constexpr float SAMPLE_SPACING = 4.0f;
+// Limits that keep a track's numbers sane (and its sample count castable and allocatable)
+constexpr float MAX_SEGMENT_LENGTH = 5000.0f; // metres
+constexpr size_t MAX_SAMPLES = 5000; // a 20 km lap
 
 bool parseColour(const char* text, uint32_t& out) {
     if (text == nullptr) {
@@ -54,7 +57,8 @@ bool parseFloat(const char* text, float& out) {
     }
     char* end = nullptr;
     out = strtof(text, &end);
-    return end != text && *end == '\0';
+    // strtof also reads "inf" and "nan" (and overflows to infinity): only finite numbers count
+    return end != text && *end == '\0' && std::isfinite(out);
 }
 
 } // namespace
@@ -68,9 +72,19 @@ bool Track::load(const std::string& text, std::string& error, const char* diffic
     BuildState state;
     bool widthSet = false;
     bool steepError = false;
+    const char* segmentError = nullptr;
 
     // Appends the samples of one segment. heightAt(u) gives the surface height at u = 0..1.
     auto addSegment = [&](float segmentLength, float turnRadians, bool gap, bool ramp, float rampHeight) {
+        // Checked before the sample count is worked out (and cast to int)
+        if (!std::isfinite(segmentLength) || segmentLength <= 0.0f || segmentLength > MAX_SEGMENT_LENGTH) {
+            segmentError = "segment is too long (at most 5000 m)";
+            return;
+        }
+        if (samples_.size() + (size_t)(segmentLength / SAMPLE_SPACING) + 2 > MAX_SAMPLES) {
+            segmentError = "track is too long (at most 20 km)";
+            return;
+        }
         // A "height" change eases in over this segment
         const float climb = state.targetHeight - state.baseHeight;
         if (std::fabs(climb) > segmentLength * 0.3f) {
@@ -242,6 +256,9 @@ bool Track::load(const std::string& text, std::string& error, const char* diffic
             else return fail("unknown colour name");
         } else {
             return fail("unknown command");
+        }
+        if (segmentError != nullptr) {
+            return fail(segmentError);
         }
         if (steepError) {
             return fail("height changes too steeply for this segment (at most 0.3 m per metre)");

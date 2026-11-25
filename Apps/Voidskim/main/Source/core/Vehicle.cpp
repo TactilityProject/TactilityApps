@@ -2,6 +2,7 @@
 
 #include "Track.h" // parseColour
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -79,7 +80,8 @@ bool parseVehicles(const std::string& text, std::vector<VehicleSpec>& out, std::
 
         char* end = nullptr;
         const float number = strtof(value, &end);
-        if (end == value || number < 0.0f) {
+        // strtof accepts "inf" and "nan", which would break the physics: only finite values
+        if (end == value || !std::isfinite(number) || number < 0.0f) {
             return fail("expected a positive number");
         }
         if (name == "speed") v.topSpeed = number;

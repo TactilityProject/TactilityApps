@@ -19,7 +19,7 @@ With no opponents it's a time trial: the HUD shows the current lap time and the 
 | Pause | Escape, P | | pause button (top) |
 | Menus | arrows, Enter, Escape/Backspace, or the race keys | roll, click | tap a row (left half goes back, right half forward) |
 
-**Settings** (in the main menu) has the audio (music and effects, effects only, or off) and **Controls**, where you change the keys: pick a control and a slot, then press the new key (each control has two). A key belongs to one control at a time, so taking a key moves it. **Defaults** restores the keys above. Settings are saved in `settings.txt` in the app's user data directory.
+**Settings** (in the main menu, and in the pause menu during a race) has the audio (music and effects, effects only, or off), the **3D quality** (low, the default, renders the world at 50% of the width and height and scales it up, medium at 75%, high at the full resolution: lower is faster on big screens, while the HUD and menus stay sharp), a frame rate counter, the **touch layout** (steering buttons on the left and the others on the right, or the other way round) and **Controls**, where you change the keys: pick a control and a slot, then press the new key (each control has two). A key belongs to one control at a time, so taking a key moves it. **Defaults** restores the keys above. Settings are saved in `settings.txt` in the app's user data directory.
 
 Touch controls are shown on devices with a touch screen. They hide when you use a keyboard and come back when you touch the screen.
 

@@ -1,5 +1,7 @@
 #include "WorldRenderer.h"
 
+#include <cstring>
+
 #include "Draw2D.h"
 
 #include "Jet.hpp"
@@ -176,11 +178,59 @@ WorldRenderer::~WorldRenderer() {
 }
 
 bool WorldRenderer::init(uint16_t* buffer, int w, int h) {
-    framebuffer = buffer;
-    width = w;
-    height = h;
-    skyRows.assign(h, 0);
+    output = buffer;
+    outputWidth = w;
+    outputHeight = h;
+    applyResolution();
     return true;
+}
+
+void WorldRenderer::setResolutionPercent(int percent) {
+    percent = std::max(25, std::min(100, percent));
+    if (percent == resolutionPercent) return;
+    resolutionPercent = percent;
+    clear(); // the scene is sized for the old resolution
+    applyResolution();
+}
+
+void WorldRenderer::applyResolution() {
+    if (resolutionPercent >= 100) {
+        width = outputWidth;
+        height = outputHeight;
+        framebuffer = output;
+        lowResolution.clear();
+        lowResolution.shrink_to_fit();
+        columnSource.clear();
+    } else {
+        width = std::max(16, outputWidth * resolutionPercent / 100);
+        height = std::max(16, outputHeight * resolutionPercent / 100);
+        lowResolution.assign((size_t)width * height, 0);
+        framebuffer = lowResolution.data();
+        columnSource.resize(outputWidth);
+        for (int x = 0; x < outputWidth; x++) {
+            columnSource[x] = (uint16_t)std::min(width - 1, (x * width + width / 2) / outputWidth);
+        }
+    }
+    skyRows.assign(height, 0);
+}
+
+void WorldRenderer::scaleUp() {
+    // Nearest neighbour: each output row copies a low resolution row, or repeats the row above it
+    int previousSource = -1;
+    for (int y = 0; y < outputHeight; y++) {
+        const int sourceRow = std::min(height - 1, (y * height + height / 2) / outputHeight);
+        uint16_t* destination = output + (size_t)y * outputWidth;
+        if (sourceRow == previousSource) {
+            memcpy(destination, destination - outputWidth, (size_t)outputWidth * sizeof(uint16_t));
+            continue;
+        }
+        const uint16_t* source = framebuffer + (size_t)sourceRow * width;
+        const uint16_t* map = columnSource.data();
+        for (int x = 0; x < outputWidth; x++) {
+            destination[x] = source[map[x]];
+        }
+        previousSource = sourceRow;
+    }
 }
 
 Material* WorldRenderer::material(uint32_t rgb) {
@@ -632,6 +682,9 @@ void WorldRenderer::updateShowcase(const RaceSim& race, float time) {
 void WorldRenderer::render() {
     if (scene) {
         scene->render();
+        if (framebuffer != output) {
+            scaleUp();
+        }
     }
 }
 

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -47,16 +48,17 @@ void showMessage(Context& ctx, const char* title, const std::string& message) {
     window_manager_alert_dialog(ctx.appInstanceId, title, message.c_str(), ok, 1, nullptr, nullptr);
 }
 
-/** Writes the song as name.bleep. Call without the LVGL lock. */
-void saveAs(Context& ctx, const std::string& name) {
+/** Writes the song as name.bleep. Call without the LVGL lock. @return whether it was saved */
+bool saveAs(Context& ctx, const std::string& name) {
     lvgl_lock();
     const std::string text = bleep::formatSong(ctx.song, "Made with BleepMixer");
     lvgl_unlock();
     makeDirectories(ctx.songsDirectory);
     const std::string path = ctx.songsDirectory + "/" + name + EXTENSION;
     if (!writeTextFile(path, text)) {
+        ctx.openAfterSave = false;
         showMessage(ctx, "Not saved", "Could not write " + path);
-        return;
+        return false;
     }
     LOG_I(TAG, "Saved %s", path.c_str());
     lvgl_lock();
@@ -64,6 +66,30 @@ void saveAs(Context& ctx, const std::string& name) {
     ctx.dirty = false;
     mixerSongChanged(ctx);
     lvgl_unlock();
+    if (ctx.openAfterSave) {
+        ctx.openAfterSave = false;
+        ctx.request.store(Request::ListForOpen);
+    }
+    return true;
+}
+
+void onUnsavedBeforeOpen(int32_t button, void* userData) {
+    auto& ctx = *static_cast<Context*>(userData);
+    if (button == 0) {
+        // Save, then open: saveAs() opens the list once the song is safely written
+        lvgl_lock();
+        const std::string name = ctx.name;
+        lvgl_unlock();
+        ctx.openAfterSave = true;
+        if (name.empty()) {
+            askSaveAs(ctx);
+        } else {
+            saveAs(ctx, name);
+        }
+    } else if (button == 1) {
+        ctx.request.store(Request::ListForOpen); // discard
+    }
+    // Cancel or dismissed: the song stays as it is
 }
 
 void onOpenChosen(int32_t index, void* userData) {
@@ -101,9 +127,13 @@ void onOpenChosen(int32_t index, void* userData) {
 
 void onSaveAsEntered(bool confirmed, const char* text, void* userData) {
     auto& ctx = *static_cast<Context*>(userData);
-    if (!confirmed) return;
+    if (!confirmed) {
+        ctx.openAfterSave = false;
+        return;
+    }
     const std::string name = sanitiseName(text);
     if (name.empty()) {
+        ctx.openAfterSave = false;
         showMessage(ctx, "Not saved", "Use letters, digits, '-' or '_' for the name.");
         return;
     }
@@ -126,10 +156,37 @@ bool readTextFile(const std::string& path, std::string& out) {
 }
 
 bool writeTextFile(const std::string& path, const std::string& text) {
-    FILE* file = fopen(path.c_str(), "wb");
+    // Write a temporary file next to it first, so a failed save (e.g. a full card) leaves the
+    // existing file as it was
+    const std::string temporary = path + ".tmp";
+    FILE* file = fopen(temporary.c_str(), "wb");
     if (file == nullptr) return false;
-    const bool ok = fwrite(text.data(), 1, text.size(), file) == text.size();
-    return fclose(file) == 0 && ok;
+    bool ok = fwrite(text.data(), 1, text.size(), file) == text.size();
+    ok = fflush(file) == 0 && ok;
+    ok = fsync(fileno(file)) == 0 && ok;
+    ok = fclose(file) == 0 && ok;
+    if (!ok) {
+        remove(temporary.c_str());
+        return false;
+    }
+    if (rename(temporary.c_str(), path.c_str()) == 0) {
+        return true;
+    }
+    // FAT can't rename onto an existing file: move the old one aside, put the new one in place,
+    // and bring the old one back if that fails
+    const std::string backup = path + ".bak";
+    remove(backup.c_str());
+    if (rename(path.c_str(), backup.c_str()) != 0) {
+        remove(temporary.c_str());
+        return false;
+    }
+    if (rename(temporary.c_str(), path.c_str()) != 0) {
+        rename(backup.c_str(), path.c_str());
+        remove(temporary.c_str());
+        return false;
+    }
+    remove(backup.c_str());
+    return true;
 }
 
 bleep::Song newSong() {
@@ -160,6 +217,16 @@ std::string sanitiseName(const char* text) {
     }
     while (!name.empty() && name.back() == '-') name.pop_back();
     return name;
+}
+
+void askOpen(Context& ctx) {
+    if (!ctx.dirty) {
+        ctx.request.store(Request::ListForOpen);
+        return;
+    }
+    static const char* const buttons[] = { "Save", "Discard", "Cancel" };
+    window_manager_alert_dialog(ctx.appInstanceId, "Unsaved changes", "Save the song before opening another?", buttons, 3,
+                                onUnsavedBeforeOpen, &ctx);
 }
 
 void askSaveAs(Context& ctx) {

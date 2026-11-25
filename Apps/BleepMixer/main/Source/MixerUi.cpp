@@ -165,8 +165,11 @@ void moveCursor(Context& ctx, int rows, int channels) {
 /** Puts a cell at the cursor, plays it and moves down. */
 void enterCell(Context& ctx, uint8_t cell) {
     if (!cellValid((Channel)ctx.channel, cell)) return;
+    // The audio task reads the cells while playing: write under the player's lock
+    ctx.player.lock();
     ctx.song.bars[ctx.bar].cells[ctx.channel][ctx.row] = cell;
-    ctx.player.audition((Channel)ctx.channel, cell, ctx.song.bpm);
+    ctx.player.unlock();
+    ctx.player.audition((Channel)ctx.channel, cell, ctx.song.bpm); // takes the lock itself
     changed(ctx);
     moveCursor(ctx, 1, 0);
 }
@@ -254,7 +257,7 @@ void drawText(lv_layer_t* layer, const lv_font_t* font, const char* text, int x1
 
 void onGridDraw(lv_event_t* event) {
     Context& ctx = *fromEvent(event);
-    if (ctx.grid == nullptr || ctx.song.bars.empty()) return;
+    if (ctx.grid == nullptr || ctx.song.bars.empty() || ctx.bar < 0 || ctx.bar >= (int)ctx.song.bars.size()) return;
     lv_layer_t* layer = lv_event_get_layer(event);
     const GridLayout l = gridLayout(ctx);
     const int x0 = l.area.x1;
@@ -471,8 +474,7 @@ void onSaveAs(lv_event_t* event) {
 }
 
 void onOpen(lv_event_t* event) {
-    Context& ctx = *fromEvent(event);
-    ctx.request.store(Request::ListForOpen);
+    askOpen(*fromEvent(event));
 }
 
 void onCloseConfirmed(int32_t button, void* userData) {
@@ -495,16 +497,20 @@ void onTimer(lv_timer_t* timer) {
     Context& ctx = *static_cast<Context*>(lv_timer_get_user_data(timer));
     if (ctx.grid == nullptr) return;
     const bool playing = ctx.player.playing();
-    const int position = playing ? ctx.player.bar() << 8 | ctx.player.row() : -1;
-    if (position == ctx.shownPlayPosition) return;
-    ctx.shownPlayPosition = position;
-    // Playing the whole song: follow it from bar to bar
-    if (playing && !ctx.loopBar && ctx.player.bar() >= 0 && ctx.player.bar() != ctx.bar) {
-        ctx.bar = ctx.player.bar();
+    // Read once: the audio task publishes it, and it can be stale (e.g. a bar that was just deleted)
+    const int playPosition = playing ? ctx.player.bar() << 8 | ctx.player.row() : -1;
+    const int playBar = playPosition >> 8;
+    const int playRow = playPosition & 0xFF;
+    const bool valid = playing && playPosition >= 0 && playBar < (int)ctx.song.bars.size();
+    if (playPosition == ctx.shownPlayPosition) return;
+    ctx.shownPlayPosition = playPosition;
+    // Playing the whole song: follow it from bar to bar (keeping the selection while it's stale)
+    if (valid && !ctx.loopBar && playBar != ctx.bar) {
+        ctx.bar = playBar;
         updateLabels(ctx);
     }
-    if (playing && ctx.player.bar() == ctx.bar && ctx.player.row() >= 0) {
-        scrollToRow(ctx, ctx.player.row());
+    if (valid && playBar == ctx.bar) {
+        scrollToRow(ctx, playRow);
     }
     lv_obj_invalidate(ctx.grid);
 }

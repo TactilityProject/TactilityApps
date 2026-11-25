@@ -1,5 +1,8 @@
 #include "Draw2D.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <cstdlib>
 
 namespace hd {

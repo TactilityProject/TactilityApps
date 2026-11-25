@@ -9,8 +9,8 @@ namespace bleep {
  * Plays a Song on four voices of a Synth (firstVoice .. firstVoice + 3): lead, harmony, bass and
  * drums. Call tick() once per sample, from the thread that owns the synth.
  *
- * The song is read while playing, so it must stay alive. Changing cells is fine; adding or
- * removing bars must not race with tick() (see Player for a way to do that).
+ * The song is read while playing, so it must stay alive, and changing it (cells, bars or bpm)
+ * must not race with tick() (see Player for a way to do that).
  */
 class Sequencer {
 public:

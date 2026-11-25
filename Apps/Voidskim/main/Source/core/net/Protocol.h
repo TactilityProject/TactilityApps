@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../RaceSetup.h"
+#include "../Track.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +12,7 @@ namespace hd::net {
  * Messages exchanged over a NetSession. Little-endian, packed by hand so the format doesn't depend
  * on the compiler or architecture. Every message starts with its type and the protocol version.
  */
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 2; // 2: snapshots carry the finish time
 
 enum class MessageType : uint8_t {
     StartRace = 1, // host -> all: the RaceSetup to start
@@ -38,6 +39,7 @@ struct SnapshotMessage {
     int8_t lapsCompleted = 0;
     uint8_t mode = 0;
     uint8_t flags = 0; // bit 0: airborne, bit 1: finished, bit 2: passed halfway
+    float finishTime = 0; // race time at the finish (valid when finished)
 };
 
 /** @return the encoded size, or 0 when it doesn't fit */
@@ -56,7 +58,11 @@ bool decode(const uint8_t* buffer, size_t size, RaceSetup& out);
 /** Captures a racer for a SnapshotMessage. */
 SnapshotMessage snapshotOf(const Racer& racer, uint32_t tick);
 
-/** Corrects a racer to a received snapshot. */
-void applySnapshot(const SnapshotMessage& snapshot, Racer& racer);
+/**
+ * Corrects a racer to a received snapshot: its motion, lap progress, finish and its location on
+ * the track (worked out again for the new position, so the next step doesn't count a line
+ * crossing the correction made).
+ */
+void applySnapshot(const SnapshotMessage& snapshot, Racer& racer, const Track& track);
 
 } // namespace hd::net

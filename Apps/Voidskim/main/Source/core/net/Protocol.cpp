@@ -111,6 +111,7 @@ size_t encode(const SnapshotMessage& m, uint8_t* buffer, size_t capacity) {
     w.u8((uint8_t)m.lapsCompleted);
     w.u8(m.mode);
     w.u8(m.flags);
+    w.f32(m.finishTime);
     return w.finish();
 }
 
@@ -126,6 +127,7 @@ bool decode(const uint8_t* buffer, size_t size, SnapshotMessage& m) {
     m.lapsCompleted = (int8_t)r.u8();
     m.mode = r.u8();
     m.flags = r.u8();
+    m.finishTime = r.f32();
     return r.ok();
 }
 
@@ -183,11 +185,15 @@ SnapshotMessage snapshotOf(const Racer& racer, uint32_t tick) {
     m.lapsCompleted = (int8_t)racer.lapsCompleted;
     m.mode = (uint8_t)racer.mode;
     m.flags = (uint8_t)((racer.airborne ? 1 : 0) | (racer.finished ? 2 : 0) | (racer.passedHalfway ? 4 : 0));
+    m.finishTime = racer.finished ? racer.finishTime : 0.0f;
     return m;
 }
 
-void applySnapshot(const SnapshotMessage& m, Racer& racer) {
+void applySnapshot(const SnapshotMessage& m, Racer& racer, const Track& track) {
     racer.position = { m.x, m.z };
+    // The cached location belongs to the old position: find it again, from scratch, as the
+    // correction may have moved the racer anywhere (even back across the line)
+    racer.location = track.locate(racer.position, -1);
     racer.height = m.height;
     racer.velocity = { m.vx, m.vz };
     racer.verticalSpeed = m.verticalSpeed;
@@ -197,7 +203,13 @@ void applySnapshot(const SnapshotMessage& m, Racer& racer) {
     racer.mode = (RacerMode)m.mode;
     racer.airborne = (m.flags & 1) != 0;
     racer.finished = (m.flags & 2) != 0;
+    // The finish time goes with the finish, so a finished racer is never ranked by a stale time
+    racer.finishTime = racer.finished ? m.finishTime : 0.0f;
     racer.passedHalfway = (m.flags & 4) != 0;
+    // Progress as RaceSim::updateProgress keeps it (frozen once finished, when ranking goes by time)
+    if (!racer.finished) {
+        racer.raceDistance = (float)racer.lapsCompleted * track.length() + racer.location.distance;
+    }
 }
 
 } // namespace hd::net

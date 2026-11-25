@@ -58,4 +58,4 @@ For music together with sound effects (as Voidskim does), drive a `Synth` and a 
 
 ## Threads
 
-`Player` is controlled from one thread and rendered from the audio task. The audio task never blocks: while `lock()` is held (needed only to add or remove bars, or change the tempo, of the playing song) it renders silence. Cells can be edited while playing.
+`Player` is controlled from one thread and rendered from the audio task. The audio task never blocks: while `lock()` is held it renders silence. Hold the lock for any change to the playing song (its cells, its bars or its tempo): the audio task reads all of them.

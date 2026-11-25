@@ -40,8 +40,16 @@ inline float directionToHeading(const Vec2& dir) { return std::atan2(dir.x, dir.
 /** The direction 90 degrees clockwise (to the right) of a direction. */
 inline Vec2 rightOf(const Vec2& dir) { return { dir.z, -dir.x }; }
 
-/** Wraps an angle into [-PI, PI). */
+/** Wraps an angle into [-PI, PI). Non-finite angles become 0. */
 inline float wrapAngle(float a) {
+    if (!std::isfinite(a)) {
+        return 0.0f;
+    }
+    // Reduce large angles in one step: subtracting 2 PI from a huge float can leave it unchanged
+    if (a >= 4.0f * PI || a < -4.0f * PI) {
+        a = std::fmod(a, 2.0f * PI);
+    }
+    // Now at most two steps each way
     while (a >= PI) a -= 2.0f * PI;
     while (a < -PI) a += 2.0f * PI;
     return a;

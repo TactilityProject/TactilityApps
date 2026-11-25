@@ -21,8 +21,8 @@ public:
 
     /**
      * Plays a song in a loop, from the start of a bar. The song must stay alive until stop() or
-     * the next play(). Edit its cells freely; change its bars (or bpm) only between lock() and
-     * unlock().
+     * the next play(). The audio task reads it while playing, so change it (cells, bars or bpm)
+     * only between lock() and unlock().
      */
     void play(const Song* song, int fromBar = 0);
     void stop();
