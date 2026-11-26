@@ -6,7 +6,6 @@
 #include <lvgl.h>
 #include <stdint.h>
 
-#include <atomic>
 
 /** Samples that a timeline keeps */
 constexpr uint32_t HISTORY_LENGTH = 100;
@@ -33,6 +32,14 @@ struct Lane {
     lv_obj_t* line;
     lv_obj_t* led;
     lv_point_precise_t* points; // TRACE_POINTS of them
+};
+
+constexpr uint32_t ACTION_QUEUE_LENGTH = 8;
+
+/** Something that the app task has to do */
+struct PendingAction {
+    int32_t action;
+    int32_t value;
 };
 
 struct Context {
@@ -63,8 +70,9 @@ struct Context {
     // Dialog choices and lane removal are carried out on the app task, which actionBit wakes
     TaskEventGroup* eventGroup = nullptr;
     uint32_t actionBit = 0;
-    std::atomic<int32_t> action { 0 };
-    std::atomic<int32_t> actionValue { 0 };
+    PendingAction actions[ACTION_QUEUE_LENGTH] = {}; // a ring, guarded by the LVGL lock
+    uint32_t actionHead = 0;
+    uint32_t actionCount = 0;
 
     // UI pointers (nulled when the widgets are destroyed)
     lv_obj_t* tabs = nullptr;
@@ -90,5 +98,5 @@ void gpioDestroyWidgets(void* userData);
 /** Releases the GPIO controller. Call once, after the window has been torn down. */
 void gpioTeardown(Context* ctx);
 
-/** Carries out the pending action. Call on the app task, without the LVGL lock. */
+/** Carries out the pending actions. Call on the app task, without the LVGL lock. */
 void gpioRunAction(Context* ctx);

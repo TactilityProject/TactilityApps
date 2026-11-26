@@ -34,8 +34,7 @@ struct Context {
     // Menu and dialog actions are carried out on the app task, which actionBit wakes
     TaskEventGroup* eventGroup = nullptr;
     uint32_t actionBit = 0;
-    std::atomic<int32_t> action { 0 };
-    std::atomic<int32_t> actionValue { 0 };
+    std::atomic<uint32_t> action { 0 }; // the action in the low byte and its value above it, so they stay together
 
     // UI-only state, guarded by the LVGL lock
     uint8_t volumePercent = 100;

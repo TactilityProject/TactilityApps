@@ -556,10 +556,11 @@ void rebuildContent(Context* context) {
 
 /** Hides the toolbar and the statusbar. Requires the LVGL lock. */
 void setFullscreen(Context* context, bool fullscreen) {
+    // Also without widgets, so the next build applies it
+    context->fullscreen = fullscreen;
     if (context->content == nullptr) {
         return;
     }
-    context->fullscreen = fullscreen;
     lv_obj_set_hidden(context->toolbar, fullscreen);
     system_bars_set_statusbar_visible(!fullscreen);
 

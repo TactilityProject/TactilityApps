@@ -28,15 +28,8 @@ struct OpenArgs {
 static void failOpen(Context* ctx, const std::string& path) {
     LOG_E(TAG, "Failed to open: %s", path.c_str());
     ctx->libraryError_ = "Can't open " + path.substr(path.find_last_of('/') + 1);
+    // The book stays in the recent books: the failure may be temporary, and its position is there
     ctx->view = View::Library;
-    // A book that can't be opened doesn't stay in the list
-    for (size_t i = 0; i < ctx->recents_.size(); i++) {
-        if (ctx->recents_[i].path == path) {
-            ctx->recents_.erase(ctx->recents_.begin() + i);
-            writeRecents(ctx);
-            break;
-        }
-    }
 }
 
 void rememberPosition(Context* ctx) {
@@ -192,16 +185,10 @@ int readingPercent(Context* ctx) {
     if (!ctx->epub_) return static_cast<int>(fraction * 100);
 
     // Chapters differ a lot in length, so they count by their size
-    uint64_t before = 0;
-    uint64_t current = 0;
-    uint64_t total = 0;
-    const auto& spine = ctx->epub_->getSpine();
-    for (size_t i = 0; i < spine.size(); i++) {
-        const uint64_t size = ctx->epub_->getFileSize(spine[i].href);
-        if (static_cast<int>(i) < ctx->currentSpineIndex_) before += size;
-        if (static_cast<int>(i) == ctx->currentSpineIndex_) current = size;
-        total += size;
-    }
+    const size_t index = static_cast<size_t>(LV_MAX(ctx->currentSpineIndex_, 0));
+    const uint64_t before = ctx->epub_->getSizeBefore(index);
+    const uint64_t current = ctx->epub_->getSizeBefore(index + 1) - before;
+    const uint64_t total = ctx->epub_->getSizeBefore(ctx->epub_->getSpine().size());
     if (total == 0) return 0;
     return static_cast<int>((before + static_cast<uint64_t>(current * fraction)) * 100 / total);
 }

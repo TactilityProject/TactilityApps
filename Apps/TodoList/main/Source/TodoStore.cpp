@@ -19,7 +19,8 @@ static constexpr auto* TAG = "TodoList";
 /** Must match manifest.properties' app.id */
 static constexpr const char* APP_ID = "tactility.todolist";
 
-static constexpr size_t MAX_FILE_SIZE = 16 * 1024;
+/** Room for the details at 4 bytes per character, and the header */
+static constexpr size_t MAX_FILE_SIZE = 32 * 1024;
 
 static std::vector<std::string> listDirectory(const std::string& path) {
     std::vector<std::string> names;
@@ -57,17 +58,19 @@ static uint32_t idOfFileName(const std::string& name) {
     return static_cast<uint32_t>(strtoul(name.c_str(), nullptr, 10));
 }
 
+/** @return false when the file can't be read completely, or is larger than MAX_FILE_SIZE */
 static bool readFile(const std::string& path, std::string& content) {
     FILE* file = fopen(path.c_str(), "rb");
     if (file == nullptr) return false;
     content.clear();
     char buffer[256];
     size_t length;
-    while (content.size() < MAX_FILE_SIZE && (length = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+    while (content.size() <= MAX_FILE_SIZE && (length = fread(buffer, 1, sizeof(buffer), file)) > 0) {
         content.append(buffer, length);
     }
+    const bool success = ferror(file) == 0 && content.size() <= MAX_FILE_SIZE;
     fclose(file);
-    return true;
+    return success;
 }
 
 /** Writes a temporary file and then renames it, so a task isn't lost when writing fails */
@@ -148,6 +151,8 @@ bool TodoStore::init() {
     }
 
     for (const auto& group : listDirectory(root + "/tasks")) {
+        // Recovered tasks must count for the next id
+        recoverTasks(group);
         for (const auto& name : listDirectory(groupPath(group))) {
             nextId = std::max(nextId, idOfFileName(name) + 1);
         }
@@ -162,6 +167,14 @@ void TodoStore::migrate() {
     if (!readFile(old, content)) return;
 
     createGroup(DEFAULT_GROUP);
+
+    // The number of lines that an earlier, failed attempt has imported
+    const std::string progressPath = root + "/migration.txt";
+    std::string progress;
+    if (!readFile(progressPath, progress)) readFile(progressPath + ".tmp", progress);
+    const unsigned long imported = strtoul(progress.c_str(), nullptr, 10);
+    unsigned long index = 0;
+
     // Lines of "- title" for a pending task and "+ title" for a completed one
     size_t position = 0;
     while (position < content.size()) {
@@ -171,11 +184,19 @@ void TodoStore::migrate() {
         position = end + 1;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.size() < 3 || line[1] != ' ') continue;
+        if (index++ < imported) continue;
 
         Task task;
         task.done = line[0] == '+';
         task.title = line.substr(2);
-        if (!saveTask(DEFAULT_GROUP, task)) {
+        bool success = saveTask(DEFAULT_GROUP, task);
+        if (success && !writeFile(progressPath, std::to_string(index))) {
+            // Without the progress, the next attempt would import it again
+            deleteTask(DEFAULT_GROUP, task.id);
+            unlink((progressPath + ".tmp").c_str());
+            success = false;
+        }
+        if (!success) {
             LOG_E(TAG, "Migration failed, keeping todos.txt");
             return;
         }
@@ -183,7 +204,9 @@ void TodoStore::migrate() {
 
     const std::string backup = old + ".bak";
     unlink(backup.c_str());
-    rename(old.c_str(), backup.c_str());
+    if (rename(old.c_str(), backup.c_str()) == 0) {
+        unlink(progressPath.c_str());
+    }
 }
 
 std::vector<std::string> TodoStore::loadGroups() {
@@ -211,7 +234,12 @@ std::string TodoStore::cleanGroupName(const std::string& name) {
         }
     }
     while (!result.empty() && (result.front() == ' ' || result.front() == '.')) result.erase(result.begin());
-    if (result.size() > MAX_GROUP_NAME) result.resize(MAX_GROUP_NAME);
+    if (result.size() > MAX_GROUP_NAME) {
+        // Don't cut a UTF-8 character in half
+        size_t length = MAX_GROUP_NAME;
+        while (length > 0 && (static_cast<unsigned char>(result[length]) & 0xC0) == 0x80) length--;
+        result.resize(length);
+    }
     while (!result.empty() && (result.back() == ' ' || result.back() == '.')) result.pop_back();
     return result;
 }
@@ -234,7 +262,7 @@ bool TodoStore::deleteGroup(const std::string& name) {
     return rmdir(groupPath(name).c_str()) == 0;
 }
 
-std::vector<Task> TodoStore::loadTasks(const std::string& group) {
+void TodoStore::recoverTasks(const std::string& group) {
     // Finish saves that were interrupted between removing the old file and renaming the new one
     for (const auto& name : listDirectory(groupPath(group))) {
         if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0) {
@@ -244,6 +272,10 @@ std::vector<Task> TodoStore::loadTasks(const std::string& group) {
             else rename(temporary.c_str(), target.c_str());
         }
     }
+}
+
+std::vector<Task> TodoStore::loadTasks(const std::string& group) {
+    recoverTasks(group);
 
     std::vector<Task> tasks;
     for (const auto& name : listDirectory(groupPath(group))) {
@@ -264,7 +296,10 @@ bool TodoStore::saveTask(const std::string& group, Task& task) {
         const time_t now = time(nullptr);
         task.created = static_cast<long long>(now);
     }
-    return writeFile(taskPath(group, task.id), formatTask(task));
+    const std::string content = formatTask(task);
+    // A larger file couldn't be read back
+    if (content.size() > MAX_FILE_SIZE) return false;
+    return writeFile(taskPath(group, task.id), content);
 }
 
 bool TodoStore::deleteTask(const std::string& group, uint32_t id) {

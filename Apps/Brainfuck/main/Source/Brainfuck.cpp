@@ -105,20 +105,35 @@ static bool readScript(const std::string& path, std::string& code) {
     fseek(file, 0, SEEK_END);
     const long size = ftell(file);
     fseek(file, 0, SEEK_SET);
-    const bool success = size >= 0 && size <= MAX_SCRIPT_SIZE;
+    bool success = size >= 0 && size <= MAX_SCRIPT_SIZE;
     if (success) {
         code.resize(size);
-        code.resize(fread(code.data(), 1, size, file));
+        success = fread(code.data(), 1, size, file) == static_cast<size_t>(size);
     }
     fclose(file);
     return success;
 }
 
+/** Writes a temporary file first, so the existing script survives a failure */
 static bool writeScript(const std::string& path, const std::string& code) {
-    FILE* file = fopen(path.c_str(), "wb");
+    const std::string temporary = path + ".tmp";
+    FILE* file = fopen(temporary.c_str(), "wb");
     if (file == nullptr) return false;
-    const bool written = fwrite(code.data(), 1, code.size(), file) == code.size();
-    return fclose(file) == 0 && written;
+    bool success = fwrite(code.data(), 1, code.size(), file) == code.size();
+    success = (fclose(file) == 0) && success;
+    if (success && rename(temporary.c_str(), path.c_str()) != 0) {
+        // FAT can't rename onto an existing file, so move that out of the way
+        const std::string backup = path + ".bak";
+        unlink(backup.c_str());
+        success = rename(path.c_str(), backup.c_str()) == 0;
+        if (success) {
+            success = rename(temporary.c_str(), path.c_str()) == 0;
+            if (success) unlink(backup.c_str());
+            else rename(backup.c_str(), path.c_str());
+        }
+    }
+    if (!success) unlink(temporary.c_str());
+    return success;
 }
 
 /* ── VM Logic ─────────────────────────────────────────────────────── */
@@ -275,6 +290,11 @@ static void save(Context* ctx, const std::string& path) {
     }
     const std::string code = ctx->code;
     lvgl_unlock();
+
+    if (code.size() > static_cast<size_t>(MAX_SCRIPT_SIZE)) {
+        showStatus(ctx, "Too large to save (over 32 KB)", LVGL_STATUSLINE_LEVEL_ERROR);
+        return;
+    }
 
     if (!writeScript(path, code)) {
         showStatus(ctx, "Can't save the file", LVGL_STATUSLINE_LEVEL_ERROR);

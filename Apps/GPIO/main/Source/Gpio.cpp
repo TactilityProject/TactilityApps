@@ -183,8 +183,12 @@ static void freeLanes(Context* ctx) {
 }
 
 static void requestAction(Context* ctx, Action action, int32_t value) {
-    ctx->actionValue = value;
-    ctx->action = action;
+    lvgl_lock();
+    if (ctx->actionCount < ACTION_QUEUE_LENGTH) {
+        ctx->actions[(ctx->actionHead + ctx->actionCount) % ACTION_QUEUE_LENGTH] = { action, value };
+        ctx->actionCount++;
+    }
+    lvgl_unlock();
     task_event_group_signal(ctx->eventGroup, ctx->actionBit);
 }
 
@@ -679,11 +683,8 @@ static void saveSettings(Context* ctx) {
     preferences_close(preferences);
 }
 
-void gpioRunAction(Context* ctx) {
-    const int32_t action = ctx->action.exchange(ACTION_NONE);
-    const int32_t value = ctx->actionValue;
-
-    lvgl_lock();
+/** Requires the LVGL lock */
+static void runAction(Context* ctx, int32_t action, int32_t value) {
     if (action == ACTION_REMOVE) {
         setPinned(ctx, static_cast<uint32_t>(value), false);
     } else if (action == ACTION_ADD) {
@@ -699,6 +700,16 @@ void gpioRunAction(Context* ctx) {
         if (ctx->timer != nullptr) lv_timer_set_period(ctx->timer, ctx->intervalMs);
         updateTimelineLabels(ctx);
         drawTimeline(ctx);
+    }
+}
+
+void gpioRunAction(Context* ctx) {
+    lvgl_lock();
+    while (ctx->actionCount > 0) {
+        const PendingAction pending = ctx->actions[ctx->actionHead];
+        ctx->actionHead = (ctx->actionHead + 1) % ACTION_QUEUE_LENGTH;
+        ctx->actionCount--;
+        runAction(ctx, pending.action, pending.value);
     }
     lvgl_unlock();
 }

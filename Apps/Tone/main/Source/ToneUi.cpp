@@ -56,8 +56,7 @@ void setIndex(lv_obj_t* obj, uint32_t index) {
 }
 
 void requestAction(Context* ctx, Action action, int32_t value = 0) {
-    ctx->actionValue = value;
-    ctx->action = action;
+    ctx->action = static_cast<uint32_t>(action) | (static_cast<uint32_t>(value) << 8);
     task_event_group_signal(ctx->eventGroup, ctx->actionBit);
 }
 
@@ -452,6 +451,21 @@ lv_obj_t* createChip(Context* ctx, lv_obj_t* parent, const char* text, uint32_t 
     return chip;
 }
 
+/**
+ * For a row of chips with flex grow: the flex layout doesn't subtract their margins from the space
+ * that it divides, so the row's padding takes over from the margins.
+ */
+void fitGrowingChips(lv_obj_t* row, lv_obj_t* const* chips, uint32_t count, int32_t gap) {
+    lv_obj_update_layout(row);
+    // Where the first chip starts is its margin
+    const int32_t margin = lv_obj_get_x(chips[0]);
+    for (uint32_t i = 0; i < count; i++) {
+        lv_obj_set_style_margin_hor(chips[i], 0, 0);
+    }
+    lv_obj_set_style_pad_hor(row, margin, 0);
+    lv_obj_set_style_pad_column(row, gap + 2 * margin, 0);
+}
+
 lv_obj_t* createStepButton(Context* ctx, lv_obj_t* parent, const char* text, lv_event_cb_t callback) {
     auto* button = lv_button_create(parent);
     const int32_t size = lvgl_get_text_font_height(FONT_SIZE_DEFAULT) * 2;
@@ -545,6 +559,7 @@ lv_obj_t* createPresets(Context* ctx, lv_obj_t* parent, int32_t gap) {
             ctx->presetChips[j] = createChip(ctx, row, PRESET_NAMES[j], j, onPresetPressed);
             lv_obj_set_flex_grow(ctx->presetChips[j], 1);
         }
+        fitGrowingChips(row, &ctx->presetChips[i], 4, gap);
     }
     return card;
 }
@@ -556,6 +571,8 @@ void createSweep(Context* ctx, lv_obj_t* parent, int32_t gap) {
     lv_obj_set_flex_grow(ctx->fixedChip, 1);
     ctx->sweepChip = createChip(ctx, modes, "Sweep", 1, onSweepModePressed);
     lv_obj_set_flex_grow(ctx->sweepChip, 1);
+    lv_obj_t* modeChips[] = { ctx->fixedChip, ctx->sweepChip };
+    fitGrowingChips(modes, modeChips, 2, gap);
 
     for (uint32_t i = 0; i < 3; i++) {
         auto* row = createBox(card, LV_FLEX_FLOW_ROW, gap + 8);
@@ -717,8 +734,9 @@ void rebuild(Context* ctx) {
 } // namespace
 
 void toneRunAction(Context* ctx) {
-    const int32_t action = ctx->action.exchange(ACTION_NONE);
-    const int32_t value = ctx->actionValue;
+    const uint32_t pending = ctx->action.exchange(ACTION_NONE);
+    const int32_t action = static_cast<int32_t>(pending & 0xFF);
+    const int32_t value = static_cast<int32_t>(pending >> 8);
 
     lvgl_lock();
     if (action == ACTION_BACK) {

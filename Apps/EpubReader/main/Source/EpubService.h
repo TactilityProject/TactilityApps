@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdint.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -44,8 +45,10 @@ public:
      *  If maxBytes > 0, reading stops after that many bytes (useful for large chapter HTML). */
     std::string readFile(const std::string& filename, size_t maxBytes = 0) const;
 
-    /** Uncompressed size of a file in the EPUB archive, or 0 if it isn't found */
-    size_t getFileSize(const std::string& filename) const;
+    /** Uncompressed size of the spine items before @a index, or of all of them when @a index is past the end */
+    uint64_t getSizeBefore(size_t index) const {
+        return sizesBefore_.empty() ? 0 : sizesBefore_[index < sizesBefore_.size() ? index : sizesBefore_.size() - 1];
+    }
 
     /** Get OPF metadata value by key (e.g. "title", "creator"). */
     std::string getMetadata(const std::string& key) const;
@@ -59,6 +62,7 @@ private:
 
     epub_reader_c* reader_ = nullptr;
     std::vector<SpineItem> spine_;
+    std::vector<uint64_t> sizesBefore_; // one more than spine_: the last is the total
     std::vector<TocItem> toc_;
     std::map<std::string, std::string> metadata_;
     std::string contentOpfPath_;

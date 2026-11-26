@@ -5,6 +5,7 @@
 #include <tactility/log.h>
 #include <esp_heap_caps.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -50,6 +51,8 @@ static void readRecents(Context* ctx) {
     char path[128];
     if (!getUserFile("recent.txt", path, sizeof(path))) return;
     FILE* f = fopen(path, "r");
+    // A save may have been interrupted before the new file got its name
+    if (!f) f = fopen((std::string(path) + ".tmp").c_str(), "r");
     if (!f) return;
     char line[512];
     while (ctx->recents_.size() < MAX_RECENT_BOOKS && fgets(line, sizeof(line), f)) {
@@ -92,12 +95,23 @@ static void readOldProgress(Context* ctx) {
 void writeRecents(Context* ctx) {
     char path[128];
     if (!getUserFile("recent.txt", path, sizeof(path))) return;
-    FILE* f = fopen(path, "w");
+    // The previous list is only replaced when the new one is complete
+    const std::string temporary = std::string(path) + ".tmp";
+    FILE* f = fopen(temporary.c_str(), "w");
     if (!f) return;
+    bool success = true;
     for (const auto& book : ctx->recents_) {
-        fprintf(f, "%s\t%d\t%d\t%d\t%s\n", book.path.c_str(), book.chapter, book.offset, book.percent, book.title.c_str());
+        success = fprintf(f, "%s\t%d\t%d\t%d\t%s\n", book.path.c_str(), book.chapter, book.offset, book.percent, book.title.c_str()) > 0 && success;
     }
-    fclose(f);
+    success = (fclose(f) == 0) && success;
+    if (!success) {
+        LOG_E(TAG, "Failed to save the recent books");
+        unlink(temporary.c_str());
+        return;
+    }
+    // FAT can't rename onto an existing file
+    unlink(path);
+    rename(temporary.c_str(), path);
 }
 
 void saveProgress(Context* ctx) {

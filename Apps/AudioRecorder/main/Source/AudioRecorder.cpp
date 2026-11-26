@@ -568,10 +568,6 @@ void recorderSelectRecording(Context* ctx, const std::string& fullpath) {
 }
 
 void recorderRequestDelete(Context* ctx, const std::string& fullpath) {
-    if (!ctx->pendingDeletePath.empty()) {
-        return; // a delete confirmation is already pending
-    }
-
     const char* slash = strrchr(fullpath.c_str(), '/');
     const char* name = slash ? (slash + 1) : fullpath.c_str();
     const std::string displayName = stripExtension(name);
@@ -579,7 +575,13 @@ void recorderRequestDelete(Context* ctx, const std::string& fullpath) {
     char message[192];
     snprintf(message, sizeof(message), "Delete \"%s\"?", displayName.c_str());
 
-    ctx->pendingDeletePath = fullpath;
+    {
+        std::lock_guard lg(ctx->deleteMutex);
+        if (!ctx->pendingDeletePath.empty()) {
+            return; // a delete confirmation is already pending
+        }
+        ctx->pendingDeletePath = fullpath;
+    }
 
     static const char* const buttons[] = { "Delete", "Cancel" };
     const error_t err = window_manager_alert_dialog(ctx->appInstanceId, "Delete Recording?", message, buttons, 2,
@@ -591,6 +593,7 @@ void recorderRequestDelete(Context* ctx, const std::string& fullpath) {
         }, ctx);
     if (err != ERROR_NONE) {
         LOG_E(TAG, "Failed to show the delete dialog: %d", err);
+        std::lock_guard lg(ctx->deleteMutex);
         ctx->pendingDeletePath.clear();
     }
 }

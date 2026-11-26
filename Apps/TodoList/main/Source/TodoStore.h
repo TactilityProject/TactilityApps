@@ -57,4 +57,5 @@ private:
     std::string groupPath(const std::string& group) const { return root + "/tasks/" + group; }
     std::string taskPath(const std::string& group, uint32_t id) const;
     void migrate();
+    void recoverTasks(const std::string& group);
 };

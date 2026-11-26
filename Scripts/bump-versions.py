@@ -47,19 +47,20 @@ def process_manifest(path: Path, component: str) -> None:
     new_lines = []
 
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(VERSION_NAME_KEY + "="):
-            old_value = stripped.split("=", 1)[1].strip()
+        key, separator, value = line.partition("=")
+        old_value = value.strip()
+        new_value = None
+        if separator and key.strip() == VERSION_NAME_KEY:
             new_value = bump_version(old_value, component)
-            new_lines.append(line.replace(old_value, new_value))
-            changed = True
-        elif stripped.startswith(VERSION_CODE_KEY + "="):
-            old_code = int(stripped.split("=", 1)[1].strip())
-            new_code = old_code + 1
-            new_lines.append(line.replace(str(old_code), str(new_code), 1))
-            changed = True
-        else:
+        elif separator and key.strip() == VERSION_CODE_KEY:
+            new_value = str(int(old_value) + 1)
+
+        if new_value is None:
             new_lines.append(line)
+        else:
+            # Only the value changes: the spacing around it and the line ending stay
+            new_lines.append(key + separator + value.replace(old_value, new_value, 1))
+            changed = True
 
     if changed:
         path.write_text("".join(new_lines))

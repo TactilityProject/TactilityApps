@@ -58,27 +58,31 @@ int main(int argc, char* argv[]) {
         task_event_group_wait_any(&event_group, &flags, portMAX_DELAY);
 
         if ((flags & ctx.deleteBit) != 0) {
-            if (ctx.deleteConfirmed && !ctx.pendingDeletePath.empty()) {
+            std::string path;
+            {
+                std::lock_guard lg(ctx.deleteMutex);
+                path.swap(ctx.pendingDeletePath);
+            }
+            if (ctx.deleteConfirmed && !path.empty()) {
                 // Only touch ctx.recordings here (no lv_obj) - this runs on the app's
                 // own task, not the LVGL thread. The list rebuild happens on the poll timer.
                 {
                     std::lock_guard lg(ctx.audio.pathMutex);
-                    if (ctx.audio.activeFilepath == ctx.pendingDeletePath) {
+                    if (ctx.audio.activeFilepath == path) {
                         ctx.audio.stopRequested.store(true);
                         ctx.audio.pauseRequested.store(false);
                     }
                 }
-                unlink(ctx.pendingDeletePath.c_str());
+                unlink(path.c_str());
                 {
                     std::lock_guard lg(ctx.recordingsMutex);
-                    if (ctx.selectedPath == ctx.pendingDeletePath) {
+                    if (ctx.selectedPath == path) {
                         ctx.selectedPath.clear();
                     }
                 }
                 recorderScanDirectory(&ctx);
                 ctx.listDirty = true;
             }
-            ctx.pendingDeletePath.clear();
         }
 
         struct AppEvent event;

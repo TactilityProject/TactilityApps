@@ -12,8 +12,6 @@
 extern "C" {
 
 int main(int argc, char* argv[]) {
-    constexpr TickType_t LVGL_LOCK_TIMEOUT = 500;
-
     AppInstanceId app_instance_id = app_scheduler_current_app_id();
 
     Context ctx {};
@@ -46,10 +44,9 @@ int main(int argc, char* argv[]) {
                 if (result == TWOELEVEN_SELECTION_HOW_TO_PLAY) {
                     twoElevenShowHelpDialog(&ctx);
                 } else if (result > TWOELEVEN_SELECTION_HOW_TO_PLAY) {
-                    if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
-                        twoElevenStartGame(&ctx, result);
-                        lvgl_unlock();
-                    }
+                    lvgl_lock();
+                    twoElevenStartGame(&ctx, result);
+                    lvgl_unlock();
                 } else {
                     // Closed without selecting - close self.
                     should_close = true;
@@ -58,10 +55,9 @@ int main(int argc, char* argv[]) {
                 twoElevenShowSelectionDialog(&ctx);
             } else if (dialog == GameDialog::GameOver) {
                 // Game has ended - clear it and return to the selection dialog.
-                if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
-                    twoElevenClearGame(&ctx);
-                    lvgl_unlock();
-                }
+                lvgl_lock();
+                twoElevenClearGame(&ctx);
+                lvgl_unlock();
                 twoElevenShowSelectionDialog(&ctx);
             }
         }

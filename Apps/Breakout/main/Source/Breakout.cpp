@@ -417,6 +417,10 @@ static void layoutField(Context* ctx) {
     ctx->paddleW = ctx->extendActive ? (int)(ctx->originalPaddleW * 1.5f) : ctx->originalPaddleW;
     ctx->paddleH = scaled(8);
     ctx->paddleYPos = ctx->areaH - ctx->paddleH - scaled(4);
+    // Rounding up can make the rows wider than the field
+    auto rowWidth = [ctx] { return ctx->cols * ctx->brickW + (ctx->cols - 1) * ctx->brickGap; };
+    while (rowWidth() > ctx->areaW && ctx->brickGap > 1) ctx->brickGap--;
+    while (rowWidth() > ctx->areaW && ctx->brickW > 1) ctx->brickW--;
     ctx->brickOffsetX = (ctx->areaW - (ctx->cols * ctx->brickW + (ctx->cols - 1) * ctx->brickGap)) / 2;
     ctx->brickOffsetY = scaled(8);
     ctx->capsuleW = scaled(22);

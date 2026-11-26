@@ -48,7 +48,7 @@ void saveSettings(Context* ctx) {
 }
 
 /** Reads the groups and the tasks of the one to select */
-void reload(Context* ctx, const std::string& group) {
+void reload(Context* ctx, std::string group) {
     ctx->groups = ctx->store.loadGroups();
     if (ctx->groups.empty()) {
         // The storage doesn't work

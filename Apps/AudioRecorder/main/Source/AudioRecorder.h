@@ -104,6 +104,7 @@ struct Context {
     TaskEventGroup* eventGroup = nullptr;
     uint32_t deleteBit = 0;
     std::atomic<bool> deleteConfirmed { false };
+    std::mutex deleteMutex; // guards pendingDeletePath
     std::string pendingDeletePath;
 
     // Fullpath of the recording selected in the list (row tap), or empty if none.
