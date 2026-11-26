@@ -1,9 +1,7 @@
 #include "EspNowBridge.h"
 
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
-#include <app/stream.h>
 
 #include <lvgl_window_manager/window_manager.h>
 
@@ -34,34 +32,19 @@ int main(int argc, char* argv[]) {
 
     bool should_close = false;
     while (!should_close) {
-        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&event_group, &flags, portMAX_DELAY);
+
+        if ((flags & ctx->fileBit) != 0 && !ctx->pickedFilePath.empty()) {
+            ctx->pendingUpdateFilePath = ctx->pickedFilePath;
+            espNowBridgeApplyPendingUpdate(ctx.get());
+        }
 
         struct AppEvent event;
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
             switch (event.type) {
                 case APP_EVENT_CLOSE:
                     should_close = true;
-                    break;
-
-                case APP_EVENT_RESULT:
-                    if (event.result.launch_id == ctx->pickFileLaunchId) {
-                        ctx->pickFileLaunchId = 0;
-                        if (event.result.result == 0) { // 0 = Ok (see FileSelection.h)
-                            // ctx->pickFileBuffer is the stream's own backing storage (see
-                            // onUpdateButtonClicked()'s AppStreamBinding), so it can't double as
-                            // the read destination too.
-                            char destination[sizeof(ctx->pickFileBuffer)];
-                            size_t length = app_stream_read(&ctx->pickFileStream, destination, sizeof(destination));
-                            app_stream_unsubscribe(&ctx->pickFileStream);
-                            if (length > 0) {
-                                ctx->pendingUpdateFilePath.assign(destination, length);
-                                espNowBridgeApplyPendingUpdate(ctx.get());
-                            }
-                        } else {
-                            app_stream_unsubscribe(&ctx->pickFileStream);
-                        }
-                    }
-                    app_manager_stop(event.result.launch_id);
                     break;
 
                 default:

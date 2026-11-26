@@ -1,8 +1,6 @@
 #include "Brainfuck.h"
 
-#include <app/manager.h>
 #include <app/paths.h>
-#include <app/start.h>
 #include <lvgl/fonts.h>
 #include <lvgl/icons/shared.h>
 #include <lvgl/lvgl.h>
@@ -360,45 +358,26 @@ static void showExamples(Context* ctx) {
     showSelection(ctx, BfDialog::Examples, "Examples", items, icons);
 }
 
-/** Starts the file selection app, whose result arrives as APP_EVENT_RESULT */
+/** Runs on the dialog task */
+static void onFileDialogResult(const char* const* paths, uint32_t pathCount, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->pickedPath = pathCount > 0 ? paths[0] : "";
+    task_event_group_signal(ctx->eventGroup, ctx->fileBit);
+}
+
 static void selectFile(Context* ctx, bool saving) {
-    if (ctx->fileLaunchId != 0) return;
-
     char directory[256];
-    std::string initialPath = "--path=";
-    if (getScriptDir(directory, sizeof(directory))) {
-        initialPath += directory;
-    }
-    char maxBytes[24];
-    snprintf(maxBytes, sizeof(maxBytes), "--max-bytes=%u", (unsigned)sizeof(ctx->fileBuffer));
-
-    std::vector<const char*> argv = { "--ext=bf", "--ext=b", initialPath.c_str(), maxBytes };
-    if (saving) {
-        argv.push_back("--new");
-    }
-
-    AppStreamBinding binding = {
-        .producer_fd = STDOUT_FILENO,
-        .stream = &ctx->fileStream,
-        .buffer = ctx->fileBuffer,
-        .buffer_capacity = sizeof(ctx->fileBuffer),
-        .event_group = ctx->eventGroup,
-        .window_size = {},
-        .alias_fd = -1,
+    const bool hasDirectory = getScriptDir(directory, sizeof(directory));
+    static const char* const extensions[] = { "bf", "b" };
+    const WindowFileDialogOptions options = {
+        .flags = saving ? WINDOW_FILE_DIALOG_NEW_FILE : 0U,
+        .path = hasDirectory ? directory : nullptr,
+        .name = nullptr,
+        .extensions = extensions,
+        .extension_count = 2,
     };
-    AppStartContext start {};
-    uint32_t instanceId = 0;
-    error_t error = app_start_context_from_id("tactility.fileselection", &start);
-    if (error == ERROR_NONE) {
-        app_start_context_set_arguments_ext(&start, (int)argv.size(), argv.data());
-        app_start_context_set_streams(&start, &binding, 1);
-        app_start_context_set_parent(&start, ctx->appInstanceId);
-        error = app_start_with_context(&start, &instanceId);
-    }
-    if (error == ERROR_NONE) {
-        ctx->fileLaunchId = instanceId;
-        ctx->fileSaving = saving;
-    } else {
+    ctx->fileSaving = saving;
+    if (window_manager_file_dialog(ctx->appInstanceId, &options, onFileDialogResult, ctx) != ERROR_NONE) {
         showStatus(ctx, "Can't open the file selection", LVGL_STATUSLINE_LEVEL_ERROR);
     }
 }
@@ -421,18 +400,8 @@ void brainfuckDialogResult(Context* ctx) {
     }
 }
 
-void brainfuckFileResult(Context* ctx, uint32_t launchId, int32_t result) {
-    if (launchId != ctx->fileLaunchId) return;
-    ctx->fileLaunchId = 0;
-
-    std::string path;
-    if (result == 0) {
-        char selected[sizeof(ctx->fileBuffer)];
-        const size_t length = app_stream_read(&ctx->fileStream, selected, sizeof(selected));
-        path.assign(selected, length);
-    }
-    app_stream_unsubscribe(&ctx->fileStream);
-    app_manager_stop(launchId);
+void brainfuckFileResult(Context* ctx) {
+    std::string path = ctx->pickedPath;
     if (path.empty()) return;
 
     if (ctx->fileSaving) {

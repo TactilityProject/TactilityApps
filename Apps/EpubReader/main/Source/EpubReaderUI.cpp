@@ -1,8 +1,6 @@
 #include "EpubReader.h"
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/paths.h>
-#include <app/start.h>
 #include <lvgl/fonts.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/widgets/list.h>
@@ -268,52 +266,31 @@ static void showMenu(Context* ctx) {
     showSelection(ctx, ReaderDialog::Menu, "Book", items);
 }
 
+/** Runs on the dialog task */
+static void onFileDialogResult(const char* const* paths, uint32_t pathCount, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->pickedPath_ = pathCount > 0 ? paths[0] : "";
+    task_event_group_signal(ctx->eventGroup_, ctx->fileBit_);
+}
+
 void startFileSelection(Context* ctx) {
-    if (ctx->fileLaunchId_ != 0) return;
-
-    char maxBytes[24];
-    snprintf(maxBytes, sizeof(maxBytes), "--max-bytes=%u", (unsigned)sizeof(ctx->fileBuffer_));
-    // Without a --path argument, browsing starts at paths_get_root_path()
-    const char* argv[] = { "--ext=epub", "--ext=txt", maxBytes };
-
-    AppStreamBinding binding = {
-        .producer_fd = STDOUT_FILENO,
-        .stream = &ctx->fileStream_,
-        .buffer = ctx->fileBuffer_,
-        .buffer_capacity = sizeof(ctx->fileBuffer_),
-        .event_group = ctx->eventGroup_,
-        .window_size = {},
-        .alias_fd = -1,
+    static const char* const extensions[] = { "epub", "txt" };
+    // Without a path, browsing starts at paths_get_root_path()
+    const WindowFileDialogOptions options = {
+        .flags = 0,
+        .path = nullptr,
+        .name = nullptr,
+        .extensions = extensions,
+        .extension_count = 2,
     };
-    AppStartContext start {};
-    uint32_t instanceId = 0;
-    error_t error = app_start_context_from_id("tactility.fileselection", &start);
-    if (error == ERROR_NONE) {
-        app_start_context_set_arguments_ext(&start, 3, argv);
-        app_start_context_set_streams(&start, &binding, 1);
-        app_start_context_set_parent(&start, ctx->appInstanceId);
-        error = app_start_with_context(&start, &instanceId);
-    }
-    if (error == ERROR_NONE) {
-        ctx->fileLaunchId_ = instanceId;
-    } else {
-        LOG_E(TAG, "Failed to start file selection: %d", error);
+    const error_t error = window_manager_file_dialog(ctx->appInstanceId, &options, onFileDialogResult, ctx);
+    if (error != ERROR_NONE) {
+        LOG_E(TAG, "Failed to show the file dialog: %d", error);
     }
 }
 
-void handleFileResult(Context* ctx, uint32_t launchId, int32_t result) {
-    if (launchId != ctx->fileLaunchId_) return;
-    ctx->fileLaunchId_ = 0;
-
-    std::string path;
-    if (result == 0) {
-        char selected[sizeof(ctx->fileBuffer_)];
-        const size_t length = app_stream_read(&ctx->fileStream_, selected, sizeof(selected));
-        path.assign(selected, length);
-    }
-    app_stream_unsubscribe(&ctx->fileStream_);
-    app_manager_stop(launchId);
-
+void handleFileResult(Context* ctx) {
+    const std::string path = ctx->pickedPath_;
     if (!path.empty()) {
         lvgl_lock();
         openBook(ctx, path);

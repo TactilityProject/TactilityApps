@@ -1,13 +1,13 @@
 #include "EspNowBridge.h"
 
 #include <app/paths.h>
-#include <app/stream.h>
-#include <app/start.h>
 #include <tactility/device.h>
 #include <tactility/drivers/wifi.h>
 #include <tactility/wifi_auto_scan.h>
 #include <tactility/firmware/firmware.h>
 
+#include <tactility/check.h>
+#include <lvgl_window_manager/dialog.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/widgets/toolbar.h>
 
@@ -550,33 +550,21 @@ static void startUpdateTask(Context* ctx, const std::string& filePath) {
     }
 }
 
-static constexpr auto* FILE_SELECTION_APP_ID = "tactility.fileselection";
-static constexpr auto* FILE_SELECTION_MODE_EXISTING = "--existing";
+/** Runs on the dialog task */
+static void onFileDialogResult(const char* const* paths, uint32_t pathCount, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->pickedFilePath = pathCount > 0 ? paths[0] : "";
+    task_event_group_signal(ctx->eventGroup, ctx->fileBit);
+}
 
 static void onUpdateButtonClicked(lv_event_t* /*event*/) {
     auto* ctx = liveInstance.load();
     if (ctx == nullptr || !isWifiRadioOn(ctx)) {
         return;
     }
-    if (ctx->pickFileLaunchId != 0) {
-        // A second tap (e.g. before the dialog has visibly opened) would overwrite
-        // pickFileLaunchId with the new instance's id, so the first dialog's eventual
-        // APP_EVENT_RESULT would never match it and its picked path would be silently dropped.
-        return;
-    }
-    const char* argv[] = { FILE_SELECTION_MODE_EXISTING };
-    AppStreamBinding binding = {
-        .producer_fd = STDOUT_FILENO,
-        .stream = &ctx->pickFileStream,
-        .buffer = ctx->pickFileBuffer,
-        .buffer_capacity = sizeof(ctx->pickFileBuffer),
-        .event_group = ctx->eventGroup,
-        .window_size = {},
-        .alias_fd = -1,
-    };
-    uint32_t instanceId = 0;
-    if (app_start_for_result_with_streams(FILE_SELECTION_APP_ID, 1, argv, &binding, 1, ctx->appInstanceId, &instanceId) == ERROR_NONE) {
-        ctx->pickFileLaunchId = instanceId;
+    // Fails while a dialog is shown, so a second tap does nothing
+    if (window_manager_file_dialog(ctx->appInstanceId, nullptr, onFileDialogResult, ctx) != ERROR_NONE) {
+        LOG_W(TAG, "Failed to show the file dialog");
     }
 }
 
@@ -667,6 +655,7 @@ static void onEnableWifiButtonClicked(lv_event_t* /*event*/) {
 void espNowBridgeInit(Context* ctx, TaskEventGroup* eventGroup) {
     ctx->taskDoneSemaphore = xSemaphoreCreateBinary();
     ctx->eventGroup = eventGroup;
+    check(task_event_group_claim_bit(eventGroup, &ctx->fileBit) == ERROR_NONE);
     liveInstance = ctx;
 
     Device* wifiDevice = nullptr;
@@ -764,6 +753,7 @@ void espNowBridgeApplyPendingUpdate(Context* ctx) {
 
 void espNowBridgeTeardown(Context* ctx) {
     ctx->isShown = false;
+    task_event_group_release_bit(ctx->eventGroup, ctx->fileBit);
     if (ctx->wifiDevice != nullptr) {
         wifi_event_unsubscribe(ctx->wifiDevice, &ctx->wifiEventSub);
         device_put(ctx->wifiDevice);

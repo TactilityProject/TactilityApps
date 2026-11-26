@@ -25,6 +25,7 @@ int main(int argc, char* argv[]) {
     ctx.eventGroup_ = &event_group;
     check(task_event_group_claim_bit(&event_group, &ctx.dialogBit_) == ERROR_NONE);
     check(task_event_group_claim_bit(&event_group, &ctx.openFileBit_) == ERROR_NONE);
+    check(task_event_group_claim_bit(&event_group, &ctx.fileBit_) == ERROR_NONE);
     check(task_event_group_claim_bit(&event_group, &ctx.psramAlertBit_) == ERROR_NONE);
 
     struct AppEventSubscription sub {};
@@ -69,16 +70,15 @@ int main(int argc, char* argv[]) {
         if ((flags & ctx.openFileBit_) != 0) {
             startFileSelection(&ctx);
         }
+        if ((flags & ctx.fileBit_) != 0) {
+            handleFileResult(&ctx);
+        }
 
         struct AppEvent event;
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
             switch (event.type) {
                 case APP_EVENT_CLOSE:
                     should_close = true;
-                    break;
-
-                case APP_EVENT_RESULT:
-                    handleFileResult(&ctx, event.result.launch_id, event.result.result);
                     break;
 
                 default:
@@ -92,6 +92,7 @@ int main(int argc, char* argv[]) {
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
     task_event_group_release_bit(&event_group, ctx.dialogBit_);
     task_event_group_release_bit(&event_group, ctx.openFileBit_);
+    task_event_group_release_bit(&event_group, ctx.fileBit_);
     task_event_group_release_bit(&event_group, ctx.psramAlertBit_);
     task_event_group_destruct(&event_group);
     epubReaderTeardown(&ctx);

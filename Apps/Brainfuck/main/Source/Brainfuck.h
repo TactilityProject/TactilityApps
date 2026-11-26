@@ -1,7 +1,6 @@
 #pragma once
 
 #include <app/instance.h>
-#include <app/stream.h>
 #include <tactility/concurrent/task_event_group.h>
 
 #include <lvgl.h>
@@ -49,11 +48,10 @@ struct Context {
     /** The actions of the items of the menu that is shown */
     std::vector<BfAction> menuActions;
 
-    // The file selection app, while it runs
-    uint32_t fileLaunchId = 0;
+    // The file dialog. Its result is handled on the app task, which fileBit wakes.
+    uint32_t fileBit = 0;
     bool fileSaving = false;
-    AppStream fileStream {};
-    uint8_t fileBuffer[256] {};
+    std::string pickedPath;
 
     // UI pointers (nulled when the widgets are destroyed)
     lv_obj_t* toolbar = nullptr;
@@ -69,4 +67,4 @@ void brainfuckDestroyWidgets(void* userData);
 // Call on the app task, without the LVGL lock
 
 void brainfuckDialogResult(Context* ctx);
-void brainfuckFileResult(Context* ctx, uint32_t launchId, int32_t result);
+void brainfuckFileResult(Context* ctx);

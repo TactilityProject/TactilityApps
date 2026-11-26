@@ -1,6 +1,5 @@
 #pragma once
 
-#include <app/stream.h>
 #include <tactility/concurrent/task_event_group.h>
 
 #include <atomic>
@@ -60,10 +59,9 @@ struct Context {
     std::atomic<int32_t> dialogResult_ { -1 };
     std::vector<MenuAction> menuActions_;
 
-    // The file selection app, while it runs
-    uint32_t fileLaunchId_ = 0;
-    AppStream fileStream_ {};
-    uint8_t fileBuffer_[256] {};
+    // The file dialog. Its result is handled on the app task, which fileBit_ wakes.
+    uint32_t fileBit_ = 0;
+    std::string pickedPath_;
 
     // Background open token - incremented to invalidate any in-flight background task so its
     // result is discarded when it arrives after the user went elsewhere or the app closed.
@@ -90,7 +88,7 @@ void epubReaderTeardown(Context* ctx);
 
 // Call on the app task, without the LVGL lock
 void startFileSelection(Context* ctx);
-void handleFileResult(Context* ctx, uint32_t launchId, int32_t result);
+void handleFileResult(Context* ctx);
 void handleDialogResult(Context* ctx);
 
 // The functions below require the LVGL lock
