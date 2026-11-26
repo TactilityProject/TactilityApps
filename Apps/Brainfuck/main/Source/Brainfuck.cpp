@@ -366,6 +366,9 @@ static void onFileDialogResult(const char* const* paths, uint32_t pathCount, voi
 }
 
 static void selectFile(Context* ctx, bool saving) {
+    // The mode must stay until the result of the previous one was used
+    if (ctx->filePending) return;
+
     char directory[256];
     const bool hasDirectory = getScriptDir(directory, sizeof(directory));
     static const char* const extensions[] = { "bf", "b" };
@@ -377,7 +380,9 @@ static void selectFile(Context* ctx, bool saving) {
         .extension_count = 2,
     };
     ctx->fileSaving = saving;
+    ctx->filePending = true;
     if (window_manager_file_dialog(ctx->appInstanceId, &options, onFileDialogResult, ctx) != ERROR_NONE) {
+        ctx->filePending = false;
         showStatus(ctx, "Can't open the file selection", LVGL_STATUSLINE_LEVEL_ERROR);
     }
 }
@@ -402,6 +407,7 @@ void brainfuckDialogResult(Context* ctx) {
 
 void brainfuckFileResult(Context* ctx) {
     std::string path = ctx->pickedPath;
+    ctx->filePending = false;
     if (path.empty()) return;
 
     if (ctx->fileSaving) {

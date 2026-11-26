@@ -51,6 +51,8 @@ struct Context {
     // The file dialog. Its result is handled on the app task, which fileBit wakes.
     uint32_t fileBit = 0;
     bool fileSaving = false;
+    /** Set from showing the file dialog until its result was used. Only used by the app task. */
+    bool filePending = false;
     std::string pickedPath;
 
     // UI pointers (nulled when the widgets are destroyed)
