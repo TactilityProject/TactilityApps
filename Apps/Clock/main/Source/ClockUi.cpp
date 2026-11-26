@@ -6,9 +6,12 @@
 #include <lvgl/fonts.h>
 #include <lvgl/icons/shared.h>
 #include <lvgl/insets.h>
+#include <lvgl/lvgl.h>
 #include <lvgl/theme.h>
 #include <lvgl/widgets/card.h>
 #include <lvgl/widgets/toolbar.h>
+#include <lvgl_window_manager/dialog.h>
+#include <lvgl_window_manager/system_bars.h>
 #include <tactility/error.h>
 
 #include <cstddef>
@@ -29,6 +32,7 @@ struct ContentMetrics {
 };
 
 void rebuildContent(Context* context);
+void setFullscreen(Context* context, bool fullscreen);
 
 int32_t clampInt(int32_t value, int32_t minimum, int32_t maximum) {
     if (value < minimum) {
@@ -105,16 +109,24 @@ void onClose(lv_event_t* event) {
     app_event_emit_close(context->appInstanceId);
 }
 
-void onModeToggle(lv_event_t* event) {
-    auto* context = static_cast<Context*>(lv_event_get_user_data(event));
-    if (!context->timeValid) {
-        return;
-    }
+enum MenuItem : int32_t { MENU_SWITCH_FACE, MENU_FULLSCREEN };
 
-    context->analog = !context->analog;
-    saveAnalogMode(context->analog);
-    rebuildContent(context);
-    refreshClock(context);
+void onMenuClosed(int32_t item, void* userData) {
+    // Handled on the app task, as the dialog task's stack is small
+    auto* context = static_cast<Context*>(userData);
+    context->menuChoice = item;
+    task_event_group_signal(context->eventGroup, context->menuBit);
+}
+
+void onMenuPressed(lv_event_t* event) {
+    auto* context = static_cast<Context*>(lv_event_get_user_data(event));
+    // The first item switches to the face that isn't shown
+    const char* const items[] = { context->analog ? "Show digital" : "Show analog", "Show fullscreen" };
+    window_manager_selection_dialog(context->appInstanceId, "Clock", items, 2, onMenuClosed, context);
+}
+
+void onExitFullscreen(lv_event_t* event) {
+    setFullscreen(static_cast<Context*>(lv_event_get_user_data(event)), false);
 }
 
 void onWifiConnect(lv_event_t* event) {
@@ -129,19 +141,10 @@ void onWifiConnect(lv_event_t* event) {
     app_start_with_context(&start_context, &instance_id);
 }
 
-void updateModeButton(Context* context) {
-    if (context->modeButton == nullptr) {
-        return;
-    }
-
-    if (context->timeValid) {
-        lv_obj_set_hidden(context->modeButton, false);
-    } else {
-        lv_obj_set_hidden(context->modeButton, true);
-    }
-
-    if (context->modeButtonLabel != nullptr) {
-        lv_label_set_text(context->modeButtonLabel, context->analog ? "Digital" : "Analog");
+void updateMenuButton(Context* context) {
+    if (context->menuButton != nullptr) {
+        // There is no clock to change without a valid time
+        lv_obj_set_hidden(context->menuButton, !context->timeValid);
     }
 }
 
@@ -446,7 +449,8 @@ void layoutAnalog(Context* context) {
                 context->dateLabel,
                 LV_ALIGN_BOTTOM_MID,
                 0,
-                -clampInt(diameter / 12, 10, 48)
+                // Above the 6 o'clock tick
+                -(center - outer_radius + major_length + clampInt(diameter / 40, 3, 10))
             );
             lv_obj_set_hidden(context->dateLabel, false);
         } else {
@@ -547,7 +551,42 @@ void rebuildContent(Context* context) {
         buildDigitalContent(context);
     }
 
-    updateModeButton(context);
+    updateMenuButton(context);
+}
+
+/** Hides the toolbar and the statusbar. Requires the LVGL lock. */
+void setFullscreen(Context* context, bool fullscreen) {
+    if (context->content == nullptr) {
+        return;
+    }
+    context->fullscreen = fullscreen;
+    lv_obj_set_hidden(context->toolbar, fullscreen);
+    system_bars_set_statusbar_visible(!fullscreen);
+
+    lv_obj_t* parent = lv_obj_get_parent(context->content);
+    if (fullscreen && context->exitFullscreen == nullptr) {
+        lv_obj_t* overlay = lv_obj_create(parent);
+        context->exitFullscreen = overlay;
+        lv_obj_remove_style_all(overlay);
+        lv_obj_set_floating(overlay, true);
+        lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_clickable(overlay, true);
+        lv_obj_add_event_cb(overlay, onExitFullscreen, LV_EVENT_CLICKED, context);
+        // Any key ends it too, for devices without touch
+        lv_obj_add_event_cb(overlay, onExitFullscreen, LV_EVENT_KEY, context);
+        lv_group_t* group = lv_group_get_default();
+        if (group != nullptr) {
+            lv_group_add_obj(group, overlay);
+            lv_group_focus_obj(overlay);
+        }
+    } else if (!fullscreen && context->exitFullscreen != nullptr) {
+        // Called from the overlay's own event
+        lv_obj_delete_async(context->exitFullscreen);
+        context->exitFullscreen = nullptr;
+    }
+
+    lv_obj_update_layout(parent);
+    refreshClock(context);
 }
 
 }
@@ -571,14 +610,14 @@ void buildUi(Context* context, lv_obj_t* parent) {
     context->toolbar = lvgl_toolbar_create(parent, "Clock");
     lvgl_toolbar_set_nav_action(context->toolbar, LV_SYMBOL_CLOSE, onClose, context);
 
-    context->modeButton = lvgl_toolbar_add_text_button_action(
+    context->menuButton = lvgl_toolbar_add_text_button_action(
         context->toolbar,
-        "Analog",
-        onModeToggle,
+        LVGL_ICON_SHARED_MORE_VERT,
+        onMenuPressed,
         context
     );
-    context->modeButtonLabel = lv_obj_get_child(context->modeButton, 0);
-    updateModeButton(context);
+    lv_obj_set_style_text_font(context->menuButton, lvgl_get_shared_icon_default_font(), 0);
+    updateMenuButton(context);
 
     context->content = lv_obj_create(parent);
     lv_obj_set_width(context->content, LV_PCT(100));
@@ -598,16 +637,41 @@ void buildUi(Context* context, lv_obj_t* parent) {
 
     lv_obj_update_layout(parent);
     refreshClock(context);
+    // The window may be rebuilt while fullscreen
+    if (context->fullscreen) {
+        setFullscreen(context, true);
+    }
 }
 
 void destroyUi(Context* context) {
+    // Other windows have the statusbar
+    if (context->fullscreen) {
+        system_bars_set_statusbar_visible(true);
+    }
+    context->exitFullscreen = nullptr;
     context->toolbar = nullptr;
     context->content = nullptr;
-    context->modeButton = nullptr;
-    context->modeButtonLabel = nullptr;
+    context->menuButton = nullptr;
     resetContentPointers(context);
     context->contentBuilt = false;
     context->timeValid = false;
+}
+
+void applyMenuChoice(Context* context) {
+    const int32_t choice = context->menuChoice;
+    if (choice == MENU_FULLSCREEN) {
+        lvgl_lock();
+        setFullscreen(context, true);
+        lvgl_unlock();
+    } else if (choice == MENU_SWITCH_FACE) {
+        const bool analog = !context->analog;
+        saveAnalogMode(analog);
+        lvgl_lock();
+        context->analog = analog;
+        rebuildContent(context);
+        refreshClock(context);
+        lvgl_unlock();
+    }
 }
 
 void refreshClock(Context* context) {

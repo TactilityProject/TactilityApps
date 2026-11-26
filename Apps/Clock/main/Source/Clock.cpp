@@ -51,6 +51,9 @@ extern "C" int main(int argc, char* argv[]) {
     TaskEventGroup eventGroup {};
     task_event_group_construct(&eventGroup);
 
+    context.eventGroup = &eventGroup;
+    check(task_event_group_claim_bit(&eventGroup, &context.menuBit) == ERROR_NONE);
+
     AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &eventGroup) == ERROR_NONE);
 
@@ -63,7 +66,12 @@ extern "C" int main(int argc, char* argv[]) {
 
     bool shouldClose = false;
     while (!shouldClose) {
-        task_event_group_wait_any(&eventGroup, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&eventGroup, &flags, portMAX_DELAY);
+
+        if ((flags & context.menuBit) != 0) {
+            clockapp::applyMenuChoice(&context);
+        }
 
         AppEvent event {};
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
@@ -76,6 +84,7 @@ extern "C" int main(int argc, char* argv[]) {
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_release_bit(&eventGroup, context.menuBit);
     task_event_group_destruct(&eventGroup);
 
     return 0;

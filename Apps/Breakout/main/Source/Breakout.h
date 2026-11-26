@@ -47,6 +47,7 @@ struct Context {
     uint32_t appInstanceId;
 
     // UI pointers (nulled on teardown)
+    lv_obj_t* wrapper = nullptr; // space below the toolbar, which receives the input
     lv_obj_t* gameArea = nullptr;
     lv_obj_t* paddle = nullptr;
     lv_obj_t* bricks[MAX_BRICKS] = {};
@@ -117,6 +118,8 @@ struct Context {
 
     // Layout dimensions (calculated on create)
     int areaW = 0, areaH = 0;
+    float scale = 1.0f; // pixels per field unit
+    bool touchMode = false; // the field leaves room for a thumb below it
     int cols = 0, rows = 0;
     int brickW = 0, brickH = 0;
     int brickGap = 0;

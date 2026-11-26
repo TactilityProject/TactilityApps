@@ -203,6 +203,14 @@ const char* epub_get_filename_c(epub_reader_c* reader, uint32_t index) {
     return reader->files[index].filename;
 }
 
+uint32_t epub_get_file_size_c(epub_reader_c* reader, const char* filename) {
+    if (!reader || !filename) return 0;
+    for (uint32_t i = 0; i < reader->file_count; i++) {
+        if (strcmp(reader->files[i].filename, filename) == 0) return reader->files[i].uncompressed_size;
+    }
+    return 0;
+}
+
 epub_stream_context_c* epub_stream_open_c(epub_reader_c* reader, const char* filename) {
     if (!reader || !filename) return NULL;
 

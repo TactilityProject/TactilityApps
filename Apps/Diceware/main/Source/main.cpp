@@ -1,7 +1,7 @@
 #include "Diceware.h"
 
+#include <lvgl_window_manager/dialog.h>
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
 
 #include <lvgl_window_manager/window_manager.h>
@@ -22,7 +22,7 @@ int main(int argc, char* argv[]) {
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
-    WindowId window = window_manager_create(app_instance_id, dicewareCreateWidgets, &ctx);
+    WindowId window = window_manager_create_ext(app_instance_id, dicewareCreateWidgets, dicewareDestroyWidgets, &ctx);
 
     bool should_close = false;
     while (!should_close) {
@@ -33,12 +33,6 @@ int main(int argc, char* argv[]) {
             switch (event.type) {
                 case APP_EVENT_CLOSE:
                     should_close = true;
-                    break;
-                case APP_EVENT_RESULT:
-                    if (event.result.launch_id == ctx.pendingHelpDialogId) {
-                        ctx.pendingHelpDialogId = 0;
-                    }
-                    app_manager_stop(event.result.launch_id);
                     break;
                 default:
                     break;

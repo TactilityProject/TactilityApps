@@ -1,4 +1,4 @@
-# Epub Reader
+# ePub Reader
 
 An EPUB and plain-text reader for Tactility devices.
 
@@ -8,9 +8,9 @@ An EPUB and plain-text reader for Tactility devices.
 - **Plain-text support** - opens `.txt` files with the same scroll-based reader
 - **Table of Contents** - in-app TOC dialog for direct chapter navigation
 - **Reading progress** - automatically saves and restores your position per book
-- **Scroll-based navigation** - Prev/Next buttons (and tap left/right half of screen) scroll by one viewport height, snapped to a whole line so text never starts mid-line
+- **Scroll-based navigation** - tapping the left/right half of the screen scroll by one viewport height, snapped to a whole line so text never starts mid-line
 - **Chapter auto-skip** - image-only or blank chapters (common in EPUBs) are skipped automatically
-- **Books shelf** - designate a folder as your library; the shelf lists all books across one level of subdirectories
+- **Recent books** - the last 20 books, with your position in each
 - **Font rendering** - runtime-loaded Noto Serif fonts (4 weights: regular, italic, bold, bold-italic) in 4 size tiers to match the display resolution
 - **Inline styling** - bold and italic runs within paragraphs are rendered correctly
 - **Paragraph alignment** - center and right alignment from the EPUB source is preserved
@@ -54,22 +54,19 @@ python Apps/EpubReader/gen_fonts.py
 
 Output is written to `Apps/EpubReader/assets/`.
 
-## Navigation
+## Library
+
+The app starts on your recent books, last opened first, each with how far you are. Tap one to continue where you stopped, or press **Open file** to pick an `.epub` or `.txt` file.
+
+## Reading
 
 | Action | Result |
 |--------|--------|
-| Tap left half of screen | Previous page |
-| Tap right half of screen | Next page |
-| ⏮ / ⏭ toolbar buttons | Previous / next page |
-| ☰ toolbar button | Table of Contents |
-| 📁 toolbar button | Switch to file browser |
-| Browser → tap folder | Navigate into folder |
-| Browser → tap file | Open book |
-| Shelf ◀ ▶ buttons | Page through book list |
-
-## Books Folder / Shelf
-
-In the file browser, navigate to any folder and tap the 📁 toolbar button to save it as your books folder. On subsequent launches the app opens directly to the shelf view for that folder, listing books from it and one level of subdirectories.
+| Tap left half of screen, Left/Up key | Previous page |
+| Tap right half of screen, Right/Down/Space key | Next page |
+| Back arrow, Esc key | Back to the library |
+| List button | Table of Contents |
+| Menu button, Enter key | Contents, Open file, Close book |
 
 ## Building
 

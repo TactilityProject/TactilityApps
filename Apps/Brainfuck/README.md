@@ -13,19 +13,18 @@ Run Brainfuck programs on your device. Includes built-in examples and support fo
 - Built-in examples (Hello World, Fibonacci, Alphabet, Beer song)
 - Multi-line code editor
 - Execution statistics (cycle count display)
-- Load custom scripts from user data directory
+- Open and save scripts
 
 ## Controls
 
-- **Run Button**: Execute Brainfuck code
-- **Enter Key**: Run code from input area
-- **Toolbar Buttons**:
-  - Trash icon: Clear output and input
-  - List icon: Toggle between examples/scripts list and editor
+Type code in the top field, then press **Play**. The output appears below, with the result in the status line.
 
-## Custom Scripts
+- **Play**: execute the code
+- **Menu**: New, Open, Save, Save as, and the built-in examples
 
-Place `.bf` or `.b` files (up to 32 KB each) in the app's user data directory to load them from the app. The directory path is shown in the script list when no scripts are found.
+## Files
+
+Scripts are `.bf` or `.b` files of up to 32 KB. Open and Save as start in the app's user data directory.
 
 ## Brainfuck Reference
 

@@ -19,6 +19,11 @@ static void snake_draw(snake_game_t* game);
 static void snake_create_segment_objects(snake_game_t* game);
 static void snake_delete_segment_objects(snake_game_t* game);
 
+/** Pixels of a cell that a segment or the food covers, leaving a gap between them */
+static int32_t segment_size(const snake_game_t* game) {
+    return game->cell_size - (game->cell_size > 6 ? 2 : 1);
+}
+
 // Static flag to ensure srand is only called once
 static bool srand_initialized = false;
 
@@ -99,7 +104,7 @@ static void snake_create_segment_objects(snake_game_t* game) {
 
     while (segment != NULL) {
         segment->obj = lv_obj_create(game->container);
-        lv_obj_set_size(segment->obj, game->cell_size - 2, game->cell_size - 2);
+        lv_obj_set_size(segment->obj, segment_size(game), segment_size(game));
         lv_obj_set_style_radius(segment->obj, SNAKE_CELL_RADIUS, LV_PART_MAIN);
         lv_obj_set_style_border_width(segment->obj, 0, LV_PART_MAIN);
 
@@ -181,7 +186,7 @@ static void snake_timer_cb(lv_timer_t* timer) {
                 lv_obj_send_event(game->widget, LV_EVENT_VALUE_CHANGED, NULL);
                 return;
             }
-            lv_obj_set_size(tail->obj, game->cell_size - 2, game->cell_size - 2);
+            lv_obj_set_size(tail->obj, segment_size(game), segment_size(game));
             lv_obj_set_style_radius(tail->obj, SNAKE_CELL_RADIUS, LV_PART_MAIN);
             lv_obj_set_style_border_width(tail->obj, 0, LV_PART_MAIN);
             lv_obj_set_style_bg_color(tail->obj, SNAKE_BODY_COLOR, LV_PART_MAIN);
@@ -293,7 +298,7 @@ static void game_play_event(lv_event_t* e) {
 /**
  * @brief Create a new Snake game widget
  */
-lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision) {
+lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_count, bool wall_collision) {
     // Create main object
     lv_obj_t* obj = lv_obj_create(parent);
     if (!obj) return NULL;
@@ -311,7 +316,6 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
     game->widget = obj;
 
     // Initialize game state
-    game->cell_size = cell_size;
     game->score = 0;
     game->length = SNAKE_INITIAL_LENGTH;
     game->direction = SNAKE_DIR_RIGHT;
@@ -337,26 +341,36 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
     lv_group_remove_obj(game->container);
     lv_obj_set_gesture_bubble(game->container, false);
 
-    // Calculate grid dimensions based on available space (non-square)
-    lv_coord_t available_w = lv_obj_get_content_width(parent) - 6;
-    lv_coord_t available_h = lv_obj_get_content_height(parent) - 6;
+    int32_t available_w = lv_obj_get_content_width(parent) - 6;
+    int32_t available_h = lv_obj_get_content_height(parent) - 6;
 
     if (available_w < 50) available_w = 50;
     if (available_h < 50) available_h = 50;
 
-    // Calculate how many cells fit in each dimension
-    game->grid_width = available_w / cell_size;
-    game->grid_height = available_h / cell_size;
+    // The field is at most twice as long as it is wide, in either direction
+    if (available_w > available_h * 2) available_w = available_h * 2;
+    if (available_h > available_w * 2) available_h = available_w * 2;
+
+    // The largest cell that still gives cell_count cells, or one pixel more if that is closer
+    int32_t cell = SNAKE_MIN_CELL_SIZE;
+    while ((available_w / (cell + 1)) * (available_h / (cell + 1)) >= cell_count) cell++;
+    const int32_t at_least = (available_w / cell) * (available_h / cell) - cell_count;
+    const int32_t fewer = cell_count - (available_w / (cell + 1)) * (available_h / (cell + 1));
+    if (fewer >= 0 && fewer < at_least) cell++;
+    game->cell_size = cell;
+
+    game->grid_width = available_w / cell;
+    game->grid_height = available_h / cell;
 
     // Ensure minimum grid size (3x3 minimum for playable game)
     if (game->grid_width < 3) game->grid_width = 3;
     if (game->grid_height < 3) game->grid_height = 3;
+    // Rounding to whole cells must not break the aspect ratio limit
+    if (game->grid_width > game->grid_height * 2) game->grid_width = game->grid_height * 2;
+    if (game->grid_height > game->grid_width * 2) game->grid_height = game->grid_width * 2;
 
-    // Calculate actual field size
-    lv_coord_t field_w = game->cell_size * game->grid_width;
-    lv_coord_t field_h = game->cell_size * game->grid_height;
-
-    lv_obj_set_size(game->container, field_w, field_h);
+    // The border is outside of the cells
+    lv_obj_set_size(game->container, game->cell_size * game->grid_width + 2, game->cell_size * game->grid_height + 2);
     lv_obj_center(game->container);
 
     // Initialize snake body at center
@@ -375,7 +389,7 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
 
     // Create food object
     game->food = lv_obj_create(game->container);
-    lv_obj_set_size(game->food, game->cell_size - 2, game->cell_size - 2);
+    lv_obj_set_size(game->food, segment_size(game), segment_size(game));
     lv_obj_set_style_radius(game->food, game->cell_size / 2, LV_PART_MAIN);
     lv_obj_set_style_border_width(game->food, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_color(game->food, SNAKE_FOOD_COLOR, LV_PART_MAIN);
@@ -395,6 +409,9 @@ lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision
     // Add event callbacks for touch gestures and keyboard
     lv_obj_add_event_cb(game->container, game_play_event, LV_EVENT_GESTURE, obj);
     lv_obj_add_event_cb(game->container, game_play_event, LV_EVENT_KEY, obj);
+    // Swiping next to a centred field works too
+    lv_obj_set_gesture_bubble(obj, false);
+    lv_obj_add_event_cb(obj, game_play_event, LV_EVENT_GESTURE, obj);
     lv_obj_add_event_cb(obj, delete_event, LV_EVENT_DELETE, NULL);
 
     // Set up keyboard focus if available

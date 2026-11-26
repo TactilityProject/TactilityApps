@@ -20,10 +20,12 @@ extern "C" {
  *      DEFINES
  *********************/
 
-// Cell sizes in pixels (larger = easier, smaller = harder)
-#define SNAKE_CELL_LARGE     16  // Easy - bigger cells, fewer cells fit
-#define SNAKE_CELL_MEDIUM    12  // Medium
-#define SNAKE_CELL_SMALL     8   // Hard - smaller cells, more cells fit
+// Number of cells in the playing field (fewer = easier). The cells are scaled so that every screen
+// has about this many.
+#define SNAKE_CELLS_EASY     230
+#define SNAKE_CELLS_MEDIUM   420
+#define SNAKE_CELLS_HARD     975
+#define SNAKE_MIN_CELL_SIZE  4   // pixels
 
 // Game timing
 #define SNAKE_GAME_SPEED_MS      300  // Initial timer interval in milliseconds

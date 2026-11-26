@@ -1,37 +1,35 @@
 # Todo List
 
-A simple task list manager for Tactility.
-
-## Overview
-
-Keep track of tasks directly on your device. Add items, mark them complete, and delete them when done. Tasks are automatically saved and persist across sessions.
-
-## Features
-
-- Add, complete, and delete tasks
-- Visual completion indicators (checkmarks vs pending dots)
-- Strike-through styling for completed items
-- Pending task counter in header
-- Clear all completed tasks at once
-- Persistent storage (survives reboots)
+Tasks in groups, each with a title and free-form details.
 
 ## Controls
 
-- **Touch**:
-  - Tap a task: Toggle between done and pending
-  - Tap X button: Delete a task
-- **Text Input**: Type a task name, then press Enter or the + button to add it
-- **Toolbar Button**: Trash icon to clear all completed tasks
+| Action | Result |
+|--------|--------|
+| Type in the field at the bottom, press Enter or + | Add a task to the selected group |
+| Tap the box, or Space | Finish or reopen the task |
+| Tap the task, or Enter | Open its details; changes are saved when you go back |
+| Long press the task | Move to another group, or delete |
+| Delete or Backspace key | Delete the focused task, after a confirmation |
+| The **+** tab | New group |
+| Long press a group tab | Rename or delete the group |
+| Menu button | Show or hide finished tasks, delete them all, or delete the group (not the only one) |
 
 ## Storage
 
-Tasks are saved to the app's user data directory in a simple text format:
-- `-` prefix = pending task
-- `+` prefix = completed task
+One file per task, in a directory per group inside the app's user data directory:
+`tasks/<group>/<id>.task`
 
-Up to 50 tasks, 128 characters each.
+```
+version: 1
+title: Order solder wick
+done: 0
+created: 1795600000
+completed: 0
 
-## Requirements
+The details, as plain text.
+```
 
-- Tactility
-- Touchscreen or keyboard
+Header lines that the app doesn't know are kept when it rewrites a file.
+
+The `todos.txt` of earlier versions is moved into the **General** group, and kept as `todos.txt.bak`.

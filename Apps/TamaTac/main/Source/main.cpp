@@ -1,7 +1,7 @@
 #include "TamaTac.h"
 
+#include <lvgl_window_manager/dialog.h>
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
 
 #include <lvgl_window_manager/window_manager.h>
@@ -27,6 +27,9 @@ int main(int argc, char* argv[]) {
     struct TaskEventGroup event_group {};
     task_event_group_construct(&event_group);
 
+    ctx->eventGroup = &event_group;
+    check(task_event_group_claim_bit(&event_group, &ctx->resetBit) == ERROR_NONE);
+
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
@@ -35,7 +38,22 @@ int main(int argc, char* argv[]) {
 
     bool should_close = false;
     while (!should_close) {
-        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&event_group, &flags, portMAX_DELAY);
+
+        if ((flags & ctx->resetBit) != 0) {
+            if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
+
+            ctx->petLogic.reset();
+            ctx->petLogic.saveState();
+            ctx->lastKnownStage = LifeStage::Egg;
+            ctx->lastPetTime = 0;  // Clear tap cooldown for the new pet
+            // Achievements + cemetery intentionally survive: they
+            // record the player's history, not this pet's life.
+            ctx->pendingResetUI = true;  // Defer UI update to MainView's anim timer
+
+            if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
+        }
 
         struct AppEvent event;
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
@@ -43,31 +61,6 @@ int main(int argc, char* argv[]) {
                 case APP_EVENT_CLOSE:
                     should_close = true;
                     break;
-
-                case APP_EVENT_RESULT: {
-                    uint32_t launch_id = event.result.launch_id;
-                    if (launch_id == ctx->resetDialogId && ctx->resetDialogId != 0) {
-                        ctx->resetDialogId = 0;
-                        int32_t buttonIndex = event.result.result;
-
-                        if (buttonIndex == 0) {
-                            // User picked "Reset" (first button)
-                            if (ctx->timerMutex) xSemaphoreTake(ctx->timerMutex, portMAX_DELAY);
-
-                            ctx->petLogic.reset();
-                            ctx->petLogic.saveState();
-                            ctx->lastKnownStage = LifeStage::Egg;
-                            ctx->lastPetTime = 0;  // Clear tap cooldown for the new pet
-                            // Achievements + cemetery intentionally survive: they
-                            // record the player's history, not this pet's life.
-                            ctx->pendingResetUI = true;  // Defer UI update to MainView's anim timer
-
-                            if (ctx->timerMutex) xSemaphoreGive(ctx->timerMutex);
-                        }
-                        app_manager_stop(launch_id);
-                    }
-                    break;
-                }
 
                 default:
                     break;
@@ -78,6 +71,7 @@ int main(int argc, char* argv[]) {
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_release_bit(&event_group, ctx->resetBit);
     task_event_group_destruct(&event_group);
     tamaTacTeardown(ctx.get());
 

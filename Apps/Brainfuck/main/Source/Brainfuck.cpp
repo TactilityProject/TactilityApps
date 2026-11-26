@@ -1,13 +1,20 @@
 #include "Brainfuck.h"
 
+#include <app/manager.h>
 #include <app/paths.h>
+#include <app/start.h>
+#include <lvgl/fonts.h>
+#include <lvgl/icons/shared.h>
+#include <lvgl/lvgl.h>
+#include <lvgl/widgets/statusline.h>
 #include <lvgl/widgets/toolbar.h>
+#include <lvgl_window_manager/dialog.h>
 
-#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /** Must match manifest.properties' app.id */
 static constexpr const char* APP_ID = "tactility.brainfuck";
@@ -21,22 +28,22 @@ struct BfExample {
 
 static const BfExample examples[] = {
     {
-        "Hello World (built-in)",
+        "Hello World",
         "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]"
         ">>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."
     },
     {
-        "Fibonacci (built-in)",
+        "Fibonacci",
         ">++++++++++>+>+[[+++++[>++++++++<-]>.<++++++[>--------<-]+<<<"
         "]>.>>[[-]<[>+<-]>>[<<+>+>-]<[>+<-[>+<-[>+<-[>+<-[>+<-[>+<-"
         "[>+<-[>+<-[>+<-[>[-]>+>+<<<-[>+<-]]]]]]]]]]]+>>>]<<<]"
     },
     {
-        "Alphabet (built-in)",
+        "Alphabet",
         "+++++[>+++++++++++++<-]++++++++++++++++++++++++++[>.+<-]"
     },
     {
-        "Beer (built-in)",
+        "Beer",
         ">++++++++++[<++++++++++>-]<->>>>>+++[>+++>+++<<-]<<<<+<[>[>+"
         ">+<<-]>>[-<<+>>]++++>+<[-<->]<[[-]>>-<<]>>[[-]<<+>>]<<[[-]>>"
         ">>>>[[-]<++++++++++<->>]<-[>+>+<<-]>[<+>-]+>[[-]<->]<<<<<<<<"
@@ -68,14 +75,18 @@ static const BfExample examples[] = {
         "<<+>>]++++>+<[-<->]<[[-]>>-<<]>>[[-]<<+>>]<<[[-]++++++++++.["
         "-]<[-]>]<+<]"
     },
+    // Unused last entry. The ELF loader doesn't relocate a pointer to one past the end of a section,
+    // which is what the end of a loop over this table would be without it.
+    { nullptr, nullptr },
 };
 
-static constexpr int NUM_EXAMPLES = sizeof(examples) / sizeof(examples[0]);
+static constexpr int NUM_EXAMPLES = sizeof(examples) / sizeof(examples[0]) - 1;
 
-/** File-scope pointer to the current window's Context, for callbacks that only carry an
- * index/path via lv_event's user_data (single-window app, same limitation as before). */
-static Context* g_ctx = nullptr;
+/* ── Files ────────────────────────────────────────────────────────── */
 
+static constexpr long MAX_SCRIPT_SIZE = 32768;
+
+/** The directory that the file selection starts in, which is created when needed */
 static bool getScriptDir(char* buf, size_t bufSize) {
     if (app_paths_get_user_data_directory(APP_ID, buf, bufSize) != ERROR_NONE) {
         return false;
@@ -87,23 +98,27 @@ static bool getScriptDir(char* buf, size_t bufSize) {
     return true;
 }
 
-static int ciStrcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
-        int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
-        if (ca != cb) return ca - cb;
-        a++; b++;
+/** @return false when the file can't be read or is too large */
+static bool readScript(const std::string& path, std::string& code) {
+    FILE* file = fopen(path.c_str(), "rb");
+    if (file == nullptr) return false;
+    fseek(file, 0, SEEK_END);
+    const long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    const bool success = size >= 0 && size <= MAX_SCRIPT_SIZE;
+    if (success) {
+        code.resize(size);
+        code.resize(fread(code.data(), 1, size, file));
     }
-    return (unsigned char)*a - (unsigned char)*b;
+    fclose(file);
+    return success;
 }
 
-static void freeScriptPaths(Context* ctx) {
-    for (int i = 0; i < ctx->scriptCount; i++) {
-        free(ctx->scriptPaths[i]);
-    }
-    free(ctx->scriptPaths);
-    ctx->scriptPaths = nullptr;
-    ctx->scriptCount = 0;
+static bool writeScript(const std::string& path, const std::string& code) {
+    FILE* file = fopen(path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const bool written = fwrite(code.data(), 1, code.size(), file) == code.size();
+    return fclose(file) == 0 && written;
 }
 
 /* ── VM Logic ─────────────────────────────────────────────────────── */
@@ -188,277 +203,287 @@ static void bfRun(BfVM& vm, const char* code) {
     }
 }
 
-static void runCode(Context* ctx, const char* code) {
-    if (!ctx->outputTa) return;
+/* ── Running ──────────────────────────────────────────────────────── */
+
+/** Requires the LVGL lock */
+static void setStatus(Context* ctx, const char* text, LvglStatuslineLevel level) {
+    if (ctx->statusline == nullptr) return;
+    lvgl_statusline_set_text(ctx->statusline, text);
+    lvgl_statusline_set_level(ctx->statusline, level);
+    lv_obj_set_hidden(ctx->statusline, false);
+}
+
+/** Runs the code in the editor. Requires the LVGL lock. */
+static void runCode(Context* ctx) {
+    if (ctx->inputTa == nullptr || ctx->outputTa == nullptr) return;
+    const char* code = lv_textarea_get_text(ctx->inputTa);
+    if (code[0] == '\0') {
+        setStatus(ctx, "Type some code first", LVGL_STATUSLINE_LEVEL_WARNING);
+        return;
+    }
+
     bfInit(ctx->vm);
     bfRun(ctx->vm, code);
 
-    constexpr int resultSize = MAX_OUTPUT + 128;
-    char* result = (char*)malloc(resultSize);
-    if (!result) {
-        lv_textarea_set_text(ctx->outputTa, "Out of memory");
-        return;
-    }
-    int pos = 0;
-    int remaining;
-
-    remaining = resultSize - pos;
-    if (remaining > 0) {
-        int n = snprintf(result + pos, remaining, "> RUN (%d chars)\n", (int)strlen(code));
-        pos += (n < remaining) ? n : (remaining - 1);
-    }
-
-    if (ctx->vm.outLen > 0) {
-        remaining = resultSize - pos;
-        if (remaining > 0) {
-            int n = snprintf(result + pos, remaining, "%s\n", ctx->vm.output);
-            pos += (n < remaining) ? n : (remaining - 1);
-        }
-    }
+    lv_textarea_set_text(ctx->outputTa, ctx->vm.output);
+    lv_obj_scroll_to_y(ctx->outputTa, 0, LV_ANIM_OFF);
 
     if (ctx->vm.error) {
-        remaining = resultSize - pos;
-        if (remaining > 0) {
-            int n = snprintf(result + pos, remaining, "ERROR: %s\n", ctx->vm.errorMsg);
-            pos += (n < remaining) ? n : (remaining - 1);
-        }
+        setStatus(ctx, ctx->vm.errorMsg, LVGL_STATUSLINE_LEVEL_ERROR);
     } else {
-        remaining = resultSize - pos;
-        if (remaining > 0) {
-            int n = snprintf(result + pos, remaining, "OK (%d cycles)\n", ctx->vm.cycles);
-            pos += (n < remaining) ? n : (remaining - 1);
-        }
+        char status[64];
+        snprintf(status, sizeof(status), "%s in %d cycles", ctx->vm.outLen > 0 ? "Finished" : "Finished without output", ctx->vm.cycles);
+        setStatus(ctx, status, LVGL_STATUSLINE_LEVEL_OK);
+    }
+}
+
+/* ── Document ─────────────────────────────────────────────────────── */
+
+/** The toolbar shows the name of the file. Requires the LVGL lock. */
+static void updateTitle(Context* ctx) {
+    if (ctx->toolbar == nullptr) return;
+    const size_t slash = ctx->filePath.find_last_of('/');
+    const std::string title = ctx->filePath.empty() ? "Brainfuck" : ctx->filePath.substr(slash + 1);
+    lvgl_toolbar_set_title(ctx->toolbar, title.c_str());
+}
+
+/** Replaces the code in the editor. The widgets may not exist, e.g. while the file selection covers the window. */
+static void setDocument(Context* ctx, const std::string& code, const std::string& path) {
+    lvgl_lock();
+    ctx->code = code;
+    ctx->filePath = path;
+    ctx->vm.output[0] = '\0';
+    if (ctx->inputTa != nullptr) {
+        lv_textarea_set_text(ctx->inputTa, code.c_str());
+        lv_textarea_set_text(ctx->outputTa, "");
+        lv_obj_set_hidden(ctx->statusline, true);
+        updateTitle(ctx);
+    }
+    lvgl_unlock();
+}
+
+static void showStatus(Context* ctx, const char* text, LvglStatuslineLevel level) {
+    lvgl_lock();
+    setStatus(ctx, text, level);
+    lvgl_unlock();
+}
+
+static void save(Context* ctx, const std::string& path) {
+    lvgl_lock();
+    if (ctx->inputTa != nullptr) {
+        ctx->code = lv_textarea_get_text(ctx->inputTa);
+    }
+    const std::string code = ctx->code;
+    lvgl_unlock();
+
+    if (!writeScript(path, code)) {
+        showStatus(ctx, "Can't save the file", LVGL_STATUSLINE_LEVEL_ERROR);
+        return;
     }
 
-    lv_textarea_set_text(ctx->outputTa, result);
-    lv_obj_scroll_to_y(ctx->outputTa, LV_COORD_MAX, LV_ANIM_ON);
-    free(result);
+    lvgl_lock();
+    ctx->filePath = path;
+    updateTitle(ctx);
+    setStatus(ctx, "Saved", LVGL_STATUSLINE_LEVEL_OK);
+    lvgl_unlock();
 }
 
-/* ── View management ──────────────────────────────────────────────── */
+/* ── Dialogs ──────────────────────────────────────────────────────── */
 
-static void showMainView(Context* ctx) {
-    ctx->state = BfState::Main;
-    if (ctx->examplesList) lv_obj_set_hidden(ctx->examplesList, true);
-    if (ctx->outputTa) lv_obj_set_hidden(ctx->outputTa, false);
-    if (ctx->inputRow) lv_obj_set_hidden(ctx->inputRow, false);
-    if (ctx->clrBtn) lv_obj_set_hidden(ctx->clrBtn, false);
+static void onDialogResult(int32_t index, void* userData) {
+    // Handled on the app task, as the dialog task's stack is small
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->dialogResult = index;
+    task_event_group_signal(ctx->eventGroup, ctx->dialogBit);
 }
 
-static void showExamplesView(Context* ctx) {
-    ctx->state = BfState::Examples;
-    if (ctx->outputTa) lv_obj_set_hidden(ctx->outputTa, true);
-    if (ctx->inputRow) lv_obj_set_hidden(ctx->inputRow, true);
-    if (ctx->examplesList) lv_obj_set_hidden(ctx->examplesList, false);
-    if (ctx->clrBtn) lv_obj_set_hidden(ctx->clrBtn, true);
+static void showSelection(Context* ctx, BfDialog dialog, const char* title, const std::vector<const char*>& items, const std::vector<const char*>& icons) {
+    ctx->dialog = dialog;
+    if (window_manager_selection_dialog_with_icons(ctx->appInstanceId, title, items.data(), icons.data(),
+            (uint32_t)items.size(), onDialogResult, ctx) != ERROR_NONE) {
+        ctx->dialog = BfDialog::None;
+    }
 }
-
-/* ── Callbacks ────────────────────────────────────────────────────── */
 
 static void onRunClicked(lv_event_t* e) {
+    runCode(static_cast<Context*>(lv_event_get_user_data(e)));
+}
+
+static void onMenuClicked(lv_event_t* e) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
-    if (!ctx->inputTa) return;
-    const char* code = lv_textarea_get_text(ctx->inputTa);
-    if (code && code[0]) {
-        runCode(ctx, code);
+    std::vector<const char*> items;
+    std::vector<const char*> icons;
+    ctx->menuActions.clear();
+    auto add = [&](BfAction action, const char* label, const char* icon) {
+        ctx->menuActions.push_back(action);
+        items.push_back(label);
+        icons.push_back(icon);
+    };
+    add(BfAction::New, "New", LVGL_ICON_SHARED_NOTE_ADD);
+    add(BfAction::Open, "Open", LVGL_ICON_SHARED_FOLDER_OPEN);
+    // Saving needs a file, which "Save as" picks
+    if (!ctx->filePath.empty()) {
+        add(BfAction::Save, "Save", LVGL_ICON_SHARED_SAVE);
     }
+    add(BfAction::SaveAs, "Save as...", LVGL_ICON_SHARED_SAVE_AS);
+    add(BfAction::Examples, "Examples", LVGL_ICON_SHARED_LIST_ALT);
+    showSelection(ctx, BfDialog::Menu, "Brainfuck", items, icons);
 }
 
-static void onClearClicked(lv_event_t* e) {
-    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
-    if (ctx->outputTa) lv_textarea_set_text(ctx->outputTa, "");
-    if (ctx->inputTa) lv_textarea_set_text(ctx->inputTa, "");
-}
-
-static void onExamplesClicked(lv_event_t* e) {
-    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
-    if (ctx->state == BfState::Examples) {
-        showMainView(ctx);
-    } else {
-        showExamplesView(ctx);
-    }
-}
-
-static void onExampleSelected(lv_event_t* e) {
-    if (!g_ctx) return;
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < NUM_EXAMPLES) {
-        if (g_ctx->inputTa) lv_textarea_set_text(g_ctx->inputTa, examples[idx].code);
-        showMainView(g_ctx);
-        runCode(g_ctx, examples[idx].code);
-    }
-}
-
-static void onFileSelected(lv_event_t* e) {
-    if (!g_ctx) return;
-    const char* path = (const char*)lv_event_get_user_data(e);
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        if (g_ctx->outputTa) lv_textarea_set_text(g_ctx->outputTa, "Cannot open file");
-        showMainView(g_ctx);
-        return;
-    }
-
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    if (fsize <= 0 || fsize > 32768) {
-        fclose(f);
-        if (g_ctx->outputTa) lv_textarea_set_text(g_ctx->outputTa, "File too large or empty");
-        showMainView(g_ctx);
-        return;
-    }
-    fseek(f, 0, SEEK_SET);
-
-    char* buf = (char*)malloc(fsize + 1);
-    if (!buf) {
-        fclose(f);
-        if (g_ctx->outputTa) lv_textarea_set_text(g_ctx->outputTa, "Out of memory");
-        showMainView(g_ctx);
-        return;
-    }
-
-    size_t bytesRead = fread(buf, 1, fsize, f);
-    fclose(f);
-    buf[bytesRead] = '\0';
-
-    if (g_ctx->inputTa) lv_textarea_set_text(g_ctx->inputTa, buf);
-    showMainView(g_ctx);
-    runCode(g_ctx, buf);
-    free(buf);
-}
-
-static void onInputReady(lv_event_t* e) {
-    onRunClicked(e);
-}
-
-/* ── Script list building ─────────────────────────────────────────── */
-
-static void buildScriptList(Context* ctx, lv_obj_t* list) {
-    freeScriptPaths(ctx);
-
+static void showExamples(Context* ctx) {
+    std::vector<const char*> items;
+    std::vector<const char*> icons;
     for (int i = 0; i < NUM_EXAMPLES; i++) {
-        lv_obj_t* btn = lv_list_add_button(list, LV_SYMBOL_PLAY, examples[i].name);
-        lv_obj_add_event_cb(btn, onExampleSelected, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+        items.push_back(examples[i].name);
+        icons.push_back(LVGL_ICON_SHARED_LIST_ALT);
+    }
+    showSelection(ctx, BfDialog::Examples, "Examples", items, icons);
+}
+
+/** Starts the file selection app, whose result arrives as APP_EVENT_RESULT */
+static void selectFile(Context* ctx, bool saving) {
+    if (ctx->fileLaunchId != 0) return;
+
+    char directory[256];
+    std::string initialPath = "--path=";
+    if (getScriptDir(directory, sizeof(directory))) {
+        initialPath += directory;
+    }
+    char maxBytes[24];
+    snprintf(maxBytes, sizeof(maxBytes), "--max-bytes=%u", (unsigned)sizeof(ctx->fileBuffer));
+
+    std::vector<const char*> argv = { "--ext=bf", "--ext=b", initialPath.c_str(), maxBytes };
+    if (saving) {
+        argv.push_back("--new");
     }
 
-    char scriptDir[256];
-    if (!getScriptDir(scriptDir, sizeof(scriptDir))) {
-        lv_list_add_text(list, "No storage available for .bf files");
-        return;
+    AppStreamBinding binding = {
+        .producer_fd = STDOUT_FILENO,
+        .stream = &ctx->fileStream,
+        .buffer = ctx->fileBuffer,
+        .buffer_capacity = sizeof(ctx->fileBuffer),
+        .event_group = ctx->eventGroup,
+        .window_size = {},
+        .alias_fd = -1,
+    };
+    AppStartContext start {};
+    uint32_t instanceId = 0;
+    error_t error = app_start_context_from_id("tactility.fileselection", &start);
+    if (error == ERROR_NONE) {
+        app_start_context_set_arguments_ext(&start, (int)argv.size(), argv.data());
+        app_start_context_set_streams(&start, &binding, 1);
+        app_start_context_set_parent(&start, ctx->appInstanceId);
+        error = app_start_with_context(&start, &instanceId);
     }
-
-    DIR* dir = opendir(scriptDir);
-    if (!dir) {
-        char hint[300];
-        snprintf(hint, sizeof(hint), "Put .bf files in %s", scriptDir);
-        lv_list_add_text(list, hint);
-        return;
+    if (error == ERROR_NONE) {
+        ctx->fileLaunchId = instanceId;
+        ctx->fileSaving = saving;
+    } else {
+        showStatus(ctx, "Can't open the file selection", LVGL_STATUSLINE_LEVEL_ERROR);
     }
+}
 
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        const char* name = entry->d_name;
-        size_t len = strlen(name);
-        if (len < 3) continue;
+void brainfuckDialogResult(Context* ctx) {
+    const BfDialog dialog = ctx->dialog.exchange(BfDialog::None);
+    const int32_t index = ctx->dialogResult;
+    if (index < 0) return;
 
-        const char* ext3 = &name[len - 3];
-        const char* ext2 = &name[len - 2];
-        if (ciStrcmp(ext3, ".bf") != 0 && ciStrcmp(ext2, ".b") != 0) {
-            continue;
+    if (dialog == BfDialog::Examples && index < NUM_EXAMPLES) {
+        setDocument(ctx, examples[index].code, "");
+    } else if (dialog == BfDialog::Menu && index < (int32_t)ctx->menuActions.size()) {
+        switch (ctx->menuActions[index]) {
+            case BfAction::New: setDocument(ctx, "", ""); break;
+            case BfAction::Open: selectFile(ctx, false); break;
+            case BfAction::Save: save(ctx, ctx->filePath); break;
+            case BfAction::SaveAs: selectFile(ctx, true); break;
+            case BfAction::Examples: showExamples(ctx); break;
         }
-
-        size_t pathLen = strlen(scriptDir) + 1 + len + 1;
-        char* path = (char*)malloc(pathLen);
-        if (!path) break;
-        snprintf(path, pathLen, "%s/%s", scriptDir, name);
-
-        char** tmp = (char**)realloc(ctx->scriptPaths, sizeof(char*) * (ctx->scriptCount + 1));
-        if (!tmp) { free(path); break; }
-        ctx->scriptPaths = tmp;
-        ctx->scriptPaths[ctx->scriptCount] = path;
-
-        lv_obj_t* btn = lv_list_add_button(list, LV_SYMBOL_FILE, name);
-        lv_obj_add_event_cb(btn, onFileSelected, LV_EVENT_CLICKED, path);
-        ctx->scriptCount++;
     }
-    closedir(dir);
+}
 
-    if (ctx->scriptCount == 0) {
-        lv_list_add_text(list, "No custom scripts found on storage");
+void brainfuckFileResult(Context* ctx, uint32_t launchId, int32_t result) {
+    if (launchId != ctx->fileLaunchId) return;
+    ctx->fileLaunchId = 0;
+
+    std::string path;
+    if (result == 0) {
+        char selected[sizeof(ctx->fileBuffer)];
+        const size_t length = app_stream_read(&ctx->fileStream, selected, sizeof(selected));
+        path.assign(selected, length);
+    }
+    app_stream_unsubscribe(&ctx->fileStream);
+    app_manager_stop(launchId);
+    if (path.empty()) return;
+
+    if (ctx->fileSaving) {
+        // A new name without an extension gets one, so "Open" lists the file
+        if (path.find('.', path.find_last_of('/') + 1) == std::string::npos) {
+            path += ".bf";
+        }
+        save(ctx, path);
+    } else {
+        std::string code;
+        if (readScript(path, code)) {
+            setDocument(ctx, code, path);
+        } else {
+            showStatus(ctx, "Can't read the file (over 32 KB?)", LVGL_STATUSLINE_LEVEL_ERROR);
+        }
     }
 }
 
 /* ── Widget creation ──────────────────────────────────────────────── */
 
+static lv_obj_t* createTextArea(lv_obj_t* parent, const char* placeholder) {
+    auto* textarea = lv_textarea_create(parent);
+    lv_obj_set_width(textarea, LV_PCT(100));
+    lv_obj_set_flex_grow(textarea, 1);
+    lv_textarea_set_placeholder_text(textarea, placeholder);
+    lv_obj_set_style_text_font(textarea, lv_font_get_default(), 0);
+    return textarea;
+}
+
 void brainfuckCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
-    g_ctx = ctx;
-    ctx->state = BfState::Examples;
 
     lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(parent, 0, 0);
 
-    lv_obj_t* toolbar = lvgl_toolbar_create(parent, "Brainfuck interpreter");
-    lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
-    ctx->clrBtn = lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_TRASH, onClearClicked, ctx);
-    lv_obj_set_hidden(ctx->clrBtn, true);
-    lvgl_toolbar_add_text_button_action(toolbar, LV_SYMBOL_LIST, onExamplesClicked, ctx);
+    ctx->toolbar = lvgl_toolbar_create(parent, "");
+    updateTitle(ctx);
+    lvgl_toolbar_add_text_button_action(ctx->toolbar, LV_SYMBOL_PLAY, onRunClicked, ctx);
+    lv_obj_t* menu = lvgl_toolbar_add_text_button_action(ctx->toolbar, LVGL_ICON_SHARED_MORE_VERT, onMenuClicked, ctx);
+    lv_obj_set_style_text_font(menu, lvgl_get_shared_icon_default_font(), 0);
 
-    lv_obj_t* cont = lv_obj_create(parent);
-    lv_obj_set_width(cont, LV_PCT(100));
-    lv_obj_set_flex_grow(cont, 1);
-    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(cont, 4, 0);
-    lv_obj_set_style_pad_gap(cont, 4, 0);
-    lv_obj_set_scrollable(cont, false);
-    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_t* content = lv_obj_create(parent);
+    lv_obj_set_width(content, LV_PCT(100));
+    lv_obj_set_flex_grow(content, 1);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(content, 4, 0);
+    lv_obj_set_style_pad_gap(content, 4, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_scrollable(content, false);
 
-    ctx->outputTa = lv_textarea_create(cont);
-    lv_textarea_set_text(ctx->outputTa, "");
+    ctx->inputTa = createTextArea(content, "Type code here, or pick an example from the menu");
+    lv_textarea_set_text(ctx->inputTa, ctx->code.c_str());
+
+    ctx->outputTa = createTextArea(content, "Output");
+    lv_textarea_set_text(ctx->outputTa, ctx->vm.output);
     lv_textarea_set_cursor_click_pos(ctx->outputTa, false);
     lv_obj_add_state(ctx->outputTa, LV_STATE_DISABLED);
-    lv_obj_set_width(ctx->outputTa, LV_PCT(100));
-    lv_obj_set_flex_grow(ctx->outputTa, 1);
-    lv_obj_set_style_text_font(ctx->outputTa, lv_font_get_default(), 0);
-    lv_obj_set_hidden(ctx->outputTa, true);
+    // Stay disabled (read-only), without the theme fading the text
+    lv_obj_set_style_opa(ctx->outputTa, LV_OPA_COVER, LV_STATE_DISABLED);
 
-    ctx->inputRow = lv_obj_create(cont);
-    lv_obj_set_size(ctx->inputRow, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(ctx->inputRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(ctx->inputRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(ctx->inputRow, 0, 0);
-    lv_obj_set_style_pad_gap(ctx->inputRow, 4, 0);
-    lv_obj_set_scrollable(ctx->inputRow, false);
-    lv_obj_set_style_border_width(ctx->inputRow, 0, 0);
-    lv_obj_set_hidden(ctx->inputRow, true);
-
-    ctx->inputTa = lv_textarea_create(ctx->inputRow);
-    lv_textarea_set_placeholder_text(ctx->inputTa, "++++++[>++++++++++<-]>+++++.");
-    lv_textarea_set_one_line(ctx->inputTa, false);
-    lv_obj_set_flex_grow(ctx->inputTa, 1);
-    lv_obj_set_height(ctx->inputTa, 50);
-    lv_obj_set_style_text_font(ctx->inputTa, lv_font_get_default(), 0);
-    lv_obj_add_event_cb(ctx->inputTa, onInputReady, LV_EVENT_READY, ctx);
-
-    lv_obj_t* runBtn = lv_button_create(ctx->inputRow);
-    lv_obj_t* runLbl = lv_label_create(runBtn);
-    lv_label_set_text(runLbl, LV_SYMBOL_PLAY);
-    lv_obj_add_event_cb(runBtn, onRunClicked, LV_EVENT_CLICKED, ctx);
-
-    ctx->examplesList = lv_list_create(cont);
-    lv_obj_set_width(ctx->examplesList, LV_PCT(100));
-    lv_obj_set_flex_grow(ctx->examplesList, 1);
-    buildScriptList(ctx, ctx->examplesList);
+    ctx->statusline = lvgl_statusline_create(parent);
+    lv_obj_set_hidden(ctx->statusline, true);
 }
 
-void brainfuckTeardown(Context* ctx) {
-    freeScriptPaths(ctx);
-    ctx->outputTa = nullptr;
+void brainfuckDestroyWidgets(void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    // Kept for when the window is rebuilt
+    ctx->code = lv_textarea_get_text(ctx->inputTa);
     ctx->inputTa = nullptr;
-    ctx->inputRow = nullptr;
-    ctx->examplesList = nullptr;
-    ctx->clrBtn = nullptr;
-    if (g_ctx == ctx) {
-        g_ctx = nullptr;
-    }
+    ctx->outputTa = nullptr;
+    ctx->statusline = nullptr;
+    ctx->toolbar = nullptr;
 }

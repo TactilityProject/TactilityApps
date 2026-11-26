@@ -15,8 +15,7 @@ extern "C" {
  *********************/
 
 #define ELEVENTWO_BG_COLOR             lv_color_hex(0xb3a397)
-#define ELEVENTWO_TEXT_BLACK_COLOR     lv_color_hex(0x6c635b)
-#define ELEVENTWO_TEXT_WHITE_COLOR     lv_color_hex(0xf8f5f0)
+#define ELEVENTWO_TEXT_COLOR           lv_color_hex(0x3b342f)
 #define ELEVENTWO_NUMBER_EMPTY_COLOR   lv_color_hex(0xc7b9ac)
 #define ELEVENTWO_NUMBER_2_COLOR       lv_color_hex(0xeee4da)
 #define ELEVENTWO_NUMBER_4_COLOR       lv_color_hex(0xede0c8)

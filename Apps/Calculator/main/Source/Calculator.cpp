@@ -1,6 +1,8 @@
 #include "Calculator.h"
 
 #include <lvgl/widgets/toolbar.h>
+#include <tactility/device.h>
+#include <tactility/drivers/keyboard.h>
 
 #include <cstdio>
 #include <cstring>
@@ -42,6 +44,11 @@ static bool infixToRPN(const std::string& infix, std::deque<std::string>& output
                     break;
                 }
                 ++i;
+            }
+            if (i + 2 < infix.length() && infix[i] == 'e' && (infix[i + 1] == '+' || infix[i + 1] == '-') && isdigit((unsigned char)infix[i + 2])) {
+                token += infix.substr(i, 2);
+                i += 2;
+                while (i < infix.length() && isdigit((unsigned char)infix[i])) token += infix[i++];
             }
             if (i < infix.length() && infix[i] == '.') return false;
             if (token.find_first_of("0123456789") == std::string::npos) return false; // no digits, e.g. "."
@@ -131,33 +138,67 @@ static bool computeFormula(Context* ctx, double& result) {
     return evaluateRPN(std::move(rpn), result);
 }
 
+/** The index of "=" in the button map */
+static constexpr uint32_t EQUALS_BUTTON = 19;
+
+/** Shows the input, and the last calculation with its result above it */
+static void updateDisplay(Context* ctx) {
+    lv_label_set_text(ctx->displayLabel, ctx->newInput ? "0" : ctx->formulaBuffer);
+    lv_label_set_text(ctx->historyLabel, ctx->history.c_str());
+    lv_label_set_text(ctx->resultLabel, ctx->historyResult.c_str());
+}
+
+/** "1+2*-3" becomes "1 + 2 * -3" */
+static std::string spaced(const char* formula) {
+    std::string result;
+    char previous = '\0';
+    for (const char* c = formula; *c != '\0'; c++) {
+        const bool binary = strchr("+-*/", *c) != nullptr && (isdigit((unsigned char)previous) || previous == '.' || previous == ')');
+        if (binary) result += ' ';
+        result += *c;
+        if (binary) result += ' ';
+        previous = *c;
+    }
+    return result;
+}
+
+/** Clears the input. The last calculation and its result stay. */
 static void resetCalculator(Context* ctx) {
     memset(ctx->formulaBuffer, 0, sizeof(ctx->formulaBuffer));
-    lv_label_set_text(ctx->displayLabel, "0");
-    lv_label_set_text(ctx->resultLabel, "");
     ctx->newInput = true;
-    ctx->hasLastResult = false;
+    ctx->showingResult = false;
+    updateDisplay(ctx);
 }
 
 static void evaluateExpression(Context* ctx) {
+    // Nothing was entered, or nothing changed since the last result
+    if (ctx->newInput || ctx->showingResult) return;
+
     double result;
+    ctx->history = spaced(ctx->formulaBuffer);
     if (!computeFormula(ctx, result)) {
-        lv_label_set_text(ctx->displayLabel, "Error");
-        lv_label_set_text(ctx->resultLabel, ctx->formulaBuffer);
-        ctx->newInput = true;
+        // The input stays, so it can be corrected
+        ctx->historyResult = "= Error";
+        updateDisplay(ctx);
         return;
     }
 
-    char equationBuffer[192];
-    snprintf(equationBuffer, sizeof(equationBuffer), "%s = %.8g", ctx->formulaBuffer, result);
-
-    snprintf(ctx->formulaBuffer, sizeof(ctx->formulaBuffer), "%.8g", result);
     snprintf(ctx->lastResult, sizeof(ctx->lastResult), "%.8g", result);
     ctx->hasLastResult = true;
+    ctx->historyResult = std::string("= ") + ctx->lastResult;
+    // The result is the input of the next calculation
+    snprintf(ctx->formulaBuffer, sizeof(ctx->formulaBuffer), "%s", ctx->lastResult);
+    ctx->showingResult = true;
+    updateDisplay(ctx);
+}
 
-    lv_label_set_text(ctx->displayLabel, "0");
-    lv_label_set_text(ctx->resultLabel, equationBuffer);
-    ctx->newInput = true;
+static void deleteLast(Context* ctx) {
+    if (ctx->newInput) return;
+    const size_t length = strlen(ctx->formulaBuffer);
+    if (length > 0) ctx->formulaBuffer[length - 1] = '\0';
+    ctx->showingResult = false;
+    ctx->newInput = ctx->formulaBuffer[0] == '\0';
+    updateDisplay(ctx);
 }
 
 static void handleInput(Context* ctx, const char* txt) {
@@ -182,13 +223,19 @@ static void handleInput(Context* ctx, const char* txt) {
         txt = resToken;
     }
 
+    // An operator continues from the last result, anything else replaces it
+    if (ctx->showingResult) {
+        ctx->newInput = strchr("+-*/", txt[0]) == nullptr || txt[1] != '\0';
+        ctx->showingResult = false;
+    }
+
     if (strlen(ctx->formulaBuffer) + strlen(txt) < sizeof(ctx->formulaBuffer) - 1) {
         if (ctx->newInput) {
             memset(ctx->formulaBuffer, 0, sizeof(ctx->formulaBuffer));
             ctx->newInput = false;
         }
         strcat(ctx->formulaBuffer, txt);
-        lv_label_set_text(ctx->displayLabel, ctx->formulaBuffer);
+        updateDisplay(ctx);
     }
 }
 
@@ -203,6 +250,48 @@ static void onButtonPressed(lv_event_t* e) {
     }
 }
 
+/** Typed keys. Arrows and Enter are handled by the button matrix, which presses its selected button. */
+static void onKey(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    lv_obj_t* buttonmatrix = lv_event_get_current_target_obj(e);
+    const uint32_t key = lv_event_get_key(e);
+
+    if (key == LV_KEY_ESC) {
+        // Leave key mode, so the toolbar can be reached
+        lv_group_t* group = lv_obj_get_group(buttonmatrix);
+        if (group) lv_group_set_editing(group, false);
+        return;
+    }
+
+    if (key == LV_KEY_BACKSPACE) {
+        deleteLast(ctx);
+    } else if (key == LV_KEY_DEL || key == 'c' || key == 'C') {
+        resetCalculator(ctx);
+    } else if (key == '=') {
+        evaluateExpression(ctx);
+    } else if (key == 'r' || key == 'R') {
+        handleInput(ctx, "RES");
+    } else if (key > ' ' && key < 127) {
+        char text[2] = { static_cast<char>(key), '\0' };
+        if (text[0] == 'x' || text[0] == 'X') text[0] = '*';
+        if (text[0] == ',') text[0] = '.';
+        if (strchr("0123456789.()+-*/", text[0]) == nullptr) return;
+        handleInput(ctx, text);
+    } else {
+        return;
+    }
+
+    // So that Enter calculates after typing
+    lv_buttonmatrix_set_selected_button(buttonmatrix, EQUALS_BUTTON);
+}
+
+static lv_obj_t* createOneLineLabel(lv_obj_t* parent) {
+    lv_obj_t* label = lv_label_create(parent);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_height(label, lv_font_get_line_height(lv_obj_get_style_text_font(label, LV_PART_MAIN)));
+    return label;
+}
+
 void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
     auto* ctx = static_cast<Context*>(userData);
 
@@ -214,28 +303,30 @@ void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_align(toolbar, LV_ALIGN_TOP_MID, 0, 0);
 
     lv_obj_t* wrapper = lv_obj_create(parent);
-    lv_obj_set_flex_flow(wrapper, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(wrapper, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-    lv_obj_set_width(wrapper, LV_PCT(100));
-    lv_obj_set_height(wrapper, LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(wrapper, 0);
-    lv_obj_set_style_pad_top(wrapper, 4, LV_PART_MAIN);
-    lv_obj_set_style_pad_bottom(wrapper, 4, LV_PART_MAIN);
-    lv_obj_set_style_pad_left(wrapper, 10, LV_PART_MAIN);
-    lv_obj_set_style_pad_right(wrapper, 10, LV_PART_MAIN);
-    lv_obj_set_style_pad_column(wrapper, 40, LV_PART_MAIN);
+    lv_obj_set_flex_flow(wrapper, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(wrapper, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(wrapper, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(wrapper, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(wrapper, 2, LV_PART_MAIN);
     lv_obj_set_style_border_width(wrapper, 0, 0);
     lv_obj_set_scrollable(wrapper, false);
 
-    ctx->displayLabel = lv_label_create(wrapper);
-    lv_label_set_text(ctx->displayLabel, "0");
-    lv_obj_set_width(ctx->displayLabel, LV_SIZE_CONTENT);
-    lv_obj_set_align(ctx->displayLabel, LV_ALIGN_LEFT_MID);
+    // The last calculation on the left, its result on the right
+    lv_obj_t* history = lv_obj_create(wrapper);
+    lv_obj_remove_style_all(history);
+    lv_obj_set_size(history, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(history, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(history, 10, LV_PART_MAIN);
+    lv_obj_set_scrollable(history, false);
 
-    ctx->resultLabel = lv_label_create(wrapper);
-    lv_label_set_text(ctx->resultLabel, "");
-    lv_obj_set_width(ctx->resultLabel, LV_SIZE_CONTENT);
-    lv_obj_set_align(ctx->resultLabel, LV_ALIGN_RIGHT_MID);
+    // Takes the space that the result leaves, and is cut off with dots when that isn't enough
+    ctx->historyLabel = createOneLineLabel(history);
+    lv_obj_set_width(ctx->historyLabel, 0);
+    lv_obj_set_flex_grow(ctx->historyLabel, 1);
+    ctx->resultLabel = lv_label_create(history);
+
+    ctx->displayLabel = lv_label_create(wrapper);
+    updateDisplay(ctx);
 
     static const char* btn_map[] = {
         "(", ")", "C", "/", "\n",
@@ -254,14 +345,17 @@ void calculatorCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_border_width(buttonmatrix, 2, LV_PART_MAIN);
     lv_obj_set_style_bg_color(buttonmatrix, lv_palette_main(LV_PALETTE_BLUE), LV_PART_ITEMS);
 
-    if (lv_display_get_horizontal_resolution(nullptr) <= 240 || lv_display_get_vertical_resolution(nullptr) <= 240) {
-        //small screens
-        lv_obj_set_size(buttonmatrix, lv_pct(100), lv_pct(60));
-    } else {
-        //large screens
-        lv_obj_set_size(buttonmatrix, lv_pct(100), lv_pct(80));
-    }
-    lv_obj_align(buttonmatrix, LV_ALIGN_BOTTOM_MID, 0, -5);
+    lv_obj_set_width(buttonmatrix, LV_PCT(100));
+    lv_obj_set_flex_grow(buttonmatrix, 1);
 
     lv_obj_add_event_cb(buttonmatrix, onButtonPressed, LV_EVENT_VALUE_CHANGED, ctx);
+    lv_obj_add_event_cb(buttonmatrix, onKey, LV_EVENT_KEY, ctx);
+
+    lv_group_t* group = lv_group_get_default();
+    if (group != nullptr && device_has_active_by_type(&KEYBOARD_TYPE)) {
+        lv_group_add_obj(group, buttonmatrix);
+        lv_group_focus_obj(buttonmatrix);
+        lv_group_set_editing(group, true);
+        lv_buttonmatrix_set_selected_button(buttonmatrix, EQUALS_BUTTON);
+    }
 }

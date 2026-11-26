@@ -50,6 +50,11 @@ uint32_t epub_get_file_count_c(epub_reader_c* reader);
 const char* epub_get_filename_c(epub_reader_c* reader, uint32_t index);
 
 /**
+ * Return the uncompressed size of a named file inside the EPUB archive, or 0 if it isn't found.
+ */
+uint32_t epub_get_file_size_c(epub_reader_c* reader, const char* filename);
+
+/**
  * Open a named file inside the EPUB archive for streaming.
  * Returns a stream context on success, or NULL if:
  *   - reader or filename is NULL

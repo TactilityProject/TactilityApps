@@ -109,7 +109,7 @@ Ball speed increases by +0.15 for every 5 bricks destroyed, and +0.3 per level.
 
 ## Controls
 
-**Touchscreen:** Touch/drag to move paddle, tap to launch ball or release caught ball
+**Touchscreen:** Touch/drag to move paddle, tap to launch ball or release caught ball. The playfield shrinks to leave room below it for your thumb; using the keyboard or trackball restores the full size
 **Trackball:** Move trackball left and right to move paddle, press to launch ball or release caught ball
 
 **Keyboard:**

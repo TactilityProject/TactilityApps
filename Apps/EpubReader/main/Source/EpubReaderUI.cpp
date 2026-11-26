@@ -1,10 +1,20 @@
 #include "EpubReader.h"
+#include <app/event.h>
+#include <app/manager.h>
 #include <app/paths.h>
+#include <app/start.h>
+#include <lvgl/fonts.h>
+#include <lvgl/lvgl.h>
+#include <lvgl/widgets/list.h>
 #include <lvgl/widgets/toolbar.h>
+#include <lvgl_window_manager/dialog.h>
+#include <tactility/device.h>
+#include <tactility/drivers/keyboard.h>
+#include <tactility/drivers/trackball.h>
 #include <tactility/log.h>
 #include <esp_heap_caps.h>
-#include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -24,49 +34,6 @@ static lv_font_t* s_fontRegular    = nullptr;
 static lv_font_t* s_fontItalic     = nullptr;
 static lv_font_t* s_fontBold       = nullptr;
 static lv_font_t* s_fontBoldItalic = nullptr;
-
-#define LVGL_SYMBOL_BOOK "\xEF\x94\xBE"   // U+F53E (MaterialSymbols: book_2)
-#define LVGL_SYMBOL_TEXT "\xEF\x87\x86"   // U+F1C6 (MaterialSymbols: text_snippet)
-
-// lv_list_add_btn places the icon image at child 0 and the text label at child 1.
-// Centralise that assumption here so there's one place to update if LVGL changes.
-static void setListBtnLongMode(lv_obj_t* btn, lv_label_long_mode_t mode) {
-    lv_obj_t* lbl = lv_obj_get_child(btn, 1);
-    if (lbl) lv_label_set_long_mode(lbl, mode);
-}
-
-// ---------------------------------------------------------------------------
-// Toolbar helper
-// ---------------------------------------------------------------------------
-
-void setReaderToolbarButtons(Context* ctx) {
-    lvgl_toolbar_clear_actions(ctx->toolbar_);
-    lvgl_toolbar_add_text_button_action(ctx->toolbar_, LV_SYMBOL_PREV, onPrevPressed, ctx);
-    if (!ctx->textMode_) {
-        lvgl_toolbar_add_text_button_action(ctx->toolbar_, LV_SYMBOL_LIST, onTocPressed, ctx);
-    }
-    lvgl_toolbar_add_text_button_action(ctx->toolbar_, LV_SYMBOL_NEXT, onNextPressed, ctx);
-    lvgl_toolbar_add_text_button_action(ctx->toolbar_, LV_SYMBOL_DIRECTORY, onBrowsePressed, ctx);
-}
-
-void setBrowserToolbarButtons(Context* ctx) {
-    lvgl_toolbar_clear_actions(ctx->toolbar_);
-    // Show "Use Folder" button when the current browse path isn't already the saved books folder
-    if (ctx->browsePath_ != ctx->booksPath_) {
-        lvgl_toolbar_add_text_button_action(ctx->toolbar_, LV_SYMBOL_DIRECTORY, onSetBooksFolder, ctx);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// UI builders
-// ---------------------------------------------------------------------------
-
-static const lv_font_t* selectIconFont() {
-    lv_coord_t w = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t h = lv_display_get_vertical_resolution(nullptr);
-    bool isLarge = w >= 480 || h >= 320;
-    return isLarge ? &material_symbols_shared_32 : &material_symbols_shared_20;
-}
 
 const lv_font_t* selectContentFont(bool italic, bool bold) {
     const lv_font_t* f = bold ? (italic ? s_fontBoldItalic : s_fontBold)
@@ -137,47 +104,6 @@ void unloadFonts() {
     lv_font_t** ptrs[] = { &s_fontRegular, &s_fontItalic, &s_fontBold, &s_fontBoldItalic };
     for (auto* p : ptrs) {
         if (*p) { lv_binfont_destroy(*p); *p = nullptr; }
-    }
-}
-
-void buildReaderUI(Context* ctx, lv_obj_t* parent) {
-    lv_obj_t* scroll = lv_obj_create(parent);
-    lv_obj_set_width(scroll, LV_PCT(100));
-    lv_obj_set_flex_grow(scroll, 1);
-    lv_obj_set_style_pad_all(scroll, 6, 0);
-    lv_obj_set_style_border_width(scroll, 0, 0);
-
-    // Tap left half = prev, right half = next.
-    // LV_EVENT_CLICKED only fires on press+release with minimal movement,
-    // so it won't conflict with vertical scrolling in text mode.
-    lv_obj_add_event_cb(scroll, onReaderTap, LV_EVENT_CLICKED, ctx);
-
-    if (ctx->textMode_) {
-        // Plain text file: single label, Prev/Next scroll by screen height.
-        ctx->contentWidget_ = lv_label_create(scroll);
-        lv_obj_set_width(ctx->contentWidget_, LV_PCT(100));
-        lv_label_set_long_mode(ctx->contentWidget_, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_set_style_text_font(ctx->contentWidget_, selectContentFont(false, false), 0);
-        lv_label_set_text(ctx->contentWidget_, ctx->pageContent_.c_str());
-        lv_obj_scroll_to_y(scroll, (lv_coord_t)ctx->pageOffset_, LV_ANIM_OFF);
-        saveProgress(ctx);
-    } else if (ctx->epub_) {
-        // EPUB: transparent flex-column container; renderPage() fills it with
-        // per-paragraph labels (one per paragraph, with individual alignment).
-        ctx->contentWidget_ = lv_obj_create(scroll);
-        lv_obj_set_width(ctx->contentWidget_, LV_PCT(100));
-        lv_obj_set_height(ctx->contentWidget_, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(ctx->contentWidget_, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_all(ctx->contentWidget_, 0, 0);
-        // One line-height of gap between paragraphs keeps all paragraph tops on
-        // exact lineH-multiple boundaries - required for snapStep to work cleanly.
-        lv_obj_set_style_pad_row(ctx->contentWidget_,
-            (lv_coord_t)lv_font_get_line_height(selectContentFont(false, false)), 0);
-        lv_obj_set_style_border_width(ctx->contentWidget_, 0, 0);
-        lv_obj_set_style_bg_opa(ctx->contentWidget_, LV_OPA_TRANSP, 0);
-        lv_obj_set_scrollable(ctx->contentWidget_, false);
-        lv_obj_set_clickable(ctx->contentWidget_, false);
-        loadChapter(ctx, ctx->currentSpineIndex_, +1);
     }
 }
 
@@ -298,245 +224,420 @@ void renderSlice(Context* ctx, const std::string& slice) {
     }
 }
 
-void buildBrowserUI(Context* ctx, lv_obj_t* parent) {
-    // When at the configured books folder, show the shelf instead of the file list
-    if (!ctx->booksPath_.empty() && ctx->browsePath_ == ctx->booksPath_) {
-        buildShelfUI(ctx, parent);
+// ---------------------------------------------------------------------------
+// Dialogs and file selection
+// ---------------------------------------------------------------------------
+
+static void onDialogResult(int32_t index, void* userData) {
+    // Handled on the app task: loading a chapter needs more stack than the dialog task has
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->dialogResult_ = index;
+    task_event_group_signal(ctx->eventGroup_, ctx->dialogBit_);
+}
+
+static void showSelection(Context* ctx, ReaderDialog dialog, const char* title, const std::vector<const char*>& items) {
+    ctx->dialog_ = dialog;
+    if (window_manager_selection_dialog(ctx->appInstanceId, title, items.data(), (uint32_t)items.size(), onDialogResult, ctx) != ERROR_NONE) {
+        ctx->dialog_ = ReaderDialog::None;
+    }
+}
+
+static bool hasContents(Context* ctx) {
+    return ctx->epub_ && !ctx->epub_->getToc().empty();
+}
+
+static void showContents(Context* ctx) {
+    if (!hasContents(ctx)) return;
+    std::vector<const char*> items;
+    for (const auto& item : ctx->epub_->getToc()) {
+        items.push_back(item.title.c_str());
+    }
+    showSelection(ctx, ReaderDialog::Contents, "Table of Contents", items);
+}
+
+static void showMenu(Context* ctx) {
+    std::vector<const char*> items;
+    ctx->menuActions_.clear();
+    auto add = [&](MenuAction action, const char* label) {
+        ctx->menuActions_.push_back(action);
+        items.push_back(label);
+    };
+    if (hasContents(ctx)) add(MenuAction::Contents, "Contents");
+    add(MenuAction::OpenFile, "Open file");
+    add(MenuAction::CloseBook, "Close book");
+    showSelection(ctx, ReaderDialog::Menu, "Book", items);
+}
+
+void startFileSelection(Context* ctx) {
+    if (ctx->fileLaunchId_ != 0) return;
+
+    char maxBytes[24];
+    snprintf(maxBytes, sizeof(maxBytes), "--max-bytes=%u", (unsigned)sizeof(ctx->fileBuffer_));
+    // Without a --path argument, browsing starts at paths_get_root_path()
+    const char* argv[] = { "--ext=epub", "--ext=txt", maxBytes };
+
+    AppStreamBinding binding = {
+        .producer_fd = STDOUT_FILENO,
+        .stream = &ctx->fileStream_,
+        .buffer = ctx->fileBuffer_,
+        .buffer_capacity = sizeof(ctx->fileBuffer_),
+        .event_group = ctx->eventGroup_,
+        .window_size = {},
+        .alias_fd = -1,
+    };
+    AppStartContext start {};
+    uint32_t instanceId = 0;
+    error_t error = app_start_context_from_id("tactility.fileselection", &start);
+    if (error == ERROR_NONE) {
+        app_start_context_set_arguments_ext(&start, 3, argv);
+        app_start_context_set_streams(&start, &binding, 1);
+        app_start_context_set_parent(&start, ctx->appInstanceId);
+        error = app_start_with_context(&start, &instanceId);
+    }
+    if (error == ERROR_NONE) {
+        ctx->fileLaunchId_ = instanceId;
+    } else {
+        LOG_E(TAG, "Failed to start file selection: %d", error);
+    }
+}
+
+void handleFileResult(Context* ctx, uint32_t launchId, int32_t result) {
+    if (launchId != ctx->fileLaunchId_) return;
+    ctx->fileLaunchId_ = 0;
+
+    std::string path;
+    if (result == 0) {
+        char selected[sizeof(ctx->fileBuffer_)];
+        const size_t length = app_stream_read(&ctx->fileStream_, selected, sizeof(selected));
+        path.assign(selected, length);
+    }
+    app_stream_unsubscribe(&ctx->fileStream_);
+    app_manager_stop(launchId);
+
+    if (!path.empty()) {
+        lvgl_lock();
+        openBook(ctx, path);
+        showView(ctx);
+        lvgl_unlock();
+    }
+}
+
+void handleDialogResult(Context* ctx) {
+    const ReaderDialog dialog = ctx->dialog_.exchange(ReaderDialog::None);
+    const int32_t index = ctx->dialogResult_;
+    if (index < 0) return;
+
+    if (dialog == ReaderDialog::Contents) {
+        lvgl_lock();
+        if (ctx->epub_ && index < (int32_t)ctx->epub_->getToc().size()) {
+            const std::string href = ctx->epub_->getToc()[index].href;
+            const auto& spine = ctx->epub_->getSpine();
+            for (size_t i = 0; i < spine.size(); ++i) {
+                if (spine[i].href == href) {
+                    loadChapter(ctx, (int)i, 0);
+                    break;
+                }
+            }
+        }
+        lvgl_unlock();
+    } else if (dialog == ReaderDialog::Menu && index < (int32_t)ctx->menuActions_.size()) {
+        switch (ctx->menuActions_[index]) {
+            case MenuAction::Contents:
+                lvgl_lock();
+                showContents(ctx);
+                lvgl_unlock();
+                break;
+            case MenuAction::OpenFile:
+                startFileSelection(ctx);
+                break;
+            case MenuAction::CloseBook:
+                lvgl_lock();
+                closeBook(ctx);
+                showView(ctx);
+                lvgl_unlock();
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Widget events
+// ---------------------------------------------------------------------------
+
+void asyncShowView(void* data) {
+    showView(static_cast<Context*>(data));
+}
+
+static void onExitPressed(lv_event_t* e) {
+    app_event_emit_close(static_cast<Context*>(lv_event_get_user_data(e))->appInstanceId);
+}
+
+/** From a book to the library */
+static void goBack(Context* ctx) {
+    closeBook(ctx);
+    // The widgets can't be rebuilt from their own event
+    lv_async_call(asyncShowView, ctx);
+}
+
+static void onBackPressed(lv_event_t* e) {
+    goBack(static_cast<Context*>(lv_event_get_user_data(e)));
+}
+
+static void onOpenFilePressed(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    task_event_group_signal(ctx->eventGroup_, ctx->openFileBit_);
+}
+
+static void onContentsPressed(lv_event_t* e) {
+    showContents(static_cast<Context*>(lv_event_get_user_data(e)));
+}
+
+static void onMenuPressed(lv_event_t* e) {
+    showMenu(static_cast<Context*>(lv_event_get_user_data(e)));
+}
+
+static void onRecentPressed(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    const auto index = reinterpret_cast<uintptr_t>(lv_obj_get_user_data(lv_event_get_current_target_obj(e)));
+    if (index < ctx->recents_.size()) {
+        openBook(ctx, ctx->recents_[index].path);
+        lv_async_call(asyncShowView, ctx);
+    }
+}
+
+/** Left half turns back, right half forward. A key press without a position opens the menu. */
+static void onReaderTap(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    lv_indev_t* indev = lv_indev_active();
+    if (!indev) return;
+    if (lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER) {
+        showMenu(ctx);
+        return;
+    }
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+    if (pt.x < lv_display_get_horizontal_resolution(nullptr) / 2) doPrev(ctx);
+    else doNext(ctx);
+}
+
+static void onReaderScrolled(lv_event_t* e) {
+    rememberPosition(static_cast<Context*>(lv_event_get_user_data(e)));
+}
+
+static void onReaderKey(lv_event_t* e) {
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
+    switch (lv_event_get_key(e)) {
+        case LV_KEY_LEFT:
+        case LV_KEY_UP:
+            doPrev(ctx);
+            break;
+        case LV_KEY_RIGHT:
+        case LV_KEY_DOWN:
+        case ' ':
+            doNext(ctx);
+            break;
+        case LV_KEY_ESC:
+            goBack(ctx);
+            break;
+        default:
+            break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
+
+static void buildLibraryUI(Context* ctx, lv_obj_t* parent) {
+    if (!ctx->libraryError_.empty()) {
+        lv_obj_t* error = lv_label_create(parent);
+        lv_obj_set_width(error, LV_PCT(100));
+        lv_obj_set_style_pad_all(error, 6, 0);
+        lv_label_set_long_mode(error, LV_LABEL_LONG_MODE_WRAP);
+        lv_label_set_text(error, ctx->libraryError_.c_str());
+    }
+
+    if (ctx->recents_.empty()) {
+        lv_obj_t* empty = lv_label_create(parent);
+        lv_obj_set_width(empty, LV_PCT(100));
+        lv_obj_set_flex_grow(empty, 1);
+        lv_obj_set_style_pad_all(empty, 8, 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_MODE_WRAP);
+        lv_label_set_text(empty, "No books yet. Open an .epub or .txt file.");
+    } else {
+        lv_obj_t* list = lvgl_list_create(parent);
+        lv_obj_set_width(list, LV_PCT(100));
+        lv_obj_set_flex_grow(list, 1);
+        for (size_t i = 0; i < ctx->recents_.size(); i++) {
+            const RecentBook& book = ctx->recents_[i];
+            lv_obj_t* button = lvgl_list_add_button(list, nullptr, nullptr);
+            lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
+            lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<uintptr_t>(i)));
+            lv_obj_add_event_cb(button, onRecentPressed, LV_EVENT_SHORT_CLICKED, ctx);
+
+            lv_obj_t* title = lv_label_create(button);
+            lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_height(title, lv_font_get_line_height(lv_obj_get_style_text_font(title, LV_PART_MAIN)));
+            lv_obj_set_width(title, 0);
+            lv_obj_set_flex_grow(title, 1);
+            lv_label_set_text(title, book.title.c_str());
+
+            lv_obj_t* percent = lv_label_create(button);
+            lv_label_set_text_fmt(percent, "%d%%", book.percent);
+            lv_obj_set_style_text_opa(percent, LV_OPA_70, 0);
+        }
+        lvgl_list_hide_last_divider(list);
+    }
+
+    lv_obj_t* open = lv_button_create(parent);
+    lv_obj_set_width(open, LV_PCT(100));
+    lv_obj_add_event_cb(open, onOpenFilePressed, LV_EVENT_SHORT_CLICKED, ctx);
+    lv_obj_t* label = lv_label_create(open);
+    lv_label_set_text(label, "Open file");
+    lv_obj_center(label);
+}
+
+static void buildReaderUI(Context* ctx, lv_obj_t* parent) {
+    // Loading a chapter resets the position, so it's restored afterwards
+    const size_t offset = ctx->pageOffset_;
+
+    lv_obj_t* scroll = lv_obj_create(parent);
+    lv_obj_set_width(scroll, LV_PCT(100));
+    lv_obj_set_flex_grow(scroll, 1);
+    lv_obj_set_style_pad_all(scroll, 6, 0);
+    lv_obj_set_style_border_width(scroll, 0, 0);
+
+    // LV_EVENT_CLICKED only fires on press+release with minimal movement,
+    // so it won't conflict with vertical scrolling.
+    lv_obj_add_event_cb(scroll, onReaderTap, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(scroll, onReaderKey, LV_EVENT_KEY, ctx);
+    // Dragging scrolls too
+    lv_obj_add_event_cb(scroll, onReaderScrolled, LV_EVENT_SCROLL_END, ctx);
+
+    ctx->statusLabel_ = lv_label_create(parent);
+    lv_obj_set_width(ctx->statusLabel_, LV_PCT(100));
+    lv_obj_set_style_pad_hor(ctx->statusLabel_, 6, 0);
+    lv_obj_set_style_text_align(ctx->statusLabel_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(ctx->statusLabel_, lvgl_get_text_font(FONT_SIZE_SMALL), 0);
+    lv_obj_set_style_text_opa(ctx->statusLabel_, LV_OPA_70, 0);
+    lv_label_set_text(ctx->statusLabel_, "");
+
+    if (ctx->textMode_) {
+        // Plain text file: single label, page turns scroll by screen height.
+        ctx->contentWidget_ = lv_label_create(scroll);
+        lv_obj_set_width(ctx->contentWidget_, LV_PCT(100));
+        lv_label_set_long_mode(ctx->contentWidget_, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_set_style_text_font(ctx->contentWidget_, selectContentFont(false, false), 0);
+        lv_label_set_text(ctx->contentWidget_, ctx->pageContent_.c_str());
+    } else if (ctx->epub_) {
+        // EPUB: transparent flex-column container; renderPage() fills it with
+        // per-paragraph labels (one per paragraph, with individual alignment).
+        ctx->contentWidget_ = lv_obj_create(scroll);
+        lv_obj_set_width(ctx->contentWidget_, LV_PCT(100));
+        lv_obj_set_height(ctx->contentWidget_, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(ctx->contentWidget_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_all(ctx->contentWidget_, 0, 0);
+        // One line-height of gap between paragraphs keeps all paragraph tops on
+        // exact lineH-multiple boundaries - required for snapStep to work cleanly.
+        lv_obj_set_style_pad_row(ctx->contentWidget_,
+            (lv_coord_t)lv_font_get_line_height(selectContentFont(false, false)), 0);
+        lv_obj_set_style_border_width(ctx->contentWidget_, 0, 0);
+        lv_obj_set_style_bg_opa(ctx->contentWidget_, LV_OPA_TRANSP, 0);
+        lv_obj_set_scrollable(ctx->contentWidget_, false);
+        lv_obj_set_clickable(ctx->contentWidget_, false);
+        loadChapter(ctx, ctx->currentSpineIndex_, +1);
+    }
+
+    lv_obj_update_layout(scroll);
+    lv_obj_scroll_to_y(scroll, (int32_t)std::min<size_t>(offset, LV_COORD_MAX), LV_ANIM_OFF);
+    ctx->pageOffset_ = (size_t)std::max<int32_t>(lv_obj_get_scroll_y(scroll), 0);
+    saveProgress(ctx);
+
+    // Keys turn the pages
+    lv_group_t* group = lv_group_get_default();
+    if (group != nullptr && (device_has_active_by_type(&KEYBOARD_TYPE) || device_has_active_by_type(&TRACKBALL_TYPE))) {
+        lv_group_add_obj(group, scroll);
+        lv_group_focus_obj(scroll);
+        lv_group_set_editing(group, true);
+    }
+}
+
+static lv_obj_t* addToolbarIcon(Context* ctx, const char* symbol, lv_event_cb_t callback) {
+    return lvgl_toolbar_add_text_button_action(ctx->toolbar_, symbol, callback, ctx);
+}
+
+void showView(Context* ctx) {
+    if (!ctx->wrapperWidget_ || !ctx->toolbar_) return;
+
+    lv_group_t* group = lv_group_get_default();
+    if (group != nullptr) lv_group_set_editing(group, false);
+    ctx->contentWidget_ = nullptr;
+    ctx->statusLabel_ = nullptr;
+    lv_obj_clean(ctx->wrapperWidget_);
+    lvgl_toolbar_clear_actions(ctx->toolbar_);
+
+    if (ctx->view == View::Library) {
+        lvgl_toolbar_set_title(ctx->toolbar_, "ePub Reader");
+        lvgl_toolbar_set_nav_action(ctx->toolbar_, LV_SYMBOL_CLOSE, onExitPressed, ctx);
+        buildLibraryUI(ctx, ctx->wrapperWidget_);
         return;
     }
 
-    // Path bar
-    lv_obj_t* pathBar = lv_obj_create(parent);
-    lv_obj_set_size(pathBar, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(pathBar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(pathBar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(pathBar, 4, 0);
-    lv_obj_set_style_pad_gap(pathBar, 4, 0);
-    lv_obj_set_style_border_width(pathBar, 0, 0);
-    lv_obj_set_style_bg_opa(pathBar, LV_OPA_TRANSP, 0);
-    lv_obj_set_scrollable(pathBar, false);
-
-    if (ctx->browsePath_ != ctx->dataRoot_) {
-        lv_obj_t* backBtn = lv_button_create(pathBar);
-        lv_obj_set_size(backBtn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_all(backBtn, 4, 0);
-        lv_label_set_text(lv_label_create(backBtn), LV_SYMBOL_LEFT " Back");
-        lv_obj_add_event_cb(backBtn, onBrowserBack, LV_EVENT_CLICKED, ctx);
+    lvgl_toolbar_set_nav_action(ctx->toolbar_, LV_SYMBOL_LEFT, onBackPressed, ctx);
+    if (ctx->view == View::Loading) {
+        lvgl_toolbar_set_title(ctx->toolbar_, "ePub Reader");
+        lv_obj_t* label = lv_label_create(ctx->wrapperWidget_);
+        lv_obj_set_style_pad_all(label, 8, 0);
+        lv_label_set_text(label, "Opening...");
+        return;
     }
 
-    lv_obj_t* pathLabel = lv_label_create(pathBar);
-    lv_obj_set_flex_grow(pathLabel, 1);
-    lv_label_set_text(pathLabel, ctx->browsePath_.c_str());
-    lv_label_set_long_mode(pathLabel, LV_LABEL_LONG_MODE_DOTS);//LV_LABEL_LONG_MODE_SCROLL_CIRCULAR
-
-    // File list
-    lv_obj_t* list = lv_list_create(parent);
-    lv_obj_set_width(list, LV_PCT(100));
-    lv_obj_set_flex_grow(list, 1);
-    lv_obj_set_style_border_width(list, 0, 0);
-
-    // Scan directory
-    ctx->browserEntries_.clear();
-    DIR* dir = opendir(ctx->browsePath_.c_str());
-    if (dir) {
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != nullptr) {
-            if (entry->d_name[0] == '.') continue;
-            std::string name(entry->d_name);
-            bool isDir = (entry->d_type == DT_DIR);
-            if (entry->d_type == DT_UNKNOWN) {
-                struct stat st;
-                std::string fullPath = ctx->browsePath_ + "/" + name;
-                if (stat(fullPath.c_str(), &st) == 0) {
-                    isDir = S_ISDIR(st.st_mode);
-                }
-            }
-            if (isDir || isSupportedFile(name)) {
-                ctx->browserEntries_.push_back({name, isDir});
-            }
-        }
-        closedir(dir);
-    } else {
-        LOG_W(TAG, "Cannot open dir: %s", ctx->browsePath_.c_str());
+    std::string title = ctx->currentFilePath_.substr(ctx->currentFilePath_.find_last_of('/') + 1);
+    if (ctx->epub_) {
+        const std::string metadata = ctx->epub_->getMetadata("title");
+        if (!metadata.empty()) title = metadata;
     }
-
-    // Sort: directories first, then alphabetically within each group
-    std::sort(ctx->browserEntries_.begin(), ctx->browserEntries_.end(),
-        [](const auto& a, const auto& b) {
-            if (a.second != b.second) return a.second > b.second;
-            return a.first < b.first;
-        });
-
-    if (ctx->browserEntries_.empty()) {
-        lv_list_add_text(list, "No supported files found.");
-    } else {
-        for (size_t i = 0; i < ctx->browserEntries_.size(); ++i) {
-            const auto& [name, isDir] = ctx->browserEntries_[i];
-            const char* icon = isDir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
-            lv_obj_t* btn = lv_list_add_button(list, icon, name.c_str());
-            lv_obj_set_user_data(btn, (void*)(uintptr_t)i);
-            lv_obj_add_event_cb(btn, onBrowserItem, LV_EVENT_CLICKED, ctx);
-            setListBtnLongMode(btn, LV_LABEL_LONG_MODE_DOTS);//LV_LABEL_LONG_MODE_SCROLL_CIRCULAR
-        }
-    }
+    lvgl_toolbar_set_title(ctx->toolbar_, title.c_str());
+    if (hasContents(ctx)) addToolbarIcon(ctx, LV_SYMBOL_LIST, onContentsPressed);
+    addToolbarIcon(ctx, LV_SYMBOL_BARS, onMenuPressed);
+    buildReaderUI(ctx, ctx->wrapperWidget_);
 }
 
-// Recursively scans path for epub/txt files, appending entries to browserEntries_.
-// Called with prefix="" for booksPath_; recurses one level into subdirectories.
-void scanBooksDir(Context* ctx, const std::string& path, const std::string& prefix) {
-    DIR* d = opendir(path.c_str());
-    if (!d) return;
-    struct dirent* ent;
-    while ((ent = readdir(d)) != nullptr) {
-        if (ent->d_name[0] == '.') continue;
-        std::string name(ent->d_name);
-        bool isDir = (ent->d_type == DT_DIR);
-        if (ent->d_type == DT_UNKNOWN) {
-            struct stat st;
-            if (stat((path + "/" + name).c_str(), &st) == 0)
-                isDir = S_ISDIR(st.st_mode);
-        }
-        if (isDir && prefix.empty()) {
-            scanBooksDir(ctx, path + "/" + name, name + "/");
-        } else if (!isDir) {
-            auto p = name.rfind('.');
-            if (p == std::string::npos) continue;
-            std::string e = name.substr(p);
-            std::transform(e.begin(), e.end(), e.begin(), ::tolower);
-            if (e == ".epub" || e == ".txt")
-                ctx->browserEntries_.push_back({prefix + name, false});
-        }
+void epubReaderCreateWidgets(lv_obj_t* parent, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+
+    // Hard requirement: without PSRAM this app cannot parse EPUBs or hold fonts.
+    // main() shows an alert and then closes the app.
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
+        return;
     }
-    closedir(d);
+
+    loadFonts(ctx);
+
+    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollable(parent, false);
+    lv_obj_set_style_pad_row(parent, 0, 0);
+
+    ctx->toolbar_ = lvgl_toolbar_create(parent, "ePub Reader");
+
+    ctx->wrapperWidget_ = lv_obj_create(parent);
+    lv_obj_set_width(ctx->wrapperWidget_, LV_PCT(100));
+    lv_obj_set_flex_grow(ctx->wrapperWidget_, 1);
+    lv_obj_set_flex_flow(ctx->wrapperWidget_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(ctx->wrapperWidget_, 0, 0);
+    lv_obj_set_style_border_width(ctx->wrapperWidget_, 0, 0);
+    lv_obj_set_style_bg_opa(ctx->wrapperWidget_, LV_OPA_TRANSP, 0);
+    lv_obj_set_scrollable(ctx->wrapperWidget_, false);
+
+    showView(ctx);
 }
 
-// Books shelf view - shown when browsePath_ == booksPath_.
-// Scans booksPath_ and one level of subdirectories into a single flat sorted list.
-void buildShelfUI(Context* ctx, lv_obj_t* parent) {
-    lv_coord_t dispW = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t dispH = lv_display_get_vertical_resolution(nullptr);
-    bool isLarge  = (dispW >= 480 || dispH >= 480);
-    bool isXLarge = (dispW >= 600 || dispH >= 600);
-
-    int pageSize   = isXLarge ? 8 : (isLarge ? 6 : 4);
-    int padBar     = isLarge ? 4 : 2;
-    int navPadHor  = isLarge ? 12 : 6;
-    int navPadVer  = isLarge ? 6 : 3;
-
-    // Optional path bar with Back so the user can navigate away from the shelf
-    if (ctx->booksPath_ != ctx->dataRoot_) {
-        lv_obj_t* pathBar = lv_obj_create(parent);
-        lv_obj_set_size(pathBar, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(pathBar, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(pathBar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_all(pathBar, padBar, 0);
-        lv_obj_set_style_pad_gap(pathBar, padBar, 0);
-        lv_obj_set_style_border_width(pathBar, 0, 0);
-        lv_obj_set_style_bg_opa(pathBar, LV_OPA_TRANSP, 0);
-        lv_obj_set_scrollable(pathBar, false);
-
-        lv_obj_t* backBtn = lv_button_create(pathBar);
-        lv_obj_set_size(backBtn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_all(backBtn, padBar, 0);
-        lv_label_set_text(lv_label_create(backBtn), LV_SYMBOL_LEFT " Browse");
-        lv_obj_add_event_cb(backBtn, onBrowserBack, LV_EVENT_CLICKED, ctx);
-
-        lv_obj_t* pathLbl = lv_label_create(pathBar);
-        lv_obj_set_flex_grow(pathLbl, 1);
-        lv_label_set_long_mode(pathLbl, LV_LABEL_LONG_MODE_DOTS);//LV_LABEL_LONG_MODE_SCROLL_CIRCULAR
-        lv_label_set_text(pathLbl, ctx->booksPath_.c_str());
-    }
-
-    // Scan booksPath_ for books, and one level of subdirectories into a flat list.
-    // Subfolder entries are stored as "subfolder/filename" so onBrowserItem builds
-    // the correct full path via browsePath_ + "/" + name.
-    ctx->browserEntries_.clear();
-    scanBooksDir(ctx, ctx->booksPath_, "");
-
-    // Sort alphabetically by filename (ignoring subfolder prefix)
-    std::sort(ctx->browserEntries_.begin(), ctx->browserEntries_.end(),
-        [](const auto& a, const auto& b) {
-            // rfind returns npos if no '/' found; npos+1 wraps to 0, yielding the full string
-            auto nameA = a.first.substr(a.first.rfind('/') + 1);
-            auto nameB = b.first.substr(b.first.rfind('/') + 1);
-            return std::lexicographical_compare(
-                nameA.begin(), nameA.end(),
-                nameB.begin(), nameB.end(),
-                [](char ca, char cb) { return std::tolower((unsigned char)ca) < std::tolower((unsigned char)cb); });
-        });
-
-    // Clamp shelfPage_ to valid range
-    int totalItems = (int)ctx->browserEntries_.size();
-    int totalPages = std::max(1, (totalItems + pageSize - 1) / pageSize);
-    ctx->shelfPage_ = std::max(0, std::min(ctx->shelfPage_, totalPages - 1));
-    int startIdx = ctx->shelfPage_ * pageSize;
-    int endIdx   = std::min(startIdx + pageSize, totalItems);
-
-    // Non-scrollable list; items share height equally via flex_grow=1
-    lv_obj_t* list = lv_list_create(parent);
-    lv_obj_set_width(list, LV_PCT(100));
-    lv_obj_set_flex_grow(list, 1);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_scrollable(list, false);
-
-    if (ctx->browserEntries_.empty()) {
-        lv_list_add_text(list, "No books found in books folder.");
-    } else {
-        for (int i = startIdx; i < endIdx; ++i) {
-            const std::string& entry = ctx->browserEntries_[(size_t)i].first;
-            // Display name: strip subfolder prefix and extension
-            std::string displayName = entry.substr(entry.rfind('/') + 1);
-            auto dot = displayName.rfind('.');
-            if (dot != std::string::npos) displayName = displayName.substr(0, dot);
-
-            auto dotPos = entry.rfind('.');
-            std::string ext = (dotPos != std::string::npos) ? entry.substr(dotPos) : "";
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            const char* icon = (ext == ".txt") ? LVGL_SYMBOL_TEXT : LVGL_SYMBOL_BOOK;
-
-            lv_obj_t* btn = lv_list_add_button(list, icon, displayName.c_str());
-            lv_obj_set_flex_grow(btn, 1);  // equal height share across page items
-            lv_obj_set_user_data(btn, (void*)(uintptr_t)i);
-            lv_obj_add_event_cb(btn, onBrowserItem, LV_EVENT_CLICKED, ctx);
-            setListBtnLongMode(btn, LV_LABEL_LONG_MODE_DOTS);//LV_LABEL_LONG_MODE_SCROLL_CIRCULAR
-            lv_obj_t* iconLbl = lv_obj_get_child(btn, 0);
-            if (iconLbl) lv_obj_set_style_text_font(iconLbl, selectIconFont(), 0);
-        }
-    }
-
-    // ── Bottom navigation bar ─────────────────────────────────────────────────
-    lv_obj_t* navBar = lv_obj_create(parent);
-    lv_obj_set_size(navBar, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(navBar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(navBar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(navBar, padBar, 0);
-    lv_obj_set_style_pad_gap(navBar, padBar, 0);
-    lv_obj_set_style_border_width(navBar, 0, 0);
-    lv_obj_set_style_bg_opa(navBar, LV_OPA_TRANSP, 0);
-    lv_obj_set_scrollable(navBar, false);
-
-    bool canPrev = (ctx->shelfPage_ > 0);
-    bool canNext = (ctx->shelfPage_ < totalPages - 1);
-
-    auto makeNavBtn = [&](const char* label, lv_event_cb_t cb, bool enabled) {
-        lv_obj_t* btn = lv_button_create(navBar);
-        lv_obj_set_size(btn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_hor(btn, navPadHor, 0);
-        lv_obj_set_style_pad_ver(btn, navPadVer, 0);
-        lv_label_set_text(lv_label_create(btn), label);
-        if (enabled) lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ctx);
-        else         lv_obj_add_state(btn, LV_STATE_DISABLED);
-    };
-
-    makeNavBtn(LV_SYMBOL_PREV, onShelfFirst, canPrev);
-    makeNavBtn(LV_SYMBOL_LEFT, onShelfPrev,  canPrev);
-
-    char pageBuf[24];
-    snprintf(pageBuf, sizeof(pageBuf), "%d / %d", ctx->shelfPage_ + 1, totalPages);
-    lv_obj_t* pageLbl = lv_label_create(navBar);
-    lv_obj_set_style_pad_hor(pageLbl, 10, 0);
-    lv_label_set_text(pageLbl, pageBuf);
-
-    makeNavBtn(LV_SYMBOL_RIGHT, onShelfNext, canNext);
-    makeNavBtn(LV_SYMBOL_NEXT,  onShelfLast, canNext);
+void epubReaderDestroyWidgets(void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    rememberPosition(ctx);
+    ctx->contentWidget_ = nullptr;
+    ctx->statusLabel_ = nullptr;
+    ctx->wrapperWidget_ = nullptr;
+    ctx->toolbar_ = nullptr;
 }

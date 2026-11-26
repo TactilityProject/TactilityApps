@@ -98,13 +98,20 @@ float next_sample(ToneWaveform waveform, uint32_t frequency, SynthState& state) 
             }
             break;
         case ToneWaveform::Noise: {
-            uint32_t x = state.noiseSeed;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            state.noiseSeed = x;
-            // Top 16 bits scaled to [-1, 1).
-            sample = static_cast<float>(static_cast<int32_t>(x >> 16)) / 32768.0f - 1.0f;
+            // A new random value twice per period, held in between: a rumble at low
+            // frequencies, close to white noise at high ones
+            const int half = phaseFraction < 0.5f ? 0 : 1;
+            if (half != state.noiseHalf) {
+                state.noiseHalf = half;
+                uint32_t x = state.noiseSeed;
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                state.noiseSeed = x;
+                // Top 16 bits scaled to [-1, 1).
+                state.noiseValue = static_cast<float>(static_cast<int32_t>(x >> 16)) / 32768.0f - 1.0f;
+            }
+            sample = state.noiseValue;
             break;
         }
     }

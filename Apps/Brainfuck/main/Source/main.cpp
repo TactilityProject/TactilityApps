@@ -1,10 +1,10 @@
 #include "Brainfuck.h"
 
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
 
 #include <lvgl_window_manager/window_manager.h>
+#include <lvgl/lvgl.h>
 
 #include <tactility/check.h>
 
@@ -24,19 +24,29 @@ int main(int argc, char* argv[]) {
     struct TaskEventGroup event_group {};
     task_event_group_construct(&event_group);
 
+    ctx->eventGroup = &event_group;
+    check(task_event_group_claim_bit(&event_group, &ctx->dialogBit) == ERROR_NONE);
+
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
-    WindowId window = window_manager_create(app_instance_id, brainfuckCreateWidgets, ctx.get());
+    WindowId window = window_manager_create_ext(app_instance_id, brainfuckCreateWidgets, brainfuckDestroyWidgets, ctx.get());
 
     bool should_close = false;
     while (!should_close) {
-        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&event_group, &flags, portMAX_DELAY);
+
+        if ((flags & ctx->dialogBit) != 0) {
+            brainfuckDialogResult(ctx.get());
+        }
 
         struct AppEvent event;
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
             if (event.type == APP_EVENT_CLOSE) {
                 should_close = true;
+            } else if (event.type == APP_EVENT_RESULT) {
+                brainfuckFileResult(ctx.get(), event.result.launch_id, event.result.result);
             }
             if (should_close) break;
         }
@@ -44,8 +54,8 @@ int main(int argc, char* argv[]) {
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_release_bit(&event_group, ctx->dialogBit);
     task_event_group_destruct(&event_group);
-    brainfuckTeardown(ctx.get());
 
     return 0;
 }

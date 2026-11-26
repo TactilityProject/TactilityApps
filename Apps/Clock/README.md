@@ -12,7 +12,7 @@ Digital and analog clock for Tactility, with automatic time synchronization from
 
 ## Controls
 
-- Tap the mode button in the toolbar to switch between digital and analog views
+- The toolbar menu switches between the digital and analog views, or shows the clock fullscreen. Tap the screen (or press a key) to leave fullscreen
 - Tap the close button to exit the app
 
 ## License

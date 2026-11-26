@@ -44,6 +44,9 @@ public:
      *  If maxBytes > 0, reading stops after that many bytes (useful for large chapter HTML). */
     std::string readFile(const std::string& filename, size_t maxBytes = 0) const;
 
+    /** Uncompressed size of a file in the EPUB archive, or 0 if it isn't found */
+    size_t getFileSize(const std::string& filename) const;
+
     /** Get OPF metadata value by key (e.g. "title", "creator"). */
     std::string getMetadata(const std::string& key) const;
 

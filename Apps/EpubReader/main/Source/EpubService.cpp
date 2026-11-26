@@ -80,6 +80,10 @@ EpubService::~EpubService() {
     }
 }
 
+size_t EpubService::getFileSize(const std::string& filename) const {
+    return epub_get_file_size_c(reader_, filename.c_str());
+}
+
 std::string EpubService::readFile(const std::string& filename, size_t maxBytes) const {
     if (!reader_) return "";
     epub_stream_context_c* stream = epub_stream_open_c(reader_, filename.c_str());
