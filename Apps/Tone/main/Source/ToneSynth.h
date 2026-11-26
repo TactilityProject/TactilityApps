@@ -22,6 +22,8 @@ constexpr uint32_t MAX_FREQUENCY_HZ = 20000;
 struct SynthState {
     float phase = 0.0f;
     uint32_t noiseSeed = 0x12345678u;
+    float noiseValue = 0.0f;
+    int noiseHalf = -1; // the half of the period that noiseValue is for
     uint32_t sampleIndex = 0;
     uint32_t sweepPeriod = 0;
     uint32_t sweepQ = 0;

@@ -4,12 +4,12 @@
  */
 #include "TwoEleven.h"
 
+#include <lvgl_window_manager/dialog.h>
 #include <inttypes.h>
 #include <esp_log.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <app/paths.h>
-#include <app/start.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
 #include <tactility/preferences.h>
@@ -87,7 +87,7 @@ void twoElevenEventCb(lv_event_t* e) {
     if (code == LV_EVENT_VALUE_CHANGED) {
         int32_t score = twoeleven_get_score(ctx->gameObject);
 
-        if (ctx->gameOverDialogId == 0 && twoeleven_get_best_tile(ctx->gameObject) >= 2048) {
+        if (ctx->dialog == GameDialog::None && twoeleven_get_best_tile(ctx->gameObject) >= 2048) {
             int32_t prevHighScore = getHighScore(ctx, ctx->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
@@ -103,9 +103,8 @@ void twoElevenEventCb(lv_event_t* e) {
             } else {
                 snprintf(message, sizeof(message), "YOU WIN!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
-            const char* argv[] = { title, message, "OK" };
-            app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->gameOverDialogId);
-        } else if (ctx->gameOverDialogId == 0 && twoeleven_get_status(ctx->gameObject)) {
+            twoElevenShowAlert(ctx, GameDialog::GameOver, title, message);
+        } else if (ctx->dialog == GameDialog::None && twoeleven_get_status(ctx->gameObject)) {
             int32_t prevHighScore = getHighScore(ctx, ctx->currentGridSize);
             bool isNewHighScore = score > prevHighScore;
 
@@ -123,8 +122,7 @@ void twoElevenEventCb(lv_event_t* e) {
                 title = "GAME OVER!";
                 snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nBEST: %" PRId32, score, getHighScore(ctx, ctx->currentGridSize));
             }
-            const char* argv[] = { title, message, "OK" };
-            app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->gameOverDialogId);
+            twoElevenShowAlert(ctx, GameDialog::GameOver, title, message);
         } else {
             // Update score display
             lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %" PRId32, score);
@@ -179,6 +177,12 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t size, lv_obj_t* tb) {
     lvgl_toolbar_add_text_button_action(tb, LV_SYMBOL_REFRESH, newGameBtnEvent, ctx);
 }
 
+void onDialogResult(int32_t result, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->dialogResult = result;
+    task_event_group_signal(ctx->eventGroup, ctx->dialogBit);
+}
+
 } // namespace
 
 void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
@@ -208,16 +212,8 @@ void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
         ctx->highScoresLoaded = true;
     }
 
-    // Rebuild whatever was already committed. A game in progress survives a resurface caused by
-    // burial from something other than our own dialogs (window_manager only ever destroys the
-    // widget tree - Context's state, including currentGridSize, is untouched) - twoeleven_create()
-    // owns all game state internally though, so there's no cheap way to resume the exact
-    // position; this starts a fresh game at the same grid size instead.
-    //
-    // Deliberately never opens a dialog from here - see TwoEleven.h's comment on
-    // twoElevenShowSelectionDialog()/twoElevenShowHelpDialog()/twoElevenStartGame()/
-    // twoElevenClearGame() for why: this callback can run on a different app's thread
-    // mid-resurface, racing ahead of main()'s own APP_EVENT_RESULT processing.
+    // Rebuild a game in progress after the window was buried. Context keeps currentGridSize, but the game
+    // widget owns the board, so this starts a fresh game with the same setting. Dialogs don't bury the window.
     if (ctx->currentGridSize >= TWOELEVEN_SELECTION_3X3 && ctx->currentGridSize <= TWOELEVEN_SELECTION_6X6) {
         lv_obj_update_layout(parent);
         int32_t sizeIndex = ctx->currentGridSize - TWOELEVEN_SELECTION_3X3;
@@ -230,29 +226,35 @@ void twoElevenTeardown(Context* ctx) {
     ctx->scoreWrapper = nullptr;
     ctx->toolbar = nullptr;
     ctx->mainWrapper = nullptr;
-    ctx->newGameWrapper = nullptr;
     ctx->gameObject = nullptr;
 }
 
 void twoElevenShowSelectionDialog(Context* ctx) {
-    const char* argv[] = { "2048", "How to Play", "3x3", "4x4", "5x5", "6x6" };
-    app_start_for_result("tactility.selectiondialog", 6, argv, ctx->appInstanceId, &ctx->selectionDialogId);
+    static const char* const items[] = { "How to Play", "3x3", "4x4", "5x5", "6x6" };
+    ctx->dialog = GameDialog::Selection;
+    if (window_manager_selection_dialog(ctx->appInstanceId, "2048", items, 5, onDialogResult, ctx) != ERROR_NONE) {
+        ctx->dialog = GameDialog::None;
+    }
+}
+
+void twoElevenShowAlert(Context* ctx, GameDialog kind, const char* title, const char* message) {
+    static const char* const buttons[] = { "OK" };
+    ctx->dialog = kind;
+    if (window_manager_alert_dialog(ctx->appInstanceId, title, message, buttons, 1, onDialogResult, ctx) != ERROR_NONE) {
+        ctx->dialog = GameDialog::None;
+    }
 }
 
 void twoElevenShowHelpDialog(Context* ctx) {
-    const char* argv[] = {
-        "How to Play",
+    twoElevenShowAlert(ctx, GameDialog::Help, "How to Play",
         "Swipe or use arrow keys to move tiles.\n"
         "Tiles with the same number merge.\n"
-        "Reach 2048 to win!",
-        "OK",
-    };
-    app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->helpDialogId);
+        "Reach 2048 to win!");
 }
 
 void twoElevenClearGame(Context* ctx) {
     if (ctx->scoreWrapper) { lv_obj_delete(ctx->scoreWrapper); ctx->scoreWrapper = nullptr; }
-    if (ctx->newGameWrapper) { lv_obj_delete(ctx->newGameWrapper); ctx->newGameWrapper = nullptr; }
+    if (ctx->toolbar) lvgl_toolbar_clear_actions(ctx->toolbar);
     if (ctx->mainWrapper) lv_obj_clean(ctx->mainWrapper);
     ctx->scoreLabel = nullptr;
     ctx->gameObject = nullptr;

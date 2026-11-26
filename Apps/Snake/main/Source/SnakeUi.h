@@ -24,11 +24,11 @@ extern "C" {
 /**
  * @brief Create a new Snake game widget
  * @param parent Parent LVGL object
- * @param cell_size Size of each cell in pixels (SNAKE_CELL_SMALL, MEDIUM, or LARGE)
+ * @param cell_count Number of cells the playing field should have (SNAKE_CELLS_EASY, MEDIUM, or HARD)
  * @param wall_collision If true, hitting walls = game over; if false, snake wraps around
  * @return Pointer to the created LVGL object, or NULL on failure
  */
-lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_size, bool wall_collision);
+lv_obj_t* snake_create(lv_obj_t* parent, uint16_t cell_count, bool wall_collision);
 
 /**
  * @brief Reset the game to start a new game

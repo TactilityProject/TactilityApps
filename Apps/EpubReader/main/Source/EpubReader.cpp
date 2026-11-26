@@ -2,14 +2,14 @@
 #include "HtmlStrip.h"              // stripHtmlToText
 
 #include <app/paths.h>
-#include <app/start.h>
-#include <lvgl/widgets/toolbar.h>
 #include <tactility/log.h>
 #include <esp_heap_caps.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -17,47 +17,6 @@ static const char* TAG = "EpubReader";
 
 /** Must match manifest.properties' app.id */
 static constexpr const char* APP_ID = "tactility.epubreader";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-static std::string getAppDataRoot() {
-    char path[128] = {0};
-    app_paths_get_user_data_directory(APP_ID, path, sizeof(path));
-    // path = /sdcard/tactility/app/one.tactility.epubreader → extract "/sdcard"
-    // path = /data/tactility/app/one.tactility.epubreader → extract "/data"
-    std::string s(path);
-    size_t pos = s.find('/', 1);
-    return (pos != std::string::npos) ? s.substr(0, pos) : "/sdcard";
-}
-
-// ---------------------------------------------------------------------------
-// Books folder persistence
-// ---------------------------------------------------------------------------
-
-void loadBooksPath(Context* ctx) {
-    char path[128];
-    if (app_paths_get_user_data_path(APP_ID, "books_folder.txt", path, sizeof(path)) != ERROR_NONE) return;
-    FILE* f = fopen(path, "r");
-    if (!f) return;
-    char buf[256] = {};
-    if (fgets(buf, sizeof(buf), f)) {
-        size_t len = strlen(buf);
-        if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
-        if (buf[0] != '\0') ctx->booksPath_ = buf;
-    }
-    fclose(f);
-}
-
-void saveBooksPath(Context* ctx) {
-    char path[128];
-    if (app_paths_get_user_data_path(APP_ID, "books_folder.txt", path, sizeof(path)) != ERROR_NONE) return;
-    FILE* f = fopen(path, "w");
-    if (!f) return;
-    fprintf(f, "%s\n", ctx->booksPath_.c_str());
-    fclose(f);
-}
 
 // ---------------------------------------------------------------------------
 // File type helpers (shared across translation units)
@@ -80,44 +39,123 @@ bool isTextFile(const std::string& path) {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence - plain text file in the app user-data directory
+// Recent books - one line per book, most recent first:
+// path <tab> chapter <tab> offset <tab> percent <tab> title
 // ---------------------------------------------------------------------------
 
-void saveProgress(Context* ctx) {
-    if (ctx->currentFilePath_.empty()) return;
+static bool getUserFile(const char* name, char* path, size_t size) {
+    return app_paths_get_user_data_path(APP_ID, name, path, size) == ERROR_NONE;
+}
+
+static void readRecents(Context* ctx) {
     char path[128];
-    if (app_paths_get_user_data_path(APP_ID, "progress.txt", path, sizeof(path)) != ERROR_NONE) return;
-    FILE* f = fopen(path, "w");
+    if (!getUserFile("recent.txt", path, sizeof(path))) return;
+    FILE* f = fopen(path, "r");
+    // A save may have been interrupted before the new file got its name
+    if (!f) f = fopen((std::string(path) + ".tmp").c_str(), "r");
     if (!f) return;
-    // Text mode: pageOffset_ is a scroll-Y pixel position; epub: spine chapter index.
-    // The mode tag makes the file self-describing so the value's semantics are unambiguous.
-    int savedIndex = ctx->textMode_ ? (int)ctx->pageOffset_ : ctx->currentSpineIndex_;
-    fprintf(f, "%s\n%d\n%s\n", ctx->currentFilePath_.c_str(), savedIndex,
-            ctx->textMode_ ? "text" : "epub");
+    char line[512];
+    while (ctx->recents_.size() < MAX_RECENT_BOOKS && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char* fields[5] = { line };
+        int count = 1;
+        for (char* c = line; *c != '\0' && count < 5; c++) {
+            if (*c == '\t') {
+                *c = '\0';
+                fields[count++] = c + 1;
+            }
+        }
+        if (count < 5 || fields[0][0] == '\0') continue;
+        ctx->recents_.push_back({ fields[0], fields[4], atoi(fields[1]), atoi(fields[2]), atoi(fields[3]) });
+    }
     fclose(f);
 }
 
-bool loadProgress(std::string& outPath, int& outChapter, bool& outIsText) {
+/** The single book that earlier versions of the app remembered */
+static void readOldProgress(Context* ctx) {
     char path[128];
-    if (app_paths_get_user_data_path(APP_ID, "progress.txt", path, sizeof(path)) != ERROR_NONE) return false;
+    if (!getUserFile("progress.txt", path, sizeof(path))) return;
     FILE* f = fopen(path, "r");
-    if (!f) return false;
+    if (!f) return;
     char filePath[256] = {};
-    bool ok = (fgets(filePath, sizeof(filePath), f) != nullptr);
-    int chapter = 0;
-    char modeStr[8] = "epub";  // default for backward-compat with old progress files
-    if (ok) {
-        size_t len = strlen(filePath);
-        if (len > 0 && filePath[len - 1] == '\n') filePath[len - 1] = '\0';
-        if (fscanf(f, "%d", &chapter) != 1) chapter = 0;
-        fscanf(f, " %7s", modeStr);  // optional - old files won't have it
+    if (fgets(filePath, sizeof(filePath), f) != nullptr) {
+        filePath[strcspn(filePath, "\r\n")] = '\0';
+        int position = 0;
+        if (fscanf(f, "%d", &position) != 1) position = 0;
+        if (filePath[0] != '\0') {
+            const std::string book = filePath;
+            const bool isText = isTextFile(book);
+            ctx->recents_.push_back({ book, book.substr(book.find_last_of('/') + 1),
+                isText ? 0 : position, isText ? position : 0, 0 });
+        }
     }
     fclose(f);
-    if (!ok || filePath[0] == '\0') return false;
-    outPath    = filePath;
-    outChapter = chapter;
-    outIsText  = (strcmp(modeStr, "text") == 0);
-    return true;
+}
+
+void writeRecents(Context* ctx) {
+    char path[128];
+    if (!getUserFile("recent.txt", path, sizeof(path))) return;
+    // The previous list is only replaced when the new one is complete
+    const std::string temporary = std::string(path) + ".tmp";
+    FILE* f = fopen(temporary.c_str(), "w");
+    if (!f) return;
+    bool success = true;
+    for (const auto& book : ctx->recents_) {
+        success = fprintf(f, "%s\t%d\t%d\t%d\t%s\n", book.path.c_str(), book.chapter, book.offset, book.percent, book.title.c_str()) > 0 && success;
+    }
+    success = (fclose(f) == 0) && success;
+    if (!success) {
+        LOG_E(TAG, "Failed to save the recent books");
+        unlink(temporary.c_str());
+        return;
+    }
+    // FAT can't rename onto an existing file
+    unlink(path);
+    rename(temporary.c_str(), path);
+}
+
+void saveProgress(Context* ctx) {
+    if (ctx->currentFilePath_.empty()) return;
+
+    RecentBook book;
+    book.path = ctx->currentFilePath_;
+    book.title = book.path.substr(book.path.find_last_of('/') + 1);
+    if (ctx->epub_) {
+        std::string title = ctx->epub_->getMetadata("title");
+        std::replace(title.begin(), title.end(), '\t', ' ');
+        std::replace(title.begin(), title.end(), '\n', ' ');
+        if (!title.empty()) book.title = title.substr(0, 128);
+        book.chapter = ctx->currentSpineIndex_;
+    }
+    book.offset = static_cast<int>(ctx->pageOffset_);
+    if (ctx->contentWidget_ != nullptr) {
+        book.percent = readingPercent(ctx);
+        updateStatus(ctx, book.percent);
+    }
+
+    auto& recents = ctx->recents_;
+    for (size_t i = 0; i < recents.size(); i++) {
+        if (recents[i].path == book.path) {
+            recents.erase(recents.begin() + i);
+            break;
+        }
+    }
+    recents.insert(recents.begin(), book);
+    if (recents.size() > MAX_RECENT_BOOKS) recents.resize(MAX_RECENT_BOOKS);
+    writeRecents(ctx);
+}
+
+void epubReaderInit(Context* ctx) {
+    // Ensure the app data directory exists
+    char dir[128];
+    app_paths_get_user_data_directory(APP_ID, dir, sizeof(dir));
+    for (char* p = dir + 1; *p; ++p) {
+        if (*p == '/') { *p = '\0'; mkdir(dir, 0755); *p = '/'; }
+    }
+    mkdir(dir, 0755);
+
+    readRecents(ctx);
+    if (ctx->recents_.empty()) readOldProgress(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,127 +219,10 @@ void loadChapter(Context* ctx, int index, int direction) {
     saveProgress(ctx);
 }
 
-void openTocDialog(Context* ctx) {
-    if (!ctx->epub_) return;
-    const auto& toc = ctx->epub_->getToc();
-    if (toc.empty()) return;
-
-    std::vector<const char*> argv;
-    argv.reserve(toc.size() + 1);
-    argv.push_back("Table of Contents");
-    for (const auto& item : toc) {
-        argv.push_back(item.title.c_str());
-    }
-    app_start_for_result(
-        "SelectionDialog",
-        (int)argv.size(), argv.data(),
-        ctx->appInstanceId, &ctx->tocDialogId_
-    );
-}
-
-// ---------------------------------------------------------------------------
-// App lifecycle
-// ---------------------------------------------------------------------------
-
-void epubReaderCreateWidgets(lv_obj_t* parent, void* userData) {
-    auto* ctx = static_cast<Context*>(userData);
-
-    // Hard requirement: without PSRAM this app cannot parse EPUBs or hold fonts.
-    // Show a one-shot alert then stop; psramAlertId_ prevents re-launching the dialog
-    // if this is called again (e.g. after a dialog roundtrip) before the app has closed.
-    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
-        if (ctx->psramAlertId_ == 0) {
-            const char* argv[] = {
-                "PSRAM Required",
-                "Epub Reader requires a device with PSRAM and cannot run on this hardware.",
-                "OK",
-            };
-            app_start_for_result(
-                "tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->psramAlertId_
-            );
-        }
-        return;
-    }
-
-    loadFonts(ctx);
-
-    if (ctx->dataRoot_.empty()) {
-        ctx->dataRoot_ = getAppDataRoot();
-        // Ensure the app data directory exists (needed for progress.txt and books_folder.txt)
-        char dir[128];
-        app_paths_get_user_data_directory(APP_ID, dir, sizeof(dir));
-        for (char* p = dir + 1; *p; ++p) {
-            if (*p == '/') { *p = '\0'; mkdir(dir, 0755); *p = '/'; }
-        }
-        mkdir(dir, 0755);
-        // Load saved books folder; start browser there if set, otherwise dataRoot_
-        loadBooksPath(ctx);
-        ctx->browsePath_ = ctx->booksPath_.empty() ? ctx->dataRoot_ : ctx->booksPath_;
-    }
-
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollable(parent, false);
-
-    ctx->toolbar_ = lvgl_toolbar_create(parent, "Epub Reader");
-
-    ctx->wrapperWidget_ = lv_obj_create(parent);
-    lv_obj_set_width(ctx->wrapperWidget_, LV_PCT(100));
-    lv_obj_set_flex_grow(ctx->wrapperWidget_, 1);
-    lv_obj_set_flex_flow(ctx->wrapperWidget_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(ctx->wrapperWidget_, 0, 0);
-    lv_obj_set_style_border_width(ctx->wrapperWidget_, 0, 0);
-    lv_obj_set_style_bg_opa(ctx->wrapperWidget_, LV_OPA_TRANSP, 0);
-    lv_obj_set_scrollable(ctx->wrapperWidget_, false);
-
-    // Attempt to open a book: launch parameter → saved progress (first show only).
-    // Both paths use lv_async_call so EpubService::open runs at fresh stack
-    // depth (not nested inside the deep window_manager→createWidgets call chain).
-    bool asyncOpen = false;
-    if (!ctx->epub_) {
-        if (!ctx->launchFilePath_.empty()) {
-            LOG_I(TAG, "Opening from parameter: %s", ctx->launchFilePath_.c_str());
-            ctx->pendingFilePath_ = ctx->launchFilePath_;
-            lv_async_call(asyncOpenEpub, ctx);
-            asyncOpen = true;
-        }
-    }
-    bool asyncRestore = false;
-    if (!ctx->epub_ && !asyncOpen) {
-        std::string savedPath;
-        int savedChapter = 0;
-        bool savedIsText = false;
-        if (loadProgress(savedPath, savedChapter, savedIsText)) {
-            // Schedule open via lv_async_call so it runs at the same call-stack
-            // depth as asyncOpenEpub - calling EpubService::open directly here
-            // adds extra frames that overflow the task stack.
-            ctx->pendingFilePath_   = savedPath;
-            ctx->currentSpineIndex_ = savedChapter;
-            lv_async_call(asyncRestoreEpub, ctx);
-            asyncRestore = true;
-            LOG_I(TAG, "Scheduling restore: %s ch%d", savedPath.c_str(), savedChapter);
-        }
-    }
-
-    if (ctx->epub_ && ctx->epub_->isValid()) {
-        setReaderToolbarButtons(ctx);
-        buildReaderUI(ctx, ctx->wrapperWidget_);
-    } else if (!asyncRestore && !asyncOpen) {
-        ctx->epub_ = nullptr;
-        setBrowserToolbarButtons(ctx);
-        buildBrowserUI(ctx, ctx->wrapperWidget_);
-    } else {
-        // asyncOpenEpub / asyncRestoreEpub will replace the wrapper contents when
-        // they fire; show an empty placeholder for now (no browser flash on ePaper)
-    }
-}
 
 void epubReaderTeardown(Context* ctx) {
     ++ctx->openToken_;          // invalidate any in-flight background open task
     unloadFonts();
-    ctx->contentWidget_  = nullptr;
-    ctx->wrapperWidget_ = nullptr;
-    ctx->toolbar_       = nullptr;
-    ctx->pageContent_   = {};   // release chapter/text memory
-    ctx->pageOffset_    = 0;
-    ctx->textMode_      = false;
+    ctx->epub_ = nullptr;
+    ctx->pageContent_ = {};     // release chapter/text memory
 }

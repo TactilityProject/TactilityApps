@@ -5,9 +5,9 @@
 
 #include "TamaTac.h"
 #include "SpriteData.h"
+#include <lvgl_window_manager/dialog.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
-#include <app/start.h>
 #include <Tactility/kernel/Kernel.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
@@ -107,13 +107,16 @@ void onResetClicked([[maybe_unused]] lv_event_t* e) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(e));
     if (ctx == nullptr) return;
 
-    const char* argv[] = {
-        "Reset Pet?",
-        "This will start over with a new pet. Your current pet will be lost forever!",
-        "Reset",
-        "Cancel",
-    };
-    app_start_for_result("tactility.alertdialog", 4, argv, ctx->appInstanceId, &ctx->resetDialogId);
+    static const char* const buttons[] = { "Reset", "Cancel" };
+    window_manager_alert_dialog(ctx->appInstanceId, "Reset Pet?",
+        "This will start over with a new pet. Your current pet will be lost forever!", buttons, 2,
+        [](int32_t button, void* userData) {
+            // The reset itself runs on the app task
+            auto* context = static_cast<Context*>(userData);
+            if (button == 0) {
+                task_event_group_signal(context->eventGroup, context->resetBit);
+            }
+        }, ctx);
 }
 
 void onTimerUpdate(TimerHandle_t timer) {

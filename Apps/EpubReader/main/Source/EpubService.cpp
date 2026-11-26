@@ -70,6 +70,14 @@ std::shared_ptr<EpubService> EpubService::open(const std::string& path) {
         LOG_E(TAG, "EPUB initialization failed: no spine items");
         return nullptr;
     }
+    // Looking up a size searches the archive, so it's done once
+    service->sizesBefore_.reserve(service->spine_.size() + 1);
+    uint64_t total = 0;
+    for (const auto& item : service->spine_) {
+        service->sizesBefore_.push_back(total);
+        total += epub_get_file_size_c(reader, item.href.c_str());
+    }
+    service->sizesBefore_.push_back(total);
     return service;
 }
 

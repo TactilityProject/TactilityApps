@@ -63,6 +63,12 @@ static constexpr int CATCH_AUTO_RELEASE_TICKS = 120;
 static constexpr int SLOW_RECOVERY_TICKS = 200;
 // Laser cooldown ticks between shots
 static constexpr int LASER_COOLDOWN_TICKS = 12;
+
+// The playfield has a fixed size in field units, which is scaled to fit the screen. So the ball takes
+// the same time to travel between the paddle and the bricks on every device.
+static constexpr int FIELD_W = 300;
+static constexpr int FIELD_H = 200;
+static constexpr float FIELD_BALL_SPEED = 2.5f; // per tick
 // Amber (Gold) bricks
 static constexpr int INDESTRUCTIBLE_HITS = 999;
 
@@ -156,8 +162,11 @@ static int scoreBrick(Context* ctx, int idx);
 static void onTick(lv_timer_t* timer);
 static void onGameAreaDeleted(lv_event_t* e);
 static void onPressed(lv_event_t* e);
+static void onTouchStart(lv_event_t* e);
+static void layoutField(Context* ctx);
 static void onClicked(lv_event_t* e);
 static void onKey(lv_event_t* e);
+static void setTouchMode(Context* ctx, bool touchMode);
 static void onReenterKeyMode(lv_event_t* e);
 static void onPauseClicked(lv_event_t* e);
 static void onSoundToggled(lv_event_t* e);
@@ -220,64 +229,31 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     ctx->soundBtnIcon = lv_obj_get_child(soundBtn, 0);
     updateSoundIcon(ctx);
 
-    // Screen size detection (The Book)
-    lv_coord_t screenW = lv_display_get_horizontal_resolution(nullptr);
-    lv_coord_t screenH = lv_display_get_vertical_resolution(nullptr);
-    bool isSmall = (screenW < 280 || screenH < 180);
-    bool isXLarge = (screenW >= 600);
+    // The space below the toolbar, which the playfield is fitted into
+    lv_obj_t* wrapper = lv_obj_create(parent);
+    lv_obj_set_width(wrapper, LV_PCT(100));
+    lv_obj_set_flex_grow(wrapper, 1);
+    lv_obj_set_style_bg_color(wrapper, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(wrapper, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(wrapper, 0, 0);
+    lv_obj_set_style_pad_all(wrapper, 0, 0);
+    lv_obj_set_style_radius(wrapper, 0, 0);
+    lv_obj_set_scrollable(wrapper, false);
 
-    // Scaled dimensions
-    ctx->cols = isSmall ? 8 : (isXLarge ? 12 : 10);
-    ctx->rows = isSmall ? 3 : (isXLarge ? 5 : 4);
-    ctx->brickW = isSmall ? 24 : (isXLarge ? 56 : 28);
-    ctx->brickH = isSmall ? 8 : (isXLarge ? 18 : 10);
-    ctx->brickGap = isSmall ? 2 : (isXLarge ? 4 : 2);
-    ctx->ballSize = isSmall ? 6 : (isXLarge ? 14 : 8);
-    ctx->paddleW = isSmall ? 40 : (isXLarge ? 100 : 54);
-    ctx->paddleH = isSmall ? 6 : (isXLarge ? 14 : 8);
-    ctx->baseBallSpeed = isSmall ? 2.0f : (isXLarge ? 4.0f : 2.5f);
-    ctx->paddleSpeed = isSmall ? 16.0f : (isXLarge ? 36.0f : 24.0f);
-    int paddleMargin = isSmall ? 2 : (isXLarge ? 8 : 4);
-    int brickTopPad = isSmall ? 4 : (isXLarge ? 12 : 8);
+    ctx->wrapper = wrapper;
+    ctx->cols = 10;
+    ctx->rows = 4;
 
-    // Capsule dimensions
-    ctx->capsuleW = isSmall ? 16 : (isXLarge ? 36 : 22);
-    ctx->capsuleH = isSmall ? 8 : (isXLarge ? 16 : 12);
-    ctx->capsuleFallSpeed = isSmall ? 1.2f : (isXLarge ? 2.5f : 1.8f);
-
-    // Laser dimensions
-    ctx->laserW = isSmall ? 2 : (isXLarge ? 4 : 3);
-    ctx->laserH = isSmall ? 6 : (isXLarge ? 12 : 8);
-    ctx->laserSpeed = isSmall ? 4.0f : (isXLarge ? 8.0f : 6.0f);
-
-    // Store original paddle width for extend reset
-    ctx->originalPaddleW = ctx->paddleW;
-
-    // Ball speed includes level scaling
-    ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
-
-    // Game area
-    ctx->gameArea = lv_obj_create(parent);
-    lv_obj_set_width(ctx->gameArea, LV_PCT(100));
-    lv_obj_set_flex_grow(ctx->gameArea, 1);
+    // Game area, sized by layoutField()
+    ctx->gameArea = lv_obj_create(wrapper);
     lv_obj_set_style_bg_color(ctx->gameArea, lv_color_hex(0x0a0a1e), 0);
     lv_obj_set_style_bg_opa(ctx->gameArea, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ctx->gameArea, 0, 0);
     lv_obj_set_style_pad_all(ctx->gameArea, 0, 0);
     lv_obj_set_style_radius(ctx->gameArea, 0, 0);
     lv_obj_set_scrollable(ctx->gameArea, false);
-    lv_obj_set_clickable(ctx->gameArea, true);
-
-    // Force layout to get accurate game area dimensions
-    lv_obj_update_layout(parent);
-    ctx->areaW = lv_obj_get_content_width(ctx->gameArea);
-    ctx->areaH = lv_obj_get_content_height(ctx->gameArea);
-    ctx->paddleYPos = ctx->areaH - ctx->paddleH - paddleMargin;
-
-    // Calculate brick layout (centered horizontally)
-    int totalBrickW = ctx->cols * ctx->brickW + (ctx->cols - 1) * ctx->brickGap;
-    ctx->brickOffsetX = (ctx->areaW - totalBrickW) / 2;
-    ctx->brickOffsetY = brickTopPad;
+    // Presses go to the wrapper, which also covers the touch space below the field
+    lv_obj_set_clickable(ctx->gameArea, false);
 
     // Create bricks
     createBricks(ctx);
@@ -312,15 +288,12 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     createLaserObjs(ctx);
 
     // BreakOut exit indicator at paddle level (hidden by default)
-    int exitH = ctx->paddleH * 3;
     ctx->exitIndicator = lv_obj_create(ctx->gameArea);
-    lv_obj_set_size(ctx->exitIndicator, 6, exitH);
     lv_obj_set_style_bg_color(ctx->exitIndicator, lv_color_hex(0xFF44AA), 0);
     lv_obj_set_style_bg_opa(ctx->exitIndicator, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ctx->exitIndicator, 0, 0);
     lv_obj_set_style_radius(ctx->exitIndicator, 0, 0);
     lv_obj_set_scrollable(ctx->exitIndicator, false);
-    lv_obj_set_pos(ctx->exitIndicator, ctx->areaW - 6, ctx->paddleYPos - exitH / 2 + ctx->paddleH / 2);
     lv_obj_set_hidden(ctx->exitIndicator, true);
 
     // Message overlay (centered in game area)
@@ -329,6 +302,13 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     lv_obj_set_style_text_align(ctx->messageLabel, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(ctx->messageLabel);
 
+    // Touches on the paddle, bricks and such go through to the wrapper
+    for (uint32_t i = 0; i < lv_obj_get_child_count(ctx->gameArea); i++) {
+        lv_obj_set_clickable(lv_obj_get_child(ctx->gameArea, i), false);
+    }
+
+    layoutField(ctx);
+
     // Initialize or restore
     if (ctx->needsInit) {
         ctx->paddleX = (ctx->areaW - ctx->paddleW) / 2.0f;
@@ -336,19 +316,14 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
         ctx->needsInit = false;
     } else {
         // Restore visual positions from saved state
-        // Re-apply extended paddle width if still active
-        if (ctx->extendActive && ctx->paddle) lv_obj_set_width(ctx->paddle, ctx->paddleW);
-        lv_obj_set_pos(ctx->paddle, (int)ctx->paddleX, ctx->paddleYPos);
         for (int i = 0; i < MAX_BALLS; i++) {
             if (ctx->balls[i].active && ctx->balls[i].obj) {
-                lv_obj_set_pos(ctx->balls[i].obj, (int)ctx->balls[i].x, (int)ctx->balls[i].y);
                 lv_obj_set_hidden(ctx->balls[i].obj, false);
             }
         }
         // Restore falling capsules
         for (int i = 0; i < MAX_CAPSULES; i++) {
             if (ctx->capsules[i].active && ctx->capsuleObjs[i]) {
-                lv_obj_set_pos(ctx->capsuleObjs[i], (int)ctx->capsules[i].x, (int)ctx->capsules[i].y);
                 lv_obj_set_hidden(ctx->capsuleObjs[i], false);
             }
         }
@@ -359,17 +334,19 @@ void breakoutCreateWidgets(lv_obj_t* parent, void* userData) {
     }
 
     // Input handlers
-    lv_obj_add_event_cb(ctx->gameArea, onPressed, LV_EVENT_PRESSING, ctx);
-    lv_obj_add_event_cb(ctx->gameArea, onClicked, LV_EVENT_SHORT_CLICKED, ctx);
-    lv_obj_add_event_cb(ctx->gameArea, onKey, LV_EVENT_KEY, ctx);
-    lv_obj_add_event_cb(ctx->gameArea, onReenterKeyMode, LV_EVENT_CLICKED, ctx);
-    lv_obj_add_event_cb(ctx->gameArea, onGameAreaDeleted, LV_EVENT_DELETE, ctx);
+    lv_obj_set_clickable(wrapper, true);
+    lv_obj_add_event_cb(wrapper, onTouchStart, LV_EVENT_PRESSED, ctx);
+    lv_obj_add_event_cb(wrapper, onPressed, LV_EVENT_PRESSING, ctx);
+    lv_obj_add_event_cb(wrapper, onClicked, LV_EVENT_SHORT_CLICKED, ctx);
+    lv_obj_add_event_cb(wrapper, onKey, LV_EVENT_KEY, ctx);
+    lv_obj_add_event_cb(wrapper, onReenterKeyMode, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(wrapper, onGameAreaDeleted, LV_EVENT_DELETE, ctx);
 
     // Keyboard focus - explicit enter/exit, no focus/defocus handlers
     lv_group_t* group = lv_group_get_default();
     if (group) {
-        lv_group_add_obj(group, ctx->gameArea);
-        lv_group_focus_obj(ctx->gameArea);
+        lv_group_add_obj(group, wrapper);
+        lv_group_focus_obj(wrapper);
         lv_group_set_editing(group, true);
     }
 
@@ -387,6 +364,7 @@ static void onGameAreaDeleted(lv_event_t* e) {
     }
     lv_group_t* group = lv_group_get_default();
     if (group) lv_group_set_editing(group, false);
+    ctx->wrapper = nullptr;
     ctx->gameArea = nullptr;
     ctx->paddle = nullptr;
     for (int i = 0; i < MAX_BRICKS; i++) ctx->bricks[i] = nullptr;
@@ -409,6 +387,110 @@ void breakoutTeardown(Context* ctx) {
         ctx->sfxEngine->stop();
         delete ctx->sfxEngine;
         ctx->sfxEngine = nullptr;
+    }
+}
+
+/* ── Layout ───────────────────────────────────────────────────── */
+
+/** Sizes the field to the space there is, and converts the game state to the new size */
+static void layoutField(Context* ctx) {
+    lv_obj_update_layout(ctx->wrapper);
+    const int width = lv_obj_get_content_width(ctx->wrapper);
+    int height = lv_obj_get_content_height(ctx->wrapper);
+    if (ctx->touchMode) {
+        // Room for a thumb below the paddle, so it doesn't cover the game
+        height -= LV_MIN(LV_MAX(height / 5, LV_DPX(40)), height / 3);
+    }
+
+    const float scale = LV_MIN(width / (float)FIELD_W, height / (float)FIELD_H);
+    const float ratio = scale / ctx->scale;
+    ctx->scale = scale;
+    auto scaled = [scale](int value) { return LV_MAX((int)(value * scale + 0.5f), 1); };
+
+    ctx->areaW = (int)(FIELD_W * scale);
+    ctx->areaH = (int)(FIELD_H * scale);
+    ctx->brickW = scaled(28);
+    ctx->brickH = scaled(10);
+    ctx->brickGap = scaled(2);
+    ctx->ballSize = scaled(8);
+    ctx->originalPaddleW = scaled(54);
+    ctx->paddleW = ctx->extendActive ? (int)(ctx->originalPaddleW * 1.5f) : ctx->originalPaddleW;
+    ctx->paddleH = scaled(8);
+    ctx->paddleYPos = ctx->areaH - ctx->paddleH - scaled(4);
+    // Rounding up can make the rows wider than the field
+    auto rowWidth = [ctx] { return ctx->cols * ctx->brickW + (ctx->cols - 1) * ctx->brickGap; };
+    while (rowWidth() > ctx->areaW && ctx->brickGap > 1) ctx->brickGap--;
+    while (rowWidth() > ctx->areaW && ctx->brickW > 1) ctx->brickW--;
+    ctx->brickOffsetX = (ctx->areaW - (ctx->cols * ctx->brickW + (ctx->cols - 1) * ctx->brickGap)) / 2;
+    ctx->brickOffsetY = scaled(8);
+    ctx->capsuleW = scaled(22);
+    ctx->capsuleH = scaled(12);
+    ctx->laserW = scaled(3);
+    ctx->laserH = scaled(8);
+    ctx->baseBallSpeed = FIELD_BALL_SPEED * scale;
+    ctx->paddleSpeed = 24.0f * scale;
+    ctx->capsuleFallSpeed = 1.8f * scale;
+    ctx->laserSpeed = 6.0f * scale;
+
+    // Game state is in pixels of the field
+    ctx->ballSpeed *= ratio;
+    ctx->originalBallSpeed *= ratio;
+    ctx->catchOffsetX *= ratio;
+    ctx->paddleX *= ratio;
+
+    lv_obj_set_size(ctx->gameArea, ctx->areaW, ctx->areaH);
+    lv_obj_align(ctx->gameArea, LV_ALIGN_TOP_MID, 0, 0);
+
+    for (int r = 0; r < ctx->rows; r++) {
+        for (int c = 0; c < ctx->cols; c++) {
+            lv_obj_t* brick = ctx->bricks[r * ctx->cols + c];
+            lv_obj_set_size(brick, ctx->brickW, ctx->brickH);
+            lv_obj_set_pos(brick, ctx->brickOffsetX + c * (ctx->brickW + ctx->brickGap), ctx->brickOffsetY + r * (ctx->brickH + ctx->brickGap));
+        }
+    }
+
+    lv_obj_set_size(ctx->paddle, ctx->paddleW, ctx->paddleH);
+    lv_obj_set_pos(ctx->paddle, (int)ctx->paddleX, ctx->paddleYPos);
+
+    for (auto& ball : ctx->balls) {
+        ball.x *= ratio;
+        ball.y *= ratio;
+        ball.vx *= ratio;
+        ball.vy *= ratio;
+        lv_obj_set_size(ball.obj, ctx->ballSize, ctx->ballSize);
+        lv_obj_set_pos(ball.obj, (int)ball.x, (int)ball.y);
+    }
+    for (int i = 0; i < MAX_CAPSULES; i++) {
+        ctx->capsules[i].x *= ratio;
+        ctx->capsules[i].y *= ratio;
+        lv_obj_set_size(ctx->capsuleObjs[i], ctx->capsuleW, ctx->capsuleH);
+        lv_obj_set_pos(ctx->capsuleObjs[i], (int)ctx->capsules[i].x, (int)ctx->capsules[i].y);
+    }
+    for (auto& laser : ctx->lasers) {
+        laser.x *= ratio;
+        laser.y *= ratio;
+        lv_obj_set_size(laser.obj, ctx->laserW, ctx->laserH);
+        lv_obj_set_pos(laser.obj, (int)laser.x, (int)laser.y);
+    }
+
+    const int exitW = LV_MAX((int)(6 * scale), 2);
+    const int exitH = ctx->paddleH * 3;
+    lv_obj_set_size(ctx->exitIndicator, exitW, exitH);
+    lv_obj_set_pos(ctx->exitIndicator, ctx->areaW - exitW, ctx->paddleYPos - exitH / 2 + ctx->paddleH / 2);
+}
+
+static void setTouchMode(Context* ctx, bool touchMode) {
+    if (ctx->touchMode == touchMode) return;
+    ctx->touchMode = touchMode;
+    layoutField(ctx);
+    lv_obj_update_layout(ctx->wrapper);
+}
+
+static void onTouchStart(lv_event_t* e) {
+    lv_indev_t* indev = lv_indev_active();
+    // Keys and encoders also send press events
+    if (indev != nullptr && lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+        setTouchMode(static_cast<Context*>(lv_event_get_user_data(e)), true);
     }
 }
 
@@ -711,7 +793,7 @@ static void hitBrick(Context* ctx, int idx) {
 
         // Speed up ball slightly every 5 bricks destroyed
         if (ctx->destroyedCount % 5 == 0) {
-            ctx->ballSpeed += 0.15f;
+            ctx->ballSpeed += 0.15f * ctx->scale;
             // Scale active ball velocities
             for (int b = 0; b < MAX_BALLS; b++) {
                 if (!ctx->balls[b].active) continue;
@@ -778,7 +860,7 @@ static void nextLevel(Context* ctx) {
     ctx->level++;
 
     // Speed up ball each level
-    ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+    ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f * ctx->scale;
 
     clearPowerUps(ctx);
     setupLevelPattern(ctx);
@@ -1022,7 +1104,7 @@ static void clearPowerUps(Context* ctx) {
 
     // Reset slow
     if (ctx->slowRecoveryTicks > 0) {
-        ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+        ctx->ballSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f * ctx->scale;
         ctx->slowRecoveryTicks = 0;
     }
 
@@ -1307,11 +1389,11 @@ static void update(Context* ctx) {
         ctx->slowRecoveryTicks--;
         if (ctx->slowRecoveryTicks <= 0) {
             // Restore normal speed
-            float targetSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+            float targetSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f * ctx->scale;
             ctx->ballSpeed = targetSpeed;
         } else {
             // Gradually recover speed
-            float targetSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f;
+            float targetSpeed = ctx->baseBallSpeed + (ctx->level - 1) * 0.3f * ctx->scale;
             float progress = 1.0f - (float)ctx->slowRecoveryTicks / SLOW_RECOVERY_TICKS;
             ctx->ballSpeed = ctx->originalBallSpeed * 0.6f + (targetSpeed - ctx->originalBallSpeed * 0.6f) * progress;
         }
@@ -1321,7 +1403,7 @@ static void update(Context* ctx) {
     updateBalls(ctx);
 
     // Check if paddle reaches BreakOut exit
-    if (ctx->exitOpen && ctx->paddleX + ctx->paddleW >= ctx->areaW - 8) {
+    if (ctx->exitOpen && ctx->paddleX + ctx->paddleW >= ctx->areaW - 8 * ctx->scale) {
         ctx->score += 10000;
         updateScoreDisplay(ctx);
         saveHighScore(ctx->score);
@@ -1417,7 +1499,9 @@ static void onPressed(lv_event_t* e) {
     lv_indev_get_point(lv_indev_active(), &point);
 
     // Move paddle to touch X (centered on finger)
-    ctx->paddleX = (float)(point.x - ctx->paddleW / 2);
+    lv_area_t field;
+    lv_obj_get_coords(ctx->gameArea, &field);
+    ctx->paddleX = (float)(point.x - field.x1 - ctx->paddleW / 2);
 
     // Clamp to game area bounds
     if (ctx->paddleX < 0) ctx->paddleX = 0;
@@ -1453,6 +1537,9 @@ static void onKey(lv_event_t* e) {
     if (!ctx) return;
 
     uint32_t key = lv_event_get_key(e);
+
+    // Keyboard and trackball don't cover the screen, so the field gets all of it
+    setTouchMode(ctx, false);
 
     switch (key) {
         case LV_KEY_LEFT:

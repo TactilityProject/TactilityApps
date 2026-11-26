@@ -1,10 +1,19 @@
-# Diceware
+# GPIO
 
-This application is based on the [Diceware](https://en.wikipedia.org/wiki/Diceware) passphrase generator.
+Shows the live state of all GPIO pins of the device. Use it to check wiring and to see which pins are high or low.
 
-In a regular Diceware scenario, you roll 6 dice and match it with the corresponding word from the word list.
-In this application, it is simplified by getting a 32 bit random integer to get a random word from the word list.
+- The row at the top has the **Grid** and **Timeline** tabs, with freeze and reset on the right.
+- Every pin is a numbered tile. A filled tile is high.
+- A coloured border marks a pin that changed in the last two seconds.
+- Tap a tile (or move with the arrow keys) to see its level, the number of changes and when it last changed.
+- **Pause** (or Space) freezes the screen. Changes during a freeze aren't counted.
+- **Reset** clears the change marks, counters and traces.
+- Long press a tile to pin it to the timeline, or to unpin it. Pinned tiles have a bar at the bottom.
 
-The application asks to enable Wi-Fi because of the hardware [random generator on the ESP32](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/random.html).
-You can enable the Wi-Fi radio to improve the randomness. You don't have to be connected to any network.
-If you automatically connect to a Wi-Fi network, go to the network settings and manually disconnect from it.
+## Timeline
+
+- **+ GPIO** adds a pin, and tapping a lane's number removes it.
+- **Every ...** sets how often the pins are read, from 20 ms to 1 s, for both tabs. Changing it empties the traces.
+- The pinned pins and the interval are remembered.
+
+Pulses shorter than the interval can be missed, and short intervals are uneven when the device is busy. Pins are only read, never changed.

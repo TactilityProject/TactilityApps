@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include <lvgl_window_manager/dialog.h>
 #include <webserver.h>
 
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
-#include <app/start.h>
 
 #include <lvgl_window_manager/window_manager.h>
 
@@ -52,8 +51,8 @@ struct ModuleApi {
 struct Context {
     uint32_t appInstanceId = 0;
     ModuleApi api {};
-    // The dialog that tells the module isn't running, 0 when there is none
-    AppInstanceId dialogId = 0;
+    // Signalled when the dialog that tells the module isn't running closes
+    uint32_t dialogBit = 0;
     TaskEventGroup* eventGroup = nullptr;
     uint32_t requestBit = 0;
     // Set by the enable switch and applied by the app task, because starting the server takes a while
@@ -386,20 +385,15 @@ std::string getAddress(const WebServerSettings& settings) {
     return address;
 }
 
-/** @return false when the dialog could not be started */
+/** @return false when the dialog could not be shown */
 bool showModuleMissingDialog(Context* ctx) {
-    AppStartContext start;
-    if (app_start_context_from_id("tactility.alertdialog", &start) != ERROR_NONE) {
-        return false;
-    }
-    const char* arguments[] = {
-        "Web Server",
-        "The web server module is not running.\nInstall the Web Server package again or restart the device.",
-        "OK",
-    };
-    app_start_context_set_arguments_ext(&start, 3, arguments);
-    app_start_context_set_parent(&start, ctx->appInstanceId);
-    return app_start_with_context(&start, &ctx->dialogId) == ERROR_NONE;
+    static const char* const buttons[] = { "OK" };
+    return window_manager_alert_dialog(ctx->appInstanceId, "Web Server",
+        "The web server module is not running.\nInstall the Web Server package again or restart the device.", buttons, 1,
+        [](int32_t, void* userData) {
+            auto* context = static_cast<Context*>(userData);
+            task_event_group_signal(context->eventGroup, context->dialogBit);
+        }, ctx) == ERROR_NONE;
 }
 
 void refreshAddress(Context* ctx) {
@@ -459,6 +453,8 @@ extern "C" int main(int argc, char* argv[]) {
     ctx.eventGroup = &eventGroup;
     check(task_event_group_claim_bit(&eventGroup, &ctx.requestBit) == ERROR_NONE);
 
+    check(task_event_group_claim_bit(&eventGroup, &ctx.dialogBit) == ERROR_NONE);
+
     AppEventSubscription subscription {};
     check(app_event_subscribe(&subscription, &eventGroup) == ERROR_NONE);
 
@@ -478,7 +474,13 @@ extern "C" int main(int argc, char* argv[]) {
     }
 
     while (!shouldClose) {
-        task_event_group_wait_any(&eventGroup, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&eventGroup, &flags, portMAX_DELAY);
+
+        // Dismissing the dialog ends the app, because there is nothing to show without the module
+        if ((flags & ctx.dialogBit) != 0) {
+            break;
+        }
 
         const int32_t request = ctx.enableRequest.exchange(REQUEST_NONE);
         if (request != REQUEST_NONE && moduleAvailable) {
@@ -491,13 +493,6 @@ extern "C" int main(int argc, char* argv[]) {
         AppEvent event {};
         while (app_event_poll(&subscription, &event) == ERROR_NONE) {
             if (event.type == APP_EVENT_CLOSE) {
-                shouldClose = true;
-                break;
-            }
-            // Dismissing the dialog ends the app, because there is nothing to show without the module
-            if (event.type == APP_EVENT_RESULT && event.result.launch_id == ctx.dialogId) {
-                app_manager_stop(ctx.dialogId);
-                ctx.dialogId = 0;
                 shouldClose = true;
                 break;
             }
@@ -528,6 +523,7 @@ extern "C" int main(int argc, char* argv[]) {
     window_manager_remove(window);
     check(app_event_unsubscribe(&subscription) == ERROR_NONE);
     task_event_group_release_bit(&eventGroup, ctx.requestBit);
+    task_event_group_release_bit(&eventGroup, ctx.dialogBit);
     task_event_group_destruct(&eventGroup);
     releaseModule(ctx.api);
 

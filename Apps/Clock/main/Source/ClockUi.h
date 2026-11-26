@@ -4,6 +4,7 @@
 #include "ClockSettings.h"
 
 #include <app/instance.h>
+#include <tactility/concurrent/task_event_group.h>
 #include <lvgl.h>
 
 namespace clockapp {
@@ -11,13 +12,20 @@ namespace clockapp {
 struct Context {
     AppInstanceId appInstanceId = 0;
     bool analog = false;
+    bool fullscreen = false;
     bool format24h = true;
     DateFormat dateFormat = DateFormat::MonthDayYear;
 
     lv_obj_t* toolbar = nullptr;
     lv_obj_t* content = nullptr;
-    lv_obj_t* modeButton = nullptr;
-    lv_obj_t* modeButtonLabel = nullptr;
+    lv_obj_t* menuButton = nullptr;
+    /** Covers the clock while it's fullscreen, to catch the tap that ends it */
+    lv_obj_t* exitFullscreen = nullptr;
+
+    // The menu's choice is handled on the app task, which menuBit wakes
+    TaskEventGroup* eventGroup = nullptr;
+    uint32_t menuBit = 0;
+    int32_t menuChoice = -1;
 
     lv_obj_t* timeLabel = nullptr;
     lv_obj_t* secondsLabel = nullptr;
@@ -47,5 +55,7 @@ struct Context {
 void buildUi(Context* context, lv_obj_t* parent);
 void destroyUi(Context* context);
 void refreshClock(Context* context);
+/** Applies the menu choice. Call on the app task, without the LVGL lock. */
+void applyMenuChoice(Context* context);
 
 }

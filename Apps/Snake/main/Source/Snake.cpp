@@ -4,13 +4,14 @@
  */
 #include "Snake.h"
 
+#include <lvgl_window_manager/dialog.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <inttypes.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
 #include <lvgl/widgets/toolbar.h>
 
 #include <app/paths.h>
-#include <app/start.h>
 #include <tactility/preferences.h>
 
 #include <string>
@@ -27,9 +28,9 @@ constexpr const char* PREF_HIGH_HELL = "high_hell";
 
 constexpr size_t DIFFICULTY_COUNT = 4;
 
-// Difficulty options (cell sizes - larger = easier)
-// Hell uses same size as Hard but with wall collision enabled
-const uint16_t difficultySizes[DIFFICULTY_COUNT] = { SNAKE_CELL_LARGE, SNAKE_CELL_MEDIUM, SNAKE_CELL_SMALL, SNAKE_CELL_SMALL };
+// Difficulty options (cells in the field - fewer = easier)
+// Hell uses same count as Hard but with wall collision enabled
+const uint16_t difficultyCells[DIFFICULTY_COUNT] = { SNAKE_CELLS_EASY, SNAKE_CELLS_MEDIUM, SNAKE_CELLS_HARD, SNAKE_CELLS_HARD };
 
 bool getPreferencesPath(std::string& outPath) {
     char path[128];
@@ -114,8 +115,7 @@ void snakeEventCb(lv_event_t* e) {
                 snprintf(message, sizeof(message), "GAME OVER!\n\nSCORE: %" PRId32 "\nLENGTH: %" PRId32 "\nBEST: %" PRId32,
                         score, length, getHighScore(ctx, ctx->currentDifficulty));
             }
-            const char* argv[] = { alertTitle, message, "OK" };
-            app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->gameOverDialogId);
+            snakeShowAlert(ctx, GameDialog::GameOver, alertTitle, message);
         } else {
             // Update score display
             lv_label_set_text_fmt(ctx->scoreLabel, "SCORE: %u", snake_get_score(ctx->gameObject));
@@ -135,12 +135,12 @@ void newGameBtnEvent(lv_event_t* e) {
     }
 }
 
-void createGame(Context* ctx, lv_obj_t* parent, uint16_t cell_size, bool wallCollision, lv_obj_t* tb) {
+void createGame(Context* ctx, lv_obj_t* parent, uint16_t cell_count, bool wallCollision, lv_obj_t* tb) {
     lv_obj_set_scrollable(parent, false);
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
 
     // Create game widget
-    ctx->gameObject = snake_create(parent, cell_size, wallCollision);
+    ctx->gameObject = snake_create(parent, cell_count, wallCollision);
     if (!ctx->gameObject) {
         return;
     }
@@ -174,6 +174,12 @@ void createGame(Context* ctx, lv_obj_t* parent, uint16_t cell_size, bool wallCol
     lvgl_toolbar_add_text_button_action(tb, LV_SYMBOL_REFRESH, newGameBtnEvent, ctx);
 }
 
+void onDialogResult(int32_t result, void* userData) {
+    auto* ctx = static_cast<Context*>(userData);
+    ctx->dialogResult = result;
+    task_event_group_signal(ctx->eventGroup, ctx->dialogBit);
+}
+
 } // namespace
 
 void snakeCreateWidgets(lv_obj_t* parent, void* userData) {
@@ -202,21 +208,13 @@ void snakeCreateWidgets(lv_obj_t* parent, void* userData) {
         ctx->highScoresLoaded = true;
     }
 
-    // Rebuild whatever was already committed. A game in progress survives a resurface caused by
-    // burial from something other than our own dialogs (window_manager only ever destroys the
-    // widget tree - Context's state, including currentDifficulty, is untouched) - snake_create()
-    // owns all game state internally though, so there's no cheap way to resume the exact
-    // position; this starts a fresh game at the same difficulty instead.
-    //
-    // Deliberately never opens a dialog from here - see Snake.h's comment on
-    // snakeShowSelectionDialog()/snakeShowHelpDialog()/snakeStartGame()/snakeClearGame() for why:
-    // this callback can run on a different app's thread mid-resurface, racing ahead of main()'s
-    // own APP_EVENT_RESULT processing.
+    // Rebuild a game in progress after the window was buried. Context keeps currentDifficulty, but the game
+    // widget owns the board, so this starts a fresh game with the same setting. Dialogs don't bury the window.
     if (ctx->currentDifficulty >= SNAKE_SELECTION_EASY && ctx->currentDifficulty <= SNAKE_SELECTION_HELL) {
         lv_obj_update_layout(parent);
         int32_t difficultyIndex = ctx->currentDifficulty - SNAKE_SELECTION_EASY;
         bool wallCollision = (ctx->currentDifficulty == SNAKE_SELECTION_HELL);
-        createGame(ctx, ctx->mainWrapper, difficultySizes[difficultyIndex], wallCollision, ctx->toolbar);
+        createGame(ctx, ctx->mainWrapper, difficultyCells[difficultyIndex], wallCollision, ctx->toolbar);
     }
 }
 
@@ -225,29 +223,35 @@ void snakeTeardown(Context* ctx) {
     ctx->scoreWrapper = nullptr;
     ctx->toolbar = nullptr;
     ctx->mainWrapper = nullptr;
-    ctx->newGameWrapper = nullptr;
     ctx->gameObject = nullptr;
 }
 
 void snakeShowSelectionDialog(Context* ctx) {
-    const char* argv[] = { "Snake", "How to Play", "Easy", "Medium", "Hard", "Hell" };
-    app_start_for_result("tactility.selectiondialog", 6, argv, ctx->appInstanceId, &ctx->selectionDialogId);
+    static const char* const items[] = { "How to Play", "Easy", "Medium", "Hard", "Hell" };
+    ctx->dialog = GameDialog::Selection;
+    if (window_manager_selection_dialog(ctx->appInstanceId, "Snake", items, 5, onDialogResult, ctx) != ERROR_NONE) {
+        ctx->dialog = GameDialog::None;
+    }
+}
+
+void snakeShowAlert(Context* ctx, GameDialog kind, const char* title, const char* message) {
+    static const char* const buttons[] = { "OK" };
+    ctx->dialog = kind;
+    if (window_manager_alert_dialog(ctx->appInstanceId, title, message, buttons, 1, onDialogResult, ctx) != ERROR_NONE) {
+        ctx->dialog = GameDialog::None;
+    }
 }
 
 void snakeShowHelpDialog(Context* ctx) {
-    const char* argv[] = {
-        "How to Play",
+    snakeShowAlert(ctx, GameDialog::Help, "How to Play",
         "Swipe or use arrow keys to change direction.\n"
         "Eat food to grow longer.\n"
-        "Don't hit yourself!",
-        "OK",
-    };
-    app_start_for_result("tactility.alertdialog", 3, argv, ctx->appInstanceId, &ctx->helpDialogId);
+        "Don't hit yourself!");
 }
 
 void snakeClearGame(Context* ctx) {
     if (ctx->scoreWrapper) { lv_obj_delete(ctx->scoreWrapper); ctx->scoreWrapper = nullptr; }
-    if (ctx->newGameWrapper) { lv_obj_delete(ctx->newGameWrapper); ctx->newGameWrapper = nullptr; }
+    if (ctx->toolbar) lvgl_toolbar_clear_actions(ctx->toolbar);
     if (ctx->mainWrapper) lv_obj_clean(ctx->mainWrapper);
     ctx->scoreLabel = nullptr;
     ctx->gameObject = nullptr;
@@ -262,5 +266,5 @@ void snakeStartGame(Context* ctx, int32_t difficulty) {
     ctx->currentDifficulty = difficulty;
     int32_t difficultyIndex = difficulty - SNAKE_SELECTION_EASY;
     bool wallCollision = (difficulty == SNAKE_SELECTION_HELL);
-    createGame(ctx, ctx->mainWrapper, difficultySizes[difficultyIndex], wallCollision, ctx->toolbar);
+    createGame(ctx, ctx->mainWrapper, difficultyCells[difficultyIndex], wallCollision, ctx->toolbar);
 }

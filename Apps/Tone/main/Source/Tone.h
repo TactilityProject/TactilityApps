@@ -7,13 +7,18 @@
 
 #include "TonePlayback.h"
 
+#include <tactility/concurrent/task_event_group.h>
 #include <tactility/device.h>
 #include <tactility/freertos/semphr.h>
 
-/** Frequency presets excluding the "Sweep" option, which is appended by the UI. */
-constexpr uint32_t TONE_FREQUENCY_PRESET_COUNT = 9; // 8 fixed tones + sweep
+#include <atomic>
+
+constexpr uint32_t TONE_PRESET_COUNT = 8;
 constexpr uint32_t TONE_WAVEFORM_COUNT = 5;
-constexpr uint32_t TONE_CHANNEL_COUNT = 2;
+constexpr uint32_t TONE_PREVIEW_POINTS = 101;
+
+/** What a sweep row sets */
+enum class SweepValue : uint8_t { From, To, Period };
 
 struct Context {
     AppInstanceId appInstanceId = 0;
@@ -26,27 +31,39 @@ struct Context {
     SemaphoreHandle_t playbackGate = nullptr;
     bool closing = false;
 
-    // UI-only state, touched exclusively on the LVGL thread.
-    uint8_t volumePercent = 100;
-    uint8_t selectedChannel = 1; // index into channelButtons; 0 = mono, 1 = stereo
-    bool updatingFrequencyInput = false;
+    // Menu and dialog actions are carried out on the app task, which actionBit wakes
+    TaskEventGroup* eventGroup = nullptr;
+    uint32_t actionBit = 0;
+    std::atomic<uint32_t> action { 0 }; // the action in the low byte and its value above it, so they stay together
 
-    // Widget handles; nulled in toneDestroyWidgets() once the live widgets are gone.
+    // UI-only state, guarded by the LVGL lock
+    uint8_t volumePercent = 100;
+    bool sweepPage = false;   // the sweep settings are shown instead of the main page (small screens)
+    bool compact = false;     // the sweep settings are on their own page
+    bool presetsShown = true; // false when there is no room for them
+    SweepValue editedSweepValue = SweepValue::From;
+    uint8_t menuActions[3] = {};
+
+    // Widget handles; nulled when the widgets are destroyed
+    lv_obj_t* root = nullptr;
+    lv_obj_t* frequencyLabel = nullptr;
+    lv_obj_t* statusLabel = nullptr;
+    lv_obj_t* frequencySlider = nullptr;
     lv_obj_t* playButton = nullptr;
-    lv_obj_t* playButtonLabel = nullptr;
-    lv_obj_t* readoutFrequencyLabel = nullptr;
-    lv_obj_t* readoutStatusLabel = nullptr;
-    lv_obj_t* frequencyInput = nullptr;
-    lv_obj_t* presetButtons[TONE_FREQUENCY_PRESET_COUNT] = {};
-    lv_obj_t* waveformButtons[TONE_WAVEFORM_COUNT] = {};
-    lv_obj_t* channelButtons[TONE_CHANNEL_COUNT] = {};
-    lv_obj_t* sweepCard = nullptr;
-    lv_obj_t* sweepMinInput = nullptr;
-    lv_obj_t* sweepMaxInput = nullptr;
-    lv_obj_t* sweepPeriodInput = nullptr;
-    lv_obj_t* volumeBox = nullptr;
+    lv_obj_t* playLabel = nullptr;
+    lv_obj_t* waveformChips[TONE_WAVEFORM_COUNT] = {};
+    lv_obj_t* presetChips[TONE_PRESET_COUNT] = {};
+    lv_obj_t* fixedChip = nullptr;
+    lv_obj_t* sweepChip = nullptr;
+    lv_obj_t* sweepSliders[3] = {};
+    lv_obj_t* sweepLabels[3] = {};
+    lv_obj_t* previewLine = nullptr;
+    lv_point_precise_t previewPoints[TONE_PREVIEW_POINTS] = {};
     lv_timer_t* refreshTimer = nullptr;
 };
 
 void toneCreateWidgets(lv_obj_t* root, void* userData);
 void toneDestroyWidgets(void* userData);
+
+/** Carries out the pending menu or dialog action. Call on the app task, without the LVGL lock. */
+void toneRunAction(Context* ctx);

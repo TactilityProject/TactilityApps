@@ -1,5 +1,8 @@
 #pragma once
 
+#include <app/stream.h>
+#include <tactility/concurrent/task_event_group.h>
+
 #include <atomic>
 #include <lvgl.h>
 #include <memory>
@@ -9,121 +12,120 @@
 
 #include "EpubService.h"
 
-// Icon fonts (compiled in; small and device-independent)
-LV_FONT_DECLARE(material_symbols_shared_20)
-LV_FONT_DECLARE(material_symbols_shared_32)
-
 // Font selection utility (defined in EpubReaderUI.cpp, shared across translation units).
 const lv_font_t* selectContentFont(bool italic = false, bool bold = false);
 
 static constexpr size_t MAX_CHAPTER_HTML = 131072; // max HTML bytes read per chapter (128 KB)
+static constexpr size_t MAX_RECENT_BOOKS = 20;
+
+/** A book that was opened before, and where reading stopped */
+struct RecentBook {
+    std::string path;
+    std::string title;
+    int chapter = 0;     // EPUB spine index
+    int offset = 0;      // scroll position within the chapter or text file
+    int percent = 0;
+};
+
+enum class View { Library, Loading, Reader };
+
+/** The dialog that is shown, if any */
+enum class ReaderDialog { None, Menu, Contents };
+
+enum class MenuAction { Contents, OpenFile, CloseBook };
 
 struct Context {
     uint32_t appInstanceId;
+    View view = View::Library;
+    /** Most recently opened first. Guarded by the LVGL lock. */
+    std::vector<RecentBook> recents_;
+    std::string libraryError_;
 
     // EPUB / text reader state
     std::shared_ptr<EpubService> epub_;
     bool textMode_ = false;         // true when showing a plain .txt file (no epub_)
     std::string currentFilePath_;
     int currentSpineIndex_ = 0;
-    uint32_t tocDialogId_    = 0;
-    uint32_t psramAlertId_   = 0;  // Non-zero once the no-PSRAM alert has been launched
 
-    // Per-chapter stripped plain text + current display offset
+    // Per-chapter stripped plain text + scroll position within it
     std::string pageContent_;
     size_t      pageOffset_ = 0;
 
-    // File browser state
-    std::string dataRoot_;
-    std::string browsePath_;
-    std::string pendingFilePath_;   // Set before async open
-    // Path passed on the command line at launch (argv[0]), or empty. Re-checked (and left set,
-    // matching the original bundle-based behavior of re-checking every show) each time
-    // createWidgets() runs until an epub_ is successfully opened.
-    std::string launchFilePath_;
-    std::vector<std::pair<std::string, bool>> browserEntries_;  // {name, isDir}
+    // Dialog results and the like are handled on the app task, which these bits wake
+    TaskEventGroup* eventGroup_ = nullptr;
+    uint32_t dialogBit_ = 0;
+    uint32_t openFileBit_ = 0;
+    uint32_t psramAlertBit_ = 0;
+    std::atomic<ReaderDialog> dialog_ { ReaderDialog::None };
+    std::atomic<int32_t> dialogResult_ { -1 };
+    std::vector<MenuAction> menuActions_;
 
-    // Books folder
-    std::string booksPath_;               // saved books folder path (empty = not set)
-    int shelfPage_ = 0;                   // current page in shelf view (persists across open/close)
+    // The file selection app, while it runs
+    uint32_t fileLaunchId_ = 0;
+    AppStream fileStream_ {};
+    uint8_t fileBuffer_[256] {};
 
-    // Background open token - incremented in epubReaderTeardown() to invalidate any in-flight
-    // background task so its result is discarded if it arrives after the app has closed.
+    // Background open token - incremented to invalidate any in-flight background task so its
+    // result is discarded when it arrives after the user went elsewhere or the app closed.
     std::atomic<uint32_t> openToken_ = 0;
 
-    // UI pointers (nulled in epubReaderTeardown())
+    // UI pointers (nulled when the widgets are destroyed)
     lv_obj_t* toolbar_        = nullptr;
     lv_obj_t* wrapperWidget_  = nullptr;
     // In text mode: an lv_label.
     // In EPUB mode: a transparent flex-column container holding per-paragraph labels.
     lv_obj_t* contentWidget_  = nullptr;
+    // The page and progress line below the text
+    lv_obj_t* statusLabel_    = nullptr;
 };
 
-/** window_manager_create()'s WindowCreateWidgetsFn - @a userData is the Context* for this instance. */
+/** window_manager_create_ext()'s callbacks - @a userData is the Context* for this instance. */
 void epubReaderCreateWidgets(lv_obj_t* parent, void* userData);
+void epubReaderDestroyWidgets(void* userData);
 
-/** Releases fonts and joins/invalidates any in-flight background job. Call once the window is torn down. */
+/** Loads the recent books. Call on the app task, before the window is created. */
+void epubReaderInit(Context* ctx);
+/** Releases fonts and invalidates any in-flight background job. Call once the window is torn down. */
 void epubReaderTeardown(Context* ctx);
 
-// ---------------------------------------------------------------------------
-// Shared across translation units (EpubReader.cpp / EpubReaderUI.cpp / EpubReaderAsync.cpp)
-// ---------------------------------------------------------------------------
+// Call on the app task, without the LVGL lock
+void startFileSelection(Context* ctx);
+void handleFileResult(Context* ctx, uint32_t launchId, int32_t result);
+void handleDialogResult(Context* ctx);
 
-// Font lifecycle - loads the 4 Noto Serif variants for the active display size tier
-// from binary assets via lv_binfont_create; unloaded in epubReaderTeardown().
+// The functions below require the LVGL lock
+
 void loadFonts(Context* ctx);
 void unloadFonts();
 
-// UI builders
-void buildReaderUI(Context* ctx, lv_obj_t* parent);
-// Parse an ESC-encoded page slice and populate contentWidget_ with labels.
+/** Rebuilds the toolbar and the content for ctx->view */
+void showView(Context* ctx);
+/** Parse an ESC-encoded page slice and populate contentWidget_ with labels. */
 void renderSlice(Context* ctx, const std::string& slice);
-void buildBrowserUI(Context* ctx, lv_obj_t* parent);
-void buildShelfUI(Context* ctx, lv_obj_t* parent);
-void setReaderToolbarButtons(Context* ctx);
-void setBrowserToolbarButtons(Context* ctx);
 
-// Chapter / text logic
 void loadChapter(Context* ctx, int index, int direction = 1);
 void renderPage(Context* ctx);
+/** Moves the current book to the front of the recent books, with the current position */
 void saveProgress(Context* ctx);
-bool loadProgress(std::string& outPath, int& outChapter, bool& outIsText);
-void openTocDialog(Context* ctx);
+void writeRecents(Context* ctx);
 
-// Helpers
-void loadBooksPath(Context* ctx);
-void saveBooksPath(Context* ctx);
-bool isSupportedFile(const std::string& name);
 bool isTextFile(const std::string& path);
-void scanBooksDir(Context* ctx, const std::string& path, const std::string& prefix);  // shelf flat-scan helper
 
-// Async rebuilds - safe to call from within LVGL event callbacks
-void asyncOpenEpub(void* data);
-void asyncRestoreEpub(void* data);  // like asyncOpenEpub but keeps currentSpineIndex_
-void asyncNavigateBrowser(void* data);
-void asyncSwitchToBrowser(void* data);
+/** Starts opening a book on a background task, at the position it was left */
+void openBook(Context* ctx, const std::string& path);
+void closeBook(Context* ctx);
+/** Saves where reading is, also after scrolling by dragging */
+void rememberPosition(Context* ctx);
 
-// Background open - runs EpubService::open off the LVGL task to avoid stack overflow.
-// asyncOpenComplete is posted via lv_async_call when done.
-void spawnOpenTask(Context* ctx, bool restore); // shared setup for both open paths
-void backgroundOpenTask(void* data); // xTaskCreate target
-void asyncOpenComplete(void* data);  // lv_async_call target, back on LVGL task
-void asyncScrollToEnd(void* data);   // lv_async_call: scroll to bottom after layout
+void asyncShowView(void* data);   // lv_async_call target, for rebuilds from widget events
+void asyncOpenComplete(void* data);
+void asyncScrollToEnd(void* data);
+void backgroundOpenTask(void* data);
 
-// Navigation - shared by toolbar callbacks and tap zones
+/** How far into the book the reader is, 0 to 100. Requires contentWidget_. */
+int readingPercent(Context* ctx);
+/** Shows the page within the chapter and the progress */
+void updateStatus(Context* ctx, int percent);
+
 void doPrev(Context* ctx);
 void doNext(Context* ctx);
-
-// LVGL event callbacks
-void onPrevPressed(lv_event_t* e);
-void onNextPressed(lv_event_t* e);
-void onReaderTap(lv_event_t* e);
-void onTocPressed(lv_event_t* e);
-void onBrowsePressed(lv_event_t* e);
-void onBrowserBack(lv_event_t* e);
-void onBrowserItem(lv_event_t* e);
-void onSetBooksFolder(lv_event_t* e);  // "Folder" toolbar button
-void onShelfFirst(lv_event_t* e);
-void onShelfPrev(lv_event_t* e);
-void onShelfNext(lv_event_t* e);
-void onShelfLast(lv_event_t* e);

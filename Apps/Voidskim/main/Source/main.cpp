@@ -1,14 +1,14 @@
 #include "core/Game.h"
+#include <lvgl_window_manager/dialog.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <Bleep/AudioOutput.h>
 #include "platform/CxxRuntime.h"
 #include "platform/DisplayOutput.h"
 #include "platform/PlatformInput.h"
 
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/paths.h>
 #include <app/scheduler.h>
-#include <app/start.h>
 
 #include <lvgl/lvgl.h>
 #include <lvgl/module.h>
@@ -40,33 +40,41 @@ static constexpr const char* APP_ID = "tactility.voidskim";
 // Jet's painter sort and the game's own frames need some stack
 constexpr uint32_t GAME_TASK_STACK_SIZE = 32 * 1024;
 
-// Shows a blocking error dialog and waits for it to close. This app has no window of its own,
-// so nothing else keeps it alive for the dialog to be seen.
+// Shows an error dialog and waits for it to close. A dialog needs a window, so an empty one is created for it.
 static void showErrorAndWait(AppInstanceId appInstanceId, const char* message) {
-    const char* argv[] = { "Error", message, "OK" };
-    uint32_t dialogInstanceId = 0;
-    app_start_for_result("tactility.alertdialog", 3, argv, appInstanceId, &dialogInstanceId);
-    if (dialogInstanceId == 0) {
-        return;
-    }
-    TaskEventGroup eventGroup {};
-    task_event_group_construct(&eventGroup);
+    struct DialogState {
+        TaskEventGroup eventGroup {};
+        uint32_t closedBit = 0;
+    } state;
+    task_event_group_construct(&state.eventGroup);
+    check(task_event_group_claim_bit(&state.eventGroup, &state.closedBit) == ERROR_NONE);
     AppEventSubscription subscription {};
-    check(app_event_subscribe(&subscription, &eventGroup) == ERROR_NONE);
-    bool done = false;
+    check(app_event_subscribe(&subscription, &state.eventGroup) == ERROR_NONE);
+    const WindowId window = window_manager_create(appInstanceId, [](lv_obj_t*, void*) {}, nullptr);
+
+    static const char* const buttons[] = { "OK" };
+    const error_t result = window_manager_alert_dialog(appInstanceId, "Error", message, buttons, 1, [](int32_t, void* userData) {
+        auto* dialogState = static_cast<DialogState*>(userData);
+        task_event_group_signal(&dialogState->eventGroup, dialogState->closedBit);
+    }, &state);
+
+    bool done = result != ERROR_NONE;
     while (!done) {
-        task_event_group_wait_any(&eventGroup, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&state.eventGroup, &flags, portMAX_DELAY);
+        done = (flags & state.closedBit) != 0;
         AppEvent event {};
         while (app_event_poll(&subscription, &event) == ERROR_NONE) {
-            if (event.type == APP_EVENT_RESULT && event.result.launch_id == dialogInstanceId) {
-                app_manager_stop(dialogInstanceId);
+            if (event.type == APP_EVENT_CLOSE) {
                 done = true;
-                break;
             }
         }
     }
+
+    window_manager_remove(window);
     check(app_event_unsubscribe(&subscription) == ERROR_NONE);
-    task_event_group_destruct(&eventGroup);
+    task_event_group_release_bit(&state.eventGroup, state.closedBit);
+    task_event_group_destruct(&state.eventGroup);
 }
 
 // Reads how the user sees the display from LVGL, before it's stopped.

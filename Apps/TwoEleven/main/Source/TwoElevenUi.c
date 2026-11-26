@@ -129,6 +129,8 @@ lv_obj_t * twoeleven_create(lv_obj_t * parent, uint16_t matrix_size)
     lv_obj_set_style_pad_all(game_2048->btnm, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(game_2048->btnm, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(game_2048->btnm, ELEVENTWO_BG_COLOR, LV_PART_MAIN);
+    // Tiles are disabled buttons: stop the theme from fading them
+    lv_obj_set_style_opa(game_2048->btnm, LV_OPA_COVER, LV_PART_ITEMS | LV_STATE_DISABLED);
     lv_group_remove_obj(game_2048->btnm);
     lv_obj_set_send_draw_task_events(game_2048->btnm, true);
     lv_obj_set_gesture_bubble(game_2048->btnm, false);
@@ -291,7 +293,7 @@ static void btnm_event_cb(lv_event_t * e)
                 fill_draw_dsc->color = get_num_color(num);
             }
             if (label_draw_dsc) {
-                label_draw_dsc->color = (num < 8) ? ELEVENTWO_TEXT_BLACK_COLOR : ELEVENTWO_TEXT_WHITE_COLOR;
+                label_draw_dsc->color = ELEVENTWO_TEXT_COLOR;
             }
         } else {
             if (fill_draw_dsc) fill_draw_dsc->radius = 5;

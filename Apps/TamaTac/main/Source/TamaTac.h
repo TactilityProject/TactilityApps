@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <tactility/concurrent/task_event_group.h>
 #include <app/instance.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <lvgl.h>
@@ -65,15 +66,16 @@ struct Context {
     LifeStage lastKnownStage = LifeStage::Egg;
     DecaySpeed decaySpeed = DecaySpeed::Normal;
     uint32_t lastPetTime = 0;
-    bool pendingResetUI = false;  // Set by main.cpp's AlertDialog result handler, consumed by MainView's anim timer
+    bool pendingResetUI = false;  // Set by main.cpp's reset handler, consumed by MainView's anim timer
 
     // Session-scoped resources - created once in tamaTacInit(), released in tamaTacTeardown()
     SfxEngine* sfxEngine = nullptr;
     TimerHandle_t updateTimer = nullptr;
     SemaphoreHandle_t timerMutex = nullptr;
 
-    // Dialog launch id for tracking the reset-confirmation AlertDialog
-    uint32_t resetDialogId = 0;
+    // Signalled when the reset is confirmed
+    TaskEventGroup* eventGroup = nullptr;
+    uint32_t resetBit = 0;
 };
 
 /** Sets up state that must exist for the whole app instance lifetime: loads pet state, starts

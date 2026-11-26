@@ -1,6 +1,7 @@
 #include "AudioRecorder.h"
 
-#include <app/start.h>
+#include <lvgl_window_manager/dialog.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <app/paths.h>
 #include <lvgl/lvgl.h>
 #include <lvgl/fonts.h>
@@ -567,10 +568,6 @@ void recorderSelectRecording(Context* ctx, const std::string& fullpath) {
 }
 
 void recorderRequestDelete(Context* ctx, const std::string& fullpath) {
-    if (ctx->pendingDeleteDialogId != 0) {
-        return; // a delete confirmation is already pending
-    }
-
     const char* slash = strrchr(fullpath.c_str(), '/');
     const char* name = slash ? (slash + 1) : fullpath.c_str();
     const std::string displayName = stripExtension(name);
@@ -578,24 +575,32 @@ void recorderRequestDelete(Context* ctx, const std::string& fullpath) {
     char message[192];
     snprintf(message, sizeof(message), "Delete \"%s\"?", displayName.c_str());
 
-    ctx->pendingDeletePath = fullpath;
+    {
+        std::lock_guard lg(ctx->deleteMutex);
+        if (!ctx->pendingDeletePath.empty()) {
+            return; // a delete confirmation is already pending
+        }
+        ctx->pendingDeletePath = fullpath;
+    }
 
-    const char* argv[] = {
-        "Delete Recording?",
-        message,
-        "Delete",
-        "Cancel",
-    };
-    error_t err = app_start_for_result("tactility.alertdialog", 4, argv, ctx->appInstanceId, &ctx->pendingDeleteDialogId);
+    static const char* const buttons[] = { "Delete", "Cancel" };
+    const error_t err = window_manager_alert_dialog(ctx->appInstanceId, "Delete Recording?", message, buttons, 2,
+        [](int32_t button, void* userData) {
+            // The file is deleted on the app task
+            auto* context = static_cast<Context*>(userData);
+            context->deleteConfirmed = button == 0;
+            task_event_group_signal(context->eventGroup, context->deleteBit);
+        }, ctx);
     if (err != ERROR_NONE) {
-        LOG_E(TAG, "app_start_for_result(AlertDialog) failed: %d", err);
+        LOG_E(TAG, "Failed to show the delete dialog: %d", err);
+        std::lock_guard lg(ctx->deleteMutex);
         ctx->pendingDeletePath.clear();
     }
 }
 
 void recorderInitAppData(Context* ctx) {
     // Only runs once per app instance: audiorecorderCreateWidgets() reruns on every
-    // resurface (e.g. after the delete-confirmation AlertDialog closes), but session
+    // resurface (e.g. after the delete-confirmation dialog closes), but session
     // state - the audio task's request queue, the recordings directory - must survive
     // that, not get reset out from under an in-flight request.
     if (ctx->backendStarted) {

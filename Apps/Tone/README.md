@@ -4,21 +4,22 @@ A signal generator for Tactility devices. Plays oscillator waveforms straight to
 
 ## Features
 
-- **5 waveforms**: sine, square, sawtooth, triangle, and white noise
-- **9 frequency presets**: 50 Hz - 10 kHz, or a free-entry frequency field
-- **Frequency sweep**: triangle up-down sweep between a min and max frequency with an adjustable period
-- **Mono and stereo output** (configurable before playback)
-- **Live updates**: frequency, waveform, and sweep settings apply immediately while playing, via lock-free atomics
-- **100% volume control** through the sliderbox
-- **Adaptive layout** for Cardputer, T-Deck, CYD, and compact panels
+- **5 waveforms**: sine, square, sawtooth, triangle, and noise (darker at low frequencies, close to white noise at high ones), with a preview
+- **Frequency**: a logarithmic slider, fine steps, presets from 50 Hz to 10 kHz, or type an exact value
+- **Note names**: the nearest note and the offset in cents
+- **Frequency sweep**: up and down between two frequencies with an adjustable period
+- **Live updates**: all settings apply while playing
+- **Layouts** for small screens and large landscape or portrait screens
 
 ## Controls
 
-- **Play/Pause** (toolbar button): start or stop the tone. Channel selection locks while playing.
-- **Frequency chips**: select a preset or the Sweep mode. Type into the frequency field for a custom value.
-- **Sweep card**: shown only in sweep mode; edit min Hz, max Hz, and period (in seconds).
-- **Mono/Stereo chips**: pick the output channel config (only while stopped).
-- **Volume slider**: adjusts the codec output volume live.
+- **Play / Stop**: start or stop the tone
+- **− / +**: steps of 1 Hz below 100 Hz, 10 Hz below 1 kHz, 100 Hz above
+- **Tap the frequency**: type an exact value
+- **Menu** (small screens): presets, sweep settings and typing a frequency
+- **Sweep**: drag the sliders, or tap a value to type it
+
+When a screen has no room, the presets are left out first (they stay in the menu), then the wave preview.
 
 ## Notes
 

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <lvgl_window_manager/dialog.h>
 #include <ili9341panel.h>
 
 #include "panel_display.h"
 
 #include <app/event.h>
 #include <app/install.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
-#include <app/start.h>
-#include <app/stream.h>
 
 #include <lvgl/devices/device_context.h>
 #include <lvgl/devices/display.h>
@@ -31,7 +29,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <type_traits>
-#include <unistd.h>
 
 namespace {
 
@@ -49,7 +46,6 @@ constexpr int32_t REQUEST_EDIT_NUMBER = 5;
 // stop it (so the state matches the one in Kernel settings).
 constexpr const char* PACKAGE_ID = "tactility.mystifyspidemo";
 constexpr const char* MODULE_NAME = "ili9341-panel";
-constexpr const char* INPUT_DIALOG_APP_ID = "tactility.inputdialog";
 
 constexpr uint32_t CLOCK_PRESETS[] = { 10, 20, 40, 80 }; // MHz
 constexpr uint32_t CLOCK_PRESET_COUNT = sizeof(CLOCK_PRESETS) / sizeof(CLOCK_PRESETS[0]);
@@ -74,9 +70,11 @@ constexpr size_t NUMERIC_FIELD_COUNT = static_cast<size_t>(NumericField::Count);
 
 struct NumberDialog {
     NumericField field = NumericField::Width;
-    AppInstanceId instanceId = 0;
-    AppStream stream {};
-    char buffer[32] = {};
+    bool pending = false;
+    /** Set by the dialog's result callback, which then wakes the app task */
+    std::atomic<bool> done { false };
+    bool confirmed = false;
+    char text[32] = {};
 };
 
 struct PanelApi {
@@ -721,8 +719,16 @@ int32_t clampField(NumericField field, int32_t value) {
     return value;
 }
 
+void onNumberDialogResult(bool confirmed, const char* text, void* userData) {
+    auto& ctx = *static_cast<Context*>(userData);
+    ctx.dialog.confirmed = confirmed;
+    std::snprintf(ctx.dialog.text, sizeof(ctx.dialog.text), "%s", text);
+    ctx.dialog.done = true;
+    task_event_group_signal(ctx.eventGroup, ctx.requestBit);
+}
+
 void openNumberDialog(Context& ctx, NumericField field) {
-    if (ctx.dialog.instanceId != 0) {
+    if (ctx.dialog.pending) {
         return;
     }
 
@@ -732,71 +738,43 @@ void openNumberDialog(Context& ctx, NumericField field) {
         std::snprintf(prefilled, sizeof(prefilled), "%d", static_cast<int>(current));
     }
 
-    const char* argv[] = { dialogTitle(field), dialogMessage(field), prefilled };
+    ctx.dialog.field = field;
+    ctx.dialog.pending = true;
+    const error_t result = window_manager_input_dialog(ctx.appInstanceId, dialogTitle(field), dialogMessage(field),
+        prefilled, "OK", "Cancel", onNumberDialogResult, &ctx);
+    if (result != ERROR_NONE) {
+        ctx.dialog.pending = false;
+        lvgl_lock();
+        setActionStatus(ctx, error_to_string(result));
+        lvgl_unlock();
+    }
+}
 
-    AppStartContext start {};
-    error_t result = app_start_context_from_id(INPUT_DIALOG_APP_ID, &start);
-    if (result == ERROR_NONE) {
-        AppStreamBinding binding = {
-            .producer_fd = STDOUT_FILENO,
-            .stream = &ctx.dialog.stream,
-            .buffer = ctx.dialog.buffer,
-            .buffer_capacity = sizeof(ctx.dialog.buffer),
-            .event_group = ctx.eventGroup,
-            .window_size = {},
-            .alias_fd = -1,
-        };
-        app_start_context_set_arguments_ext(&start, 3, argv);
-        app_start_context_set_streams(&start, &binding, 1);
-        app_start_context_set_parent(&start, ctx.appInstanceId);
+/** Runs on the app task when the number dialog has closed. */
+void handleNumberDialogResult(Context& ctx) {
+    const NumericField field = ctx.dialog.field;
+    ctx.dialog.pending = false;
+    if (!ctx.dialog.confirmed) {
+        return;
+    }
 
-        AppInstanceId instanceId = 0;
-        result = app_start_with_context(&start, &instanceId);
-        if (result == ERROR_NONE) {
-            ctx.dialog.field = field;
-            ctx.dialog.instanceId = instanceId;
-            return;
-        }
+    int32_t value = 0;
+    if (ctx.dialog.text[0] == '\0' && field == NumericField::PinReset) {
+        value = -1;
+    } else if (!parseUnsigned(ctx.dialog.text, &value)) {
+        lvgl_lock();
+        setActionStatus(ctx, "Enter a whole number");
+        lvgl_unlock();
+        return;
+    } else {
+        value = clampField(field, value);
     }
 
     lvgl_lock();
-    setActionStatus(ctx, error_to_string(result));
+    setNumericField(ctx, field, value);
+    updateValueLabel(ctx, field);
+    refreshResolutionChips(ctx);
     lvgl_unlock();
-}
-
-/** Runs on the app task when APP_EVENT_RESULT for the number dialog arrives. */
-void handleNumberDialogResult(Context& ctx, AppInstanceId launchId, int32_t resultCode) {
-    const NumericField field = ctx.dialog.field;
-    ctx.dialog.instanceId = 0;
-
-    if (resultCode == 0) {
-        char text[sizeof(ctx.dialog.buffer)] = {};
-        const size_t length = app_stream_read(&ctx.dialog.stream, text, sizeof(text) - 1);
-        text[length] = '\0';
-
-        int32_t value = 0;
-        if (length == 0 && field == NumericField::PinReset) {
-            value = -1;
-        } else if (!parseUnsigned(text, &value)) {
-            lvgl_lock();
-            setActionStatus(ctx, "Enter a whole number");
-            lvgl_unlock();
-            app_stream_unsubscribe(&ctx.dialog.stream);
-            app_manager_stop(launchId);
-            return;
-        } else {
-            value = clampField(field, value);
-        }
-
-        lvgl_lock();
-        setNumericField(ctx, field, value);
-        updateValueLabel(ctx, field);
-        refreshResolutionChips(ctx);
-        lvgl_unlock();
-    }
-
-    app_stream_unsubscribe(&ctx.dialog.stream);
-    app_manager_stop(launchId);
 }
 
 void onValueRowPressed(lv_event_t* event) {
@@ -1297,15 +1275,15 @@ extern "C" int main(int argc, char* argv[]) {
         if (request != REQUEST_NONE) {
             handleRequest(ctx, request);
         }
+        if (ctx.dialog.done.exchange(false)) {
+            handleNumberDialogResult(ctx);
+        }
 
         struct AppEvent event {};
         while (app_event_poll(&subscription, &event) == ERROR_NONE) {
             if (event.type == APP_EVENT_CLOSE) {
                 shouldClose = true;
                 break;
-            }
-            if (event.type == APP_EVENT_RESULT && event.result.launch_id == ctx.dialog.instanceId) {
-                handleNumberDialogResult(ctx, event.result.launch_id, event.result.result);
             }
         }
     }

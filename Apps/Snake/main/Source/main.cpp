@@ -1,7 +1,7 @@
 #include "Snake.h"
 
+#include <lvgl_window_manager/dialog.h>
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
 
 #include <lvgl/lvgl.h>
@@ -12,8 +12,6 @@
 extern "C" {
 
 int main(int argc, char* argv[]) {
-    constexpr TickType_t LVGL_LOCK_TIMEOUT = 500;
-
     AppInstanceId app_instance_id = app_scheduler_current_app_id();
 
     Context ctx {};
@@ -22,20 +20,47 @@ int main(int argc, char* argv[]) {
     struct TaskEventGroup event_group {};
     task_event_group_construct(&event_group);
 
+    ctx.eventGroup = &event_group;
+    check(task_event_group_claim_bit(&event_group, &ctx.dialogBit) == ERROR_NONE);
+
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
     WindowId window = window_manager_create(app_instance_id, snakeCreateWidgets, &ctx);
     ctx.window = window;
 
-    // First launch: nothing active yet - open the selection dialog. Every later transition is
-    // likewise driven from here (APP_EVENT_RESULT below), never from snakeCreateWidgets - see
-    // Snake.h's comment on why.
+    // First launch: nothing active yet. Later transitions follow from the dialog results below.
     snakeShowSelectionDialog(&ctx);
 
     bool should_close = false;
     while (!should_close) {
-        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
+        uint32_t flags = 0;
+        task_event_group_wait_any(&event_group, &flags, portMAX_DELAY);
+
+        if ((flags & ctx.dialogBit) != 0) {
+            const GameDialog dialog = ctx.dialog.exchange(GameDialog::None);
+            const int32_t result = ctx.dialogResult;
+            if (dialog == GameDialog::Selection) {
+                if (result == SNAKE_SELECTION_HOW_TO_PLAY) {
+                    snakeShowHelpDialog(&ctx);
+                } else if (result > SNAKE_SELECTION_HOW_TO_PLAY) {
+                    lvgl_lock();
+                    snakeStartGame(&ctx, result);
+                    lvgl_unlock();
+                } else {
+                    // Closed without selecting - close self.
+                    should_close = true;
+                }
+            } else if (dialog == GameDialog::Help) {
+                snakeShowSelectionDialog(&ctx);
+            } else if (dialog == GameDialog::GameOver) {
+                // Game has ended - clear it and return to the selection dialog.
+                lvgl_lock();
+                snakeClearGame(&ctx);
+                lvgl_unlock();
+                snakeShowSelectionDialog(&ctx);
+            }
+        }
 
         struct AppEvent event;
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
@@ -43,45 +68,6 @@ int main(int argc, char* argv[]) {
                 case APP_EVENT_CLOSE:
                     should_close = true;
                     break;
-
-                case APP_EVENT_RESULT: {
-                    uint32_t launch_id = event.result.launch_id;
-
-                    if (launch_id == ctx.selectionDialogId && ctx.selectionDialogId != 0) {
-                        ctx.selectionDialogId = 0;
-                        int32_t selection = event.result.result;
-                        app_manager_stop(launch_id);
-
-                        if (selection == SNAKE_SELECTION_HOW_TO_PLAY) {
-                            snakeShowHelpDialog(&ctx);
-                        } else if (selection >= SNAKE_SELECTION_EASY && selection <= SNAKE_SELECTION_HELL) {
-                            if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
-                                snakeStartGame(&ctx, selection);
-                                lvgl_unlock();
-                            }
-                        } else {
-                            // Closed without selecting - close self.
-                            should_close = true;
-                        }
-
-                    } else if (launch_id == ctx.helpDialogId && ctx.helpDialogId != 0) {
-                        ctx.helpDialogId = 0;
-                        app_manager_stop(launch_id);
-                        // Return to selection dialog
-                        snakeShowSelectionDialog(&ctx);
-
-                    } else if (launch_id == ctx.gameOverDialogId && ctx.gameOverDialogId != 0) {
-                        ctx.gameOverDialogId = 0;
-                        app_manager_stop(launch_id);
-                        // Game has genuinely ended - clear it and return to the selection dialog.
-                        if (lvgl_try_lock(LVGL_LOCK_TIMEOUT)) {
-                            snakeClearGame(&ctx);
-                            lvgl_unlock();
-                        }
-                        snakeShowSelectionDialog(&ctx);
-                    }
-                    break;
-                }
 
                 default:
                     break;
@@ -92,6 +78,7 @@ int main(int argc, char* argv[]) {
 
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_release_bit(&event_group, ctx.dialogBit);
     task_event_group_destruct(&event_group);
     snakeTeardown(&ctx);
 

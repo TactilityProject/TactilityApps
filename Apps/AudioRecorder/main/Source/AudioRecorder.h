@@ -1,5 +1,6 @@
 #pragma once
 
+#include <tactility/concurrent/task_event_group.h>
 #include <app/instance.h>
 #include <atomic>
 #include <cstdio>
@@ -90,7 +91,7 @@ struct Context {
 
     // recordings is written by recorderScanDirectory() and read by recorderRenderList().
     // Both the LVGL thread (poll timer, button callbacks) and this app's own task
-    // (main.cpp's APP_EVENT_RESULT handler, after a delete confirmation) call
+    // (main.cpp, after a delete confirmation) call
     // recorderScanDirectory(), so it's guarded by recordingsMutex; listDirty tells the
     // poll timer a rescan happened off-thread and recorderRenderList() (lv_obj access,
     // LVGL-thread-only) needs to run.
@@ -99,8 +100,11 @@ struct Context {
     std::atomic<bool> listDirty{false};
     bool backendStarted = false;
 
-    // Instance id of the currently-shown "delete" AlertDialog, or 0 if none is pending.
-    uint32_t pendingDeleteDialogId = 0;
+    // The delete dialog's answer, handled on the app task, which deleteBit wakes
+    TaskEventGroup* eventGroup = nullptr;
+    uint32_t deleteBit = 0;
+    std::atomic<bool> deleteConfirmed { false };
+    std::mutex deleteMutex; // guards pendingDeletePath
     std::string pendingDeletePath;
 
     // Fullpath of the recording selected in the list (row tap), or empty if none.

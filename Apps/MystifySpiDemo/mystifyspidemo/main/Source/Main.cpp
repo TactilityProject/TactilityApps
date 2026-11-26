@@ -1,11 +1,11 @@
 #include "Application.h"
 
+#include <lvgl_window_manager/dialog.h>
+#include <lvgl_window_manager/window_manager.h>
 #include <esp_log.h>
 
 #include <app/event.h>
-#include <app/manager.h>
 #include <app/scheduler.h>
-#include <app/start.h>
 #include <input/AnyInput.h>
 
 #include <tactility/check.h>
@@ -17,42 +17,41 @@
 
 constexpr auto* TAG = "MystifyDemo";
 
-// Shows a blocking error dialog and waits for it to close before the caller finishes this app.
+// Shows an error dialog and waits for it to close. A dialog needs a window, so an empty one is created for it.
 static void showErrorAndWait(AppInstanceId appInstanceId, const char* message) {
-    const char* argv[] = { "Error", message, "OK" };
-    uint32_t dialogInstanceId = 0;
-    app_start_for_result("tactility.alertdialog", 3, argv, appInstanceId, &dialogInstanceId);
-    if (dialogInstanceId == 0) {
-        return;
-    }
+    struct DialogState {
+        TaskEventGroup eventGroup {};
+        uint32_t closedBit = 0;
+    } state;
+    task_event_group_construct(&state.eventGroup);
+    check(task_event_group_claim_bit(&state.eventGroup, &state.closedBit) == ERROR_NONE);
+    AppEventSubscription subscription {};
+    check(app_event_subscribe(&subscription, &state.eventGroup) == ERROR_NONE);
+    const WindowId window = window_manager_create(appInstanceId, [](lv_obj_t*, void*) {}, nullptr);
 
-    struct TaskEventGroup event_group {};
-    task_event_group_construct(&event_group);
+    static const char* const buttons[] = { "OK" };
+    const error_t result = window_manager_alert_dialog(appInstanceId, "Error", message, buttons, 1, [](int32_t, void* userData) {
+        auto* dialogState = static_cast<DialogState*>(userData);
+        task_event_group_signal(&dialogState->eventGroup, dialogState->closedBit);
+    }, &state);
 
-    struct AppEventSubscription sub {};
-    check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
-
-    while (true) {
-        task_event_group_wait_any(&event_group, nullptr, portMAX_DELAY);
-
-        bool done = false;
-        struct AppEvent event {};
-        while (app_event_poll(&sub, &event) == ERROR_NONE) {
+    bool done = result != ERROR_NONE;
+    while (!done) {
+        uint32_t flags = 0;
+        task_event_group_wait_any(&state.eventGroup, &flags, portMAX_DELAY);
+        done = (flags & state.closedBit) != 0;
+        AppEvent event {};
+        while (app_event_poll(&subscription, &event) == ERROR_NONE) {
             if (event.type == APP_EVENT_CLOSE) {
                 done = true;
-                break;
-            }
-            if (event.type == APP_EVENT_RESULT && event.result.launch_id == dialogInstanceId) {
-                app_manager_stop(dialogInstanceId);
-                done = true;
-                break;
             }
         }
-        if (done) break;
     }
 
-    check(app_event_unsubscribe(&sub) == ERROR_NONE);
-    task_event_group_destruct(&event_group);
+    window_manager_remove(window);
+    check(app_event_unsubscribe(&subscription) == ERROR_NONE);
+    task_event_group_release_bit(&state.eventGroup, state.closedBit);
+    task_event_group_destruct(&state.eventGroup);
 }
 
 extern "C" {

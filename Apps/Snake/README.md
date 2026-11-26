@@ -14,7 +14,7 @@ Snake is a faithful implementation of the classic arcade game where you control 
 - **Score Tracking**: Real-time score display with game over detection.
 - **High Score Persistence**: Saves best scores for each difficulty level.
 - **Progressive Speed**: Game speeds up as your snake grows longer.
-- **Responsive UI**: Automatically adapts grid size to available screen space.
+- **Responsive UI**: The playing field has about the same number of cells on every screen. Cells are scaled to fit, and the centred field is at most twice as long as it is wide.
 - **Non-Square Grids**: Takes advantage of the full display area.
 
 ## Requirements
@@ -50,8 +50,8 @@ Snake is a faithful implementation of the classic arcade game where you control 
 
 ## Difficulty Levels
 
-- **Easy**: Large cells (16px) - fewer cells, slower pace, wrap-around walls.
-- **Medium**: Medium cells (12px) - balanced challenge, wrap-around walls.
-- **Hard**: Small cells (8px) - many cells, requires quick reflexes, wrap-around walls.
-- **Hell**: Small cells (8px) + wall collision - hitting walls means game over!
+- **Easy**: About 230 cells - slower pace, wrap-around walls.
+- **Medium**: About 420 cells - balanced challenge, wrap-around walls.
+- **Hard**: About 975 cells - requires quick reflexes, wrap-around walls.
+- **Hell**: About 975 cells + wall collision - hitting walls means game over!
 
