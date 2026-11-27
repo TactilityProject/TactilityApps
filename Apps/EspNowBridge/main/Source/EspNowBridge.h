@@ -9,7 +9,6 @@
 
 #include <lvgl.h>
 
-#include <app/stream.h>
 
 #include <tactility/drivers/wifi.h>
 
@@ -27,13 +26,12 @@ public:
 struct Context {
     uint32_t appInstanceId;
 
-    // Set once in espNowBridgeInit(), reused by onUpdateButtonClicked() to bind pickFileStream
-    // when launching the file-selection app - must outlive ctx (see espNowBridgeInit()'s doc).
+    // Set once in espNowBridgeInit()
     TaskEventGroup* eventGroup = nullptr;
 
-    uint32_t pickFileLaunchId = 0;
-    AppStream pickFileStream {};
-    uint8_t pickFileBuffer[256] {};
+    /** Signalled when the file dialog closed, with the picked path or an empty one */
+    uint32_t fileBit = 0;
+    std::string pickedFilePath;
     std::string pendingUpdateFilePath;
     Device* wifiDevice = nullptr;
     WifiEventSubscription wifiEventSub {};
@@ -75,7 +73,7 @@ struct Context {
 
 /** Sets up state that must exist for the whole app instance lifetime, regardless of how many
  *  times the window is (re)built. Call once, right after constructing the Context.
- *  @param eventGroup stored on ctx (also used for the file-selection app's stream binding) and
+ *  @param eventGroup stored on ctx (the file dialog's result signals it) and
  *  subscribes ctx's WiFi event subscription into this group; must outlive ctx (destructed only
  *  after espNowBridgeTeardown()). */
 void espNowBridgeInit(Context* ctx, TaskEventGroup* eventGroup);
@@ -89,15 +87,11 @@ void espNowBridgeCreateWidgets(lv_obj_t* parent, void* userData);
 
 /** window_manager_create_ext()'s WindowDestroyWidgetsFn - @a userData is the Context* for this
  *  instance. Clears isShown so dispatchToUi() stops touching this window's (now-deleted)
- *  lv_obj_t*s - fires whenever this window is buried (e.g. the file-selection dialog opening as
- *  a modal child), not just on final teardown. */
+ *  lv_obj_t*s - fires whenever this window is buried, not just on final teardown. */
 void espNowBridgeDestroyWidgets(void* userData);
 
-/** Starts the update task if ctx->pendingUpdateFilePath is set (consuming it). Called both from
- *  within espNowBridgeCreateWidgets() and directly by main()'s event loop right after a picked
- *  path arrives - the file-selection child's window teardown (and so this window's rebuild)
- *  happens before its APP_EVENT_RESULT is delivered here, so by the time the result arrives
- *  espNowBridgeCreateWidgets() has typically already run and found the path not yet set. */
+/** Starts the update task if ctx->pendingUpdateFilePath is set (consuming it). Called from
+ *  espNowBridgeCreateWidgets() and by main()'s event loop after a file was picked. */
 void espNowBridgeApplyPendingUpdate(Context* ctx);
 
 /** Waits for any outstanding background task to finish, then releases resources. Call once,

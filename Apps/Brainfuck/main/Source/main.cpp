@@ -26,6 +26,7 @@ int main(int argc, char* argv[]) {
 
     ctx->eventGroup = &event_group;
     check(task_event_group_claim_bit(&event_group, &ctx->dialogBit) == ERROR_NONE);
+    check(task_event_group_claim_bit(&event_group, &ctx->fileBit) == ERROR_NONE);
 
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
@@ -40,13 +41,14 @@ int main(int argc, char* argv[]) {
         if ((flags & ctx->dialogBit) != 0) {
             brainfuckDialogResult(ctx.get());
         }
+        if ((flags & ctx->fileBit) != 0) {
+            brainfuckFileResult(ctx.get());
+        }
 
         struct AppEvent event;
         while (app_event_poll(&sub, &event) == ERROR_NONE) {
             if (event.type == APP_EVENT_CLOSE) {
                 should_close = true;
-            } else if (event.type == APP_EVENT_RESULT) {
-                brainfuckFileResult(ctx.get(), event.result.launch_id, event.result.result);
             }
             if (should_close) break;
         }
@@ -55,6 +57,7 @@ int main(int argc, char* argv[]) {
     window_manager_remove(window);
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
     task_event_group_release_bit(&event_group, ctx->dialogBit);
+    task_event_group_release_bit(&event_group, ctx->fileBit);
     task_event_group_destruct(&event_group);
 
     return 0;
