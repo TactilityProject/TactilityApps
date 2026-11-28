@@ -12,7 +12,7 @@
 #include <tactility/drivers/audio_stream.h>
 #include <cmath>
 #include <cstring>
-#include "esp_log.h"
+#include <tactility/log.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
@@ -459,7 +459,7 @@ void SfxEngine::audioTaskFunc(void* param) {
     size_t written;
     QueueMsg msg;
 
-    ESP_LOGI(TAG, "Audio task started");
+    LOG_I(TAG, "Audio task started");
 
     // Opens the stream from inside this task (matching DoomAudio's mixer task, which opens and
     // writes from the same pinned, high-priority task context throughout) rather than the
@@ -538,7 +538,7 @@ void SfxEngine::audioTaskFunc(void* param) {
             // handle - the old handle is now permanently dead, but a new one against whatever
             // codec is current should work. Close it and retry a bounded number of times before
             // giving up, rather than killing the task on the first hot-swap.
-            ESP_LOGW(TAG, "Audio stream write error (%s) - reopening", error_to_string(error));
+            LOG_W(TAG, "Audio stream write error (%s) - reopening", error_to_string(error));
             audio_stream_close(self->audioStreamHandle_);
             self->audioStreamHandle_ = nullptr;
             self->audioStreamDevice_ = nullptr;
@@ -552,7 +552,7 @@ void SfxEngine::audioTaskFunc(void* param) {
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
             if (!reopened) {
-                ESP_LOGE(TAG, "Failed to reopen audio stream after codec change - stopping");
+                LOG_E(TAG, "Failed to reopen audio stream after codec change - stopping");
                 self->running_ = false;
                 break;
             }
@@ -565,7 +565,7 @@ void SfxEngine::audioTaskFunc(void* param) {
         audio_stream_write(self->audioStreamHandle_, self->audioBuffer_, sizeof(self->audioBuffer_), &written, pdMS_TO_TICKS(50));
     }
 
-    ESP_LOGI(TAG, "Audio task exiting");
+    LOG_I(TAG, "Audio task exiting");
 
     // Signal stop() that we're done
     if (self->stopSemaphore_ != nullptr) {
@@ -590,7 +590,7 @@ bool SfxEngine::openStream() {
     });
 
     if (audioStreamDevice_ == nullptr) {
-        ESP_LOGW(TAG, "No audio stream device found");
+        LOG_W(TAG, "No audio stream device found");
         return false;
     }
 
@@ -603,7 +603,7 @@ bool SfxEngine::openStream() {
 
     error_t error = audio_stream_open_output(audioStreamDevice_, &config, &audioStreamHandle_);
     if (error != ERROR_NONE) {
-        ESP_LOGE(TAG, "Failed to open audio output stream: %s", error_to_string(error));
+        LOG_E(TAG, "Failed to open audio output stream: %s", error_to_string(error));
         audioStreamDevice_ = nullptr;
         return false;
     }
@@ -617,13 +617,13 @@ bool SfxEngine::start() {
     // Create message queue
     msgQueue_ = xQueueCreate(8, sizeof(QueueMsg));
     if (msgQueue_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create message queue");
+        LOG_E(TAG, "Failed to create message queue");
         return false;
     }
 
     startSemaphore_ = xSemaphoreCreateBinary();
     if (startSemaphore_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create start semaphore");
+        LOG_E(TAG, "Failed to create start semaphore");
         vQueueDelete(msgQueue_);
         msgQueue_ = nullptr;
         return false;
@@ -639,9 +639,13 @@ bool SfxEngine::start() {
     // and silently drops audio if the ring runs dry. At the default priority/no pinning, the
     // app's own game/render work could delay this task's next buffer-fill+write long enough to
     // starve the ring - audible as playback "cutting in and out" when output is a USB device.
+#ifdef ESP_PLATFORM
     BaseType_t result = xTaskCreatePinnedToCore(audioTaskFunc, "sfxeng", 4096, this, 10, &task_, 0);
+#else
+    BaseType_t result = xTaskCreate(audioTaskFunc, "sfxeng", 4096, this, configMAX_PRIORITIES - 1, &task_);
+#endif
     if (result != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create audio task");
+        LOG_E(TAG, "Failed to create audio task");
         running_ = false;
         vSemaphoreDelete(startSemaphore_);
         startSemaphore_ = nullptr;
@@ -662,7 +666,7 @@ bool SfxEngine::start() {
         return false;
     }
 
-    ESP_LOGI(TAG, "SfxEngine started (voices=%d, sampleRate=%d)", NUM_VOICES, SAMPLE_RATE);
+    LOG_I(TAG, "SfxEngine started (voices=%d, sampleRate=%d)", NUM_VOICES, SAMPLE_RATE);
     return true;
 }
 
@@ -700,7 +704,7 @@ void SfxEngine::stop() {
     }
     audioStreamDevice_ = nullptr;
 
-    ESP_LOGI(TAG, "SfxEngine stopped");
+    LOG_I(TAG, "SfxEngine stopped");
 }
 
 void SfxEngine::play(SfxId sound) {

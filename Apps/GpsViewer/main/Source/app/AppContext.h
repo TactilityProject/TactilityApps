@@ -5,8 +5,8 @@
 #include "../core/Settings.h"
 
 #include <app/instance.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/semphr.h>
 
 #include <atomic>
 #include <cstdint>

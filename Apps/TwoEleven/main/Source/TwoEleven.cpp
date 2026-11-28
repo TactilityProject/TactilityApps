@@ -6,7 +6,7 @@
 
 #include <lvgl_window_manager/dialog.h>
 #include <inttypes.h>
-#include <esp_log.h>
+#include <tactility/log.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <app/paths.h>
@@ -186,7 +186,7 @@ void onDialogResult(int32_t result, void* userData) {
 } // namespace
 
 void twoElevenCreateWidgets(lv_obj_t* parent, void* userData) {
-    ESP_LOGI("TwoEleven", "twoElevenCreateWidgets called, parent=%p", parent);
+    LOG_I("TwoEleven", "twoElevenCreateWidgets called, parent=%p", parent);
     auto* ctx = static_cast<Context*>(userData);
 
     lv_obj_set_scrollable(parent, false);

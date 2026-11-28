@@ -183,7 +183,7 @@ void GpsSource::start(AppContext& appContext, TaskEventGroup* eventGroup) {
     readerDone.store(false);
     // The first attempt is due now. A deadline of 0 would wait for the clock to wrap after 24.9 days of uptime.
     nextAttemptMs = get_millis();
-    if (xTaskCreatePinnedToCore(readerMain, "gpsviewer_rx", READER_STACK_SIZE, this, READER_PRIORITY, &reader, tskNO_AFFINITY) != pdPASS) {
+    if (xTaskCreate(readerMain, "gpsviewer_rx", READER_STACK_SIZE, this, READER_PRIORITY, &reader) != pdPASS) {
         readerDone.store(true);
         reader = nullptr;
     }

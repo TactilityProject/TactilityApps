@@ -8,7 +8,7 @@
 #pragma once
 
 #include "SfxEngine.h"
-#include "esp_log.h"
+#include <tactility/log.h>
 
 // Safety macro to prevent buffer overflow
 #define ADD_SFX_NOTE(seq, idx, ...) do { \
@@ -16,7 +16,7 @@
         SfxSequenceNote n = __VA_ARGS__; \
         (seq)[(idx)++] = n; \
     } else { \
-        ESP_LOGE("SfxDef", "SFX note overflow at index %d", (idx)); \
+        LOG_E("SfxDef", "SFX note overflow at index %d", (idx)); \
     } \
 } while(0)
 

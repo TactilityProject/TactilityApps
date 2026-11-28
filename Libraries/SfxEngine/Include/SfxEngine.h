@@ -27,10 +27,10 @@
 #include <cstdint>
 #include <tactility/device.h>
 #include <tactility/drivers/audio_stream.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
-#include "freertos/semphr.h"
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/task.h>
+#include <tactility/freertos/queue.h>
+#include <tactility/freertos/semphr.h>
 
 //==============================================================================
 // Configuration

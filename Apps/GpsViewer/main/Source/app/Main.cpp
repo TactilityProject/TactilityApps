@@ -12,7 +12,7 @@
 #include <tactility/check.h>
 #include <tactility/time.h>
 
-#include <freertos/task.h>
+#include <tactility/freertos/task.h>
 #include <sys/stat.h>
 
 #include <cstdio>

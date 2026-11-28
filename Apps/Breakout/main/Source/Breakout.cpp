@@ -12,7 +12,20 @@
 #include <lvgl/widgets/toolbar.h>
 #include <tactility/preferences.h>
 
+#ifdef ESP_PLATFORM
 #include <esp_random.h>
+#else
+#include <random>
+#endif
+
+static inline uint32_t breakout_random() {
+#ifdef ESP_PLATFORM
+    return esp_random();
+#else
+    static std::random_device device;
+    return device();
+#endif
+}
 #include <tactility/device.h>
 #include <tactility/drivers/keyboard.h>
 
@@ -813,7 +826,7 @@ static void hitBrick(Context* ctx, int idx) {
         if (ctx->activeBallCount <= 1) {
             int bx = ctx->brickOffsetX + (idx % ctx->cols) * (ctx->brickW + ctx->brickGap);
             int by = ctx->brickOffsetY + (idx / ctx->cols) * (ctx->brickH + ctx->brickGap);
-            if ((int)(esp_random() % 100) < CAPSULE_DROP_CHANCE) {
+            if ((int)(breakout_random() % 100) < CAPSULE_DROP_CHANCE) {
                 spawnCapsule(ctx, (float)bx, (float)by);
             }
         }
@@ -900,7 +913,7 @@ static void launchBall(Context* ctx) {
     if (ctx->catchActive && ctx->catchBallIndex >= 0) {
         // Release caught ball
         BallState& b = ctx->balls[ctx->catchBallIndex];
-        b.vx = (esp_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
+        b.vx = (breakout_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
         b.vy = -ctx->ballSpeed;
         ctx->catchBallIndex = -1;
         ctx->catchAutoReleaseTicks = 0;
@@ -908,7 +921,7 @@ static void launchBall(Context* ctx) {
         return;
     }
 
-    ctx->balls[0].vx = (esp_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
+    ctx->balls[0].vx = (breakout_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
     ctx->balls[0].vy = -ctx->ballSpeed;
     ctx->state = GameState::Playing;
     updateMessage(ctx);
@@ -967,7 +980,7 @@ static void spawnCapsule(Context* ctx, float x, float y) {
             ctx->capsules[i].y = y;
 
             // Random power-up type (ExtraLife rarer)
-            int roll = (int)(esp_random() % 100);
+            int roll = (int)(breakout_random() % 100);
             if (roll < 5) {
                 ctx->capsules[i].type = PowerUpType::ExtraLife;
             } else if (roll < 18) {
@@ -1174,7 +1187,7 @@ static void updateBalls(Context* ctx) {
             ctx->catchAutoReleaseTicks++;
             if (ctx->catchAutoReleaseTicks >= CATCH_AUTO_RELEASE_TICKS) {
                 // Auto-release
-                ctx->balls[b].vx = (esp_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
+                ctx->balls[b].vx = (breakout_random() % 2 ? 1.0f : -1.0f) * ctx->ballSpeed * 0.7f;
                 ctx->balls[b].vy = -ctx->ballSpeed;
                 ctx->catchBallIndex = -1;
                 ctx->catchAutoReleaseTicks = 0;

@@ -5,7 +5,20 @@
 #include <cmath>
 #include <cstdlib>
 
+#ifdef ESP_PLATFORM
 #include <esp_random.h>
+#else
+#include <random>
+#endif
+
+static inline uint32_t mystify_random() {
+#ifdef ESP_PLATFORM
+    return esp_random();
+#else
+    static std::random_device device;
+    return device();
+#endif
+}
 
 /**
  * Mystify screensaver demo.
@@ -54,7 +67,7 @@ public:
             return false;
         }
 
-        srand(static_cast<unsigned>(esp_random()));
+        srand(static_cast<unsigned>(mystify_random()));
 
         initPolygons();
         return true;

@@ -4,13 +4,14 @@
  */
 #pragma once
 
+#include "CanvasPixel.h"
 #include <tactility/concurrent/task_event_group.h>
 #include <app/instance.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <lvgl.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/timers.h>
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/semphr.h>
+#include <tactility/freertos/timers.h>
 
 #include "PetLogic.h"
 #include "Sprites.h"
@@ -25,8 +26,8 @@
 #include "SfxEngine.h"
 
 // Canvas buffers for sprite rendering (shared by views)
-extern lv_color_t TamaTac_canvasBuffer[72 * 72];
-extern lv_color_t TamaTac_iconBuffers[12][16 * 16];
+extern CanvasPixel TamaTac_canvasBuffer[72 * 72];
+extern CanvasPixel TamaTac_iconBuffers[12][16 * 16];
 
 // Active view type
 enum class ViewType {

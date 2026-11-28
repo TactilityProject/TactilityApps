@@ -8,8 +8,8 @@
 #include <location/location.h>
 #include <tactility/device.h>
 
-#include <freertos/queue.h>
-#include <freertos/task.h>
+#include <tactility/freertos/queue.h>
+#include <tactility/freertos/task.h>
 
 #include <atomic>
 

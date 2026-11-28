@@ -1,8 +1,8 @@
 #include "Application.h"
 #include "MystifyDemo.h"
 
-#include <esp_log.h>
-#include <esp_timer.h>
+#include <tactility/log.h>
+#include <tactility/time.h>
 
 #include <app/event.h>
 #include <tactility/check.h>
@@ -21,12 +21,12 @@ constexpr bool LOG_STATS = false;
 void runApplication(gfx::Target* target, AnyInput* input) {
     MystifyDemo mystify;
     if (!mystify.init(target)) {
-        ESP_LOGE(TAG, "Failed to initialize MystifyDemo");
+        LOG_E(TAG, "Failed to initialize MystifyDemo");
         return;
     }
 
     const gfx::Info& info = target->info();
-    ESP_LOGI(TAG, "Starting Mystify demo (%dx%d) - any input to exit", info.width, info.height);
+    LOG_I(TAG, "Starting Mystify demo (%dx%d) - any input to exit", info.width, info.height);
 
     struct TaskEventGroup event_group {};
     task_event_group_construct(&event_group);
@@ -37,7 +37,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
 
     bool should_close = false;
 
-    int64_t window_start_us = esp_timer_get_time();
+    int64_t window_start_us = get_micros_since_boot();
     int window_frames = 0;
     int64_t sum_copy_us = 0;
     int64_t sum_draw_us = 0;
@@ -46,7 +46,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
     int64_t sum_total_us = 0;
 
     do {
-        const int64_t frame_start_us = esp_timer_get_time();
+        const int64_t frame_start_us = get_micros_since_boot();
 
         mystify.update();
 
@@ -69,7 +69,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
             break;
         }
 
-        const int64_t frame_us = esp_timer_get_time() - frame_start_us;
+        const int64_t frame_us = get_micros_since_boot() - frame_start_us;
         if (frame_us < frameBudgetUs) {
             const int64_t remaining_ms = (frameBudgetUs - frame_us + 999) / 1000;
             tt::kernel::delayTicks(tt::kernel::millisToTicks(static_cast<uint32_t>(remaining_ms)));
@@ -77,12 +77,12 @@ void runApplication(gfx::Target* target, AnyInput* input) {
 
         if (LOG_STATS) {
             window_frames++;
-            const int64_t elapsed_us = esp_timer_get_time() - window_start_us;
+            const int64_t elapsed_us = get_micros_since_boot() - window_start_us;
             if (elapsed_us >= 1000000) {
                 const gfx::Stats& stats = target->stats();
                 const int fps = static_cast<int>((static_cast<int64_t>(window_frames) * 1000000) / elapsed_us);
                 const int frames = window_frames;
-                ESP_LOGI(TAG, "%d fps, %d rects, %d px | copy %d draw %d sync %d present %d us (total %d)",
+                LOG_I(TAG, "%d fps, %d rects, %d px | copy %d draw %d sync %d present %d us (total %d)",
                     fps,
                     stats.dirtyRects,
                     stats.dirtyPixels,
@@ -92,7 +92,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
                     static_cast<int>(sum_present_us / frames),
                     static_cast<int>(sum_total_us / frames)
                 );
-                window_start_us = esp_timer_get_time();
+                window_start_us = get_micros_since_boot();
                 window_frames = 0;
                 sum_copy_us = 0;
                 sum_draw_us = 0;
@@ -106,5 +106,5 @@ void runApplication(gfx::Target* target, AnyInput* input) {
     check(app_event_unsubscribe(&sub) == ERROR_NONE);
     task_event_group_destruct(&event_group);
 
-    ESP_LOGI(TAG, "Mystify demo ended");
+    LOG_I(TAG, "Mystify demo ended");
 }
