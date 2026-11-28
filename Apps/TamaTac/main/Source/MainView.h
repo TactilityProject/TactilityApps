@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include "CanvasPixel.h"
 #include <lvgl.h>
 #include "PetLogic.h"
 #include "Sprites.h"
@@ -65,10 +66,10 @@ struct MainViewState {
     // (Large 96px / XLarge 144px, plus fill-to-fit growth up to 192px).
     // Null when the static buffer is used, so small no-PSRAM devices
     // never pay the extra RAM.
-    lv_color_t* heapCanvas = nullptr;
+    CanvasPixel* heapCanvas = nullptr;
     // Heap icon block (12 x 24x24) for the XXL 3x icons. Null otherwise,
     // so only Tab5-class devices pay the extra ~14KB while MainView runs.
-    lv_color_t* heapIconBuf = nullptr;
+    CanvasPixel* heapIconBuf = nullptr;
     // Icon canvas edge in px (16, or 24 on XXL) and its pixel-doubling scale.
     int iconPx = 16;
     // Tiled background day/night state

@@ -6,6 +6,6 @@ file(GLOB_RECURSE INPUT_FILES ../../../Libraries/Input/Source/*.c*)
 
 tactility_component_register(
     SRCS ${SOURCE_FILES} ${GFX_FILES} ${INPUT_FILES}
-    INCLUDE_DIRS "Include" ../../../Libraries/Gfx/Include ../../../Libraries/Input/Include
+    INCLUDE_DIRS "Include" ../../../Libraries/Gfx/Include ../../../Libraries/Input/Include $ENV{TACTILITY_SDK_PATH}/Modules/graphics-module/include $ENV{TACTILITY_SDK_PATH}/Libraries/TactilityFreeRtos/Include
     REQUIRES graphics-module esp_driver_ppa
 )

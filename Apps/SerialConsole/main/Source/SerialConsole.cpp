@@ -1,6 +1,6 @@
 #include "SerialConsole.h"
 
-#include <esp_log.h>
+#include <tactility/log.h>
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
 
@@ -36,7 +36,7 @@ void onDisconnectPressed(lv_event_t* event) {
 
 void showConsoleView(Context* app, Device* dev) {
     if (dev == nullptr) {
-        ESP_LOGE(TAG, "showConsoleView: null device");
+        LOG_E(TAG, "showConsoleView: null device");
         return;
     }
     stopActiveView(app);

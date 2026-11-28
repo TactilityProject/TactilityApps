@@ -2,7 +2,7 @@
 
 #include <lvgl_window_manager/dialog.h>
 #include <lvgl_window_manager/window_manager.h>
-#include <esp_log.h>
+#include <tactility/log.h>
 
 #include <app/event.h>
 #include <app/scheduler.h>
@@ -63,7 +63,7 @@ int main(int argc, char* argv[]) {
 
     struct Device* display_device;
     if (device_get_first_active_by_type(&DISPLAY_TYPE, &display_device) != ERROR_NONE) {
-        ESP_LOGE(TAG, "No display device found");
+        LOG_E(TAG, "No display device found");
         showErrorAndWait(app_instance_id, "No display device was found.");
         return 0;
     }
@@ -71,12 +71,12 @@ int main(int argc, char* argv[]) {
     // Stop LVGL first (because it's currently using the drivers we want to use)
     module_stop(&lvgl_module);
 
-    ESP_LOGI(TAG, "Creating display target");
+    LOG_I(TAG, "Creating display target");
     auto target = new gfx::Target(display_device);
     device_put(display_device);
 
     if (!target->valid()) {
-        ESP_LOGE(TAG, "Display doesn't support direct rendering");
+        LOG_E(TAG, "Display doesn't support direct rendering");
         delete target;
 
         if (!module_is_started(&lvgl_module)) {
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
 
     auto input = new AnyInput();
     if (!input->available()) {
-        ESP_LOGE(TAG, "No input device found");
+        LOG_E(TAG, "No input device found");
         delete input;
         delete target;
 
@@ -102,22 +102,22 @@ int main(int argc, char* argv[]) {
     }
 
     // Run the main logic
-    ESP_LOGI(TAG, "Running application");
+    LOG_I(TAG, "Running application");
     runApplication(target, input);
 
-    ESP_LOGI(TAG, "Cleanup display target");
+    LOG_I(TAG, "Cleanup display target");
     delete target;
 
-    ESP_LOGI(TAG, "Cleanup input");
+    LOG_I(TAG, "Cleanup input");
     delete input;
 
     // Restart LVGL to resume rendering of regular apps
     if (!module_is_started(&lvgl_module)) {
-        ESP_LOGI(TAG, "Restarting LVGL");
+        LOG_I(TAG, "Restarting LVGL");
         module_start(&lvgl_module);
     }
 
-    ESP_LOGI(TAG, "Stopping application");
+    LOG_I(TAG, "Stopping application");
 
     return 0;
 }

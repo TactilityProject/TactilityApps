@@ -12,8 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 
-extern lv_color_t TamaTac_canvasBuffer[72 * 72];
-extern lv_color_t TamaTac_iconBuffers[12][16 * 16];
+extern CanvasPixel TamaTac_canvasBuffer[72 * 72];
+extern CanvasPixel TamaTac_iconBuffers[12][16 * 16];
 
 namespace {
 
@@ -271,7 +271,7 @@ void drawIcon(lv_obj_t* canvas, IconId iconId, int scale) {
 }
 
 // Icon backing store: heap 24x24 slices on XXL, shared static 16x16 below that
-lv_color_t* mainViewIconBuffer(MainViewState* state, int idx) {
+CanvasPixel* mainViewIconBuffer(MainViewState* state, int idx) {
     if (state->heapIconBuf != nullptr) {
         return &state->heapIconBuf[idx * 24 * 24];
     }
@@ -420,13 +420,13 @@ void mainViewRefitToFill(Context* ctx) {
     if (target == state->spriteScale) return;
 
     int newCanvas = target * 24;
-    lv_color_t* buf = TamaTac_canvasBuffer;
+    CanvasPixel* buf = TamaTac_canvasBuffer;
     if (newCanvas > 72) {
         // Allocate the replacement first and only then release the old buffer:
         // a failed realloc would otherwise leave heapCanvas dangling (or force
         // a wasteful copy). The old buffer stays live if this fails.
-        const size_t newBytes = static_cast<size_t>(newCanvas) * static_cast<size_t>(newCanvas) * sizeof(lv_color_t);
-        lv_color_t* fresh = static_cast<lv_color_t*>(malloc(newBytes));
+        const size_t newBytes = static_cast<size_t>(newCanvas) * static_cast<size_t>(newCanvas) * sizeof(CanvasPixel);
+        CanvasPixel* fresh = static_cast<CanvasPixel*>(malloc(newBytes));
         if (fresh == nullptr) return;
         if (state->heapCanvas != nullptr) {
             free(state->heapCanvas);
@@ -675,10 +675,10 @@ void mainViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
     }
 
     // Canvas backing store: shared static buffer up to 72px, heap beyond that
-    lv_color_t* canvasBuf = TamaTac_canvasBuffer;
+    CanvasPixel* canvasBuf = TamaTac_canvasBuffer;
     if (state->petCanvasSize > 72) {
-        state->heapCanvas = static_cast<lv_color_t*>(
-            malloc(static_cast<size_t>(state->petCanvasSize) * static_cast<size_t>(state->petCanvasSize) * sizeof(lv_color_t)));
+        state->heapCanvas = static_cast<CanvasPixel*>(
+            malloc(static_cast<size_t>(state->petCanvasSize) * static_cast<size_t>(state->petCanvasSize) * sizeof(CanvasPixel)));
         if (state->heapCanvas != nullptr) {
             canvasBuf = state->heapCanvas;
         } else {
@@ -694,8 +694,8 @@ void mainViewCreateWidgets(lv_obj_t* parentWidget, Context* ctx) {
 
     // Icon backing store: 24x24 heap slices on XXL, shared static 16x16 below
     if (state->iconPx > 16) {
-        state->heapIconBuf = static_cast<lv_color_t*>(
-            malloc(12U * 24U * 24U * sizeof(lv_color_t)));
+        state->heapIconBuf = static_cast<CanvasPixel*>(
+            malloc(12U * 24U * 24U * sizeof(CanvasPixel)));
         if (state->heapIconBuf == nullptr) {
             state->iconPx = 16;  // OOM fallback: small icons
         }

@@ -6,8 +6,21 @@
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/dialog.h>
 
-#include <esp_log.h>
+#include <tactility/log.h>
+#ifdef ESP_PLATFORM
 #include <esp_random.h>
+#else
+#include <random>
+#endif
+
+static inline uint32_t diceware_random() {
+#ifdef ESP_PLATFORM
+    return esp_random();
+#else
+    static std::random_device device;
+    return device();
+#endif
+}
 
 #include <cstdio>
 
@@ -22,7 +35,7 @@ static constexpr uint32_t WORD_LIST_SIZE = 7776;
 static std::string readWordAtLine(const uint32_t lineIndex) {
     char path[256];
     if (app_paths_get_assets_path(APP_ID, "eff_large_wordlist.txt", path, sizeof(path)) != ERROR_NONE) {
-        ESP_LOGE(TAG, "Failed to get assets path");
+        LOG_E(TAG, "Failed to get assets path");
         return "";
     }
 
@@ -39,7 +52,7 @@ static std::string readWordAtLine(const uint32_t lineIndex) {
         }
         fclose(file);
     } else {
-        ESP_LOGE(TAG, "Failed to open %s", path);
+        LOG_E(TAG, "Failed to open %s", path);
     }
     return word;
 }
@@ -117,7 +130,7 @@ static void jobMain(Context* ctx) {
 
     std::vector<std::string> picked;
     for (size_t i = 0; i < missing; i++) {
-        auto word = readWordAtLine(esp_random() % WORD_LIST_SIZE);
+        auto word = readWordAtLine(diceware_random() % WORD_LIST_SIZE);
         if (word.empty()) break;
         picked.push_back(word);
     }

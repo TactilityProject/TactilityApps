@@ -1,6 +1,6 @@
 #include "Application.h"
 
-#include <esp_log.h>
+#include <tactility/log.h>
 
 #include <app/event.h>
 #include <tactility/check.h>
@@ -762,14 +762,14 @@ void runApplication(gfx::Target* target, AnyInput* input) {
     check(app_event_subscribe(&subscription, &eventGroup) == ERROR_NONE);
 
     if (info.slowRefresh) {
-        ESP_LOGW(TAG, "Slow-refresh display: skipping the benchmark");
+        LOG_W(TAG, "Slow-refresh display: skipping the benchmark");
         target->render([&](gfx::Surface& surface) {
             drawSlowMessage(surface, context);
         }, gfx::Prepare::Overwrite);
         target->refresh();
         waitForExit(subscription, *input);
     } else {
-        ESP_LOGI(TAG, "Benchmarking %dx%d, mode %s, step %d", context.width, context.height, modeName(context.mode), context.step);
+        LOG_I(TAG, "Benchmarking %dx%d, mode %s, step %d", context.width, context.height, modeName(context.mode), context.step);
 
         gfx::Canvas sprite(48, 48, DISPLAY_COLOR_FORMAT_RGB565);
         if (sprite.valid()) {
@@ -780,7 +780,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
             canvas.drawText(10, 20, "GX", gfx::FONT_8X8, WHITE);
             context.sprite = &sprite;
         } else {
-            ESP_LOGW(TAG, "Could not allocate the sprite canvas");
+            LOG_W(TAG, "Could not allocate the sprite canvas");
         }
 
         target->render([&](gfx::Surface& surface) {
@@ -816,7 +816,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
             totalDrawUs += static_cast<unsigned long>(stats.drawUs);
             totalPresentUs += static_cast<unsigned long>(stats.presentUs);
 
-            ESP_LOGI(
+            LOG_I(
                 TAG,
                 "%2d/%d %-20s draw %7d us  present %7d us  total %7d us  dirty %7d px",
                 i + 1,
@@ -832,7 +832,7 @@ void runApplication(gfx::Target* target, AnyInput* input) {
         }
 
         if (!aborted) {
-            ESP_LOGI(TAG, "Total draw %lu us, present %lu us", totalDrawUs, totalPresentUs);
+            LOG_I(TAG, "Total draw %lu us, present %lu us", totalDrawUs, totalPresentUs);
             target->render([&](gfx::Surface& surface) {
                 drawResults(surface, context, results, totalDrawUs, totalPresentUs);
             }, gfx::Prepare::Overwrite);

@@ -9,8 +9,8 @@
 #include <lvgl/widgets/toolbar.h>
 #include <lvgl_window_manager/window_manager.h>
 #include <Tactility/kernel/Kernel.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/timers.h>
+#include <tactility/freertos/freertos.h>
+#include <tactility/freertos/timers.h>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -170,8 +170,8 @@ void onTimerUpdate(TimerHandle_t timer) {
 
 // Canvas buffer definitions (shared by views via extern)
 // 72x72 supports 24x24 sprites at 3x scale (medium/large/xlarge screens)
-lv_color_t TamaTac_canvasBuffer[72 * 72];
-lv_color_t TamaTac_iconBuffers[12][16 * 16];
+CanvasPixel TamaTac_canvasBuffer[72 * 72];
+CanvasPixel TamaTac_iconBuffers[12][16 * 16];
 
 void tamaTacInit(Context* ctx) {
     // Seed RNG once so rand() produces different sequences each run

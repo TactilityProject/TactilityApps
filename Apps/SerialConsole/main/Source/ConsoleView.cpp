@@ -1,7 +1,7 @@
 #include "ConsoleView.h"
 #include "SerialConsole.h"
 
-#include <esp_log.h>
+#include <tactility/log.h>
 #include <lvgl/lvgl.h>
 #include <lvgl_window_manager/window_manager.h>
 
@@ -121,7 +121,7 @@ void onSendClicked(Context* app) {
             tt::kernel::millisToTicks(100)
         );
         if (err != ERROR_NONE) {
-            ESP_LOGE(TAG, "Failed to send \"%s\"", input_text.c_str());
+            LOG_E(TAG, "Failed to send \"%s\"", input_text.c_str());
         }
     }
 
